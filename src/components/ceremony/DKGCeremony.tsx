@@ -92,6 +92,8 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
 
   const relayRef = useRef<RelayAdapter | null>(null);
   const orchestratorRef = useRef<DkgOrchestrator | null>(null);
+  const dkgStartTimeRef = useRef<number>(0);
+  const MIN_ANIMATION_MS = 4000;
 
   const allDevicesPaired = devices.filter((d) => d.status === "ready").length >= config.totalParticipants;
 
@@ -168,10 +170,23 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
   }, []);
 
   // Start DKG — multi-device via orchestrator, or local fallback
+  const delayedComplete = useCallback((fn: () => void) => {
+    const elapsed = Date.now() - dkgStartTimeRef.current;
+    const remaining = Math.max(0, MIN_ANIMATION_MS - elapsed);
+    if (remaining > 0) {
+      setDkgProgress(95);
+      setDkgMessage("Finalizing key shares…");
+      setTimeout(fn, remaining);
+    } else {
+      fn();
+    }
+  }, []);
+
   const startDKG = useCallback(() => {
     setPhase("dkg-round1");
     setDkgProgress(0);
     setDkgError(null);
+    dkgStartTimeRef.current = Date.now();
 
     const relay = relayRef.current;
     const useOrchestrator = relay && relayMode === "remote";
@@ -197,23 +212,25 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
 
       orchestrator.run()
         .then((result) => {
-          setGroupPublicKey(result.groupPublicKeyHex);
-          setDkgProgress(100);
-          setPhase("complete");
+          delayedComplete(() => {
+            setGroupPublicKey(result.groupPublicKeyHex);
+            setDkgProgress(100);
+            setPhase("complete");
 
-          try {
-            sessionStorage.setItem(
-              "vaulkyrie_dkg_result",
-              JSON.stringify({
-                groupPublicKeyHex: result.groupPublicKeyHex,
-                publicKeyPackage: result.publicKeyPackageJson,
-                keyPackages: { [result.participantId]: result.keyPackageJson },
-                threshold: result.threshold,
-                participants: result.totalParticipants,
-                createdAt: Date.now(),
-              }),
-            );
-          } catch { /* sessionStorage may be unavailable */ }
+            try {
+              sessionStorage.setItem(
+                "vaulkyrie_dkg_result",
+                JSON.stringify({
+                  groupPublicKeyHex: result.groupPublicKeyHex,
+                  publicKeyPackage: result.publicKeyPackageJson,
+                  keyPackages: { [result.participantId]: result.keyPackageJson },
+                  threshold: result.threshold,
+                  participants: result.totalParticipants,
+                  createdAt: Date.now(),
+                }),
+              );
+            } catch { /* sessionStorage may be unavailable */ }
+          });
         })
         .catch((err: unknown) => {
           const message = err instanceof Error ? err.message : String(err);
@@ -232,23 +249,25 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
 
       runLocalDkg(config.threshold, config.totalParticipants, handleProgress)
         .then((result) => {
-          setGroupPublicKey(result.groupPublicKeyHex);
-          setDkgProgress(100);
-          setPhase("complete");
+          delayedComplete(() => {
+            setGroupPublicKey(result.groupPublicKeyHex);
+            setDkgProgress(100);
+            setPhase("complete");
 
-          try {
-            sessionStorage.setItem(
-              "vaulkyrie_dkg_result",
-              JSON.stringify({
-                groupPublicKeyHex: result.groupPublicKeyHex,
-                publicKeyPackage: result.publicKeyPackage,
-                keyPackages: result.keyPackages,
-                threshold: config.threshold,
-                participants: config.totalParticipants,
-                createdAt: Date.now(),
-              }),
-            );
-          } catch { /* sessionStorage may be unavailable */ }
+            try {
+              sessionStorage.setItem(
+                "vaulkyrie_dkg_result",
+                JSON.stringify({
+                  groupPublicKeyHex: result.groupPublicKeyHex,
+                  publicKeyPackage: result.publicKeyPackage,
+                  keyPackages: result.keyPackages,
+                  threshold: config.threshold,
+                  participants: config.totalParticipants,
+                  createdAt: Date.now(),
+                }),
+              );
+            } catch { /* sessionStorage may be unavailable */ }
+          });
         })
         .catch((err: unknown) => {
           const message = err instanceof Error ? err.message : String(err);

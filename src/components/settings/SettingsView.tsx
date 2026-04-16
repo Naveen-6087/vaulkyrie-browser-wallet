@@ -1,4 +1,4 @@
-import { Shield, ChevronRight, Globe, Key, Bell, Info, Wallet, Trash2, Users } from "lucide-react";
+import { Shield, ChevronRight, Globe, Key, Bell, Info, Wallet, Trash2, Users, Lock } from "lucide-react";
 import { useState } from "react";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -44,7 +44,7 @@ function SettingRow({ icon: Icon, label, value, badge, onClick }: SettingRowProp
 
 export function SettingsView({ network, onNavigate }: SettingsViewProps) {
   const [showAccounts, setShowAccounts] = useState(false);
-  const { accounts, activeAccount, vaultConfigs, switchVault, removeAccount } = useWalletStore();
+  const { accounts, activeAccount, vaultConfigs, switchVault, removeAccount, setLocked, passwordHash } = useWalletStore();
 
   return (
     <div className="flex flex-col gap-4 p-4 flex-1">
@@ -84,6 +84,15 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
           label="Address Book"
           value="Saved contacts"
           onClick={() => onNavigate("contacts")}
+        />
+        <SettingRow
+          icon={Lock}
+          label="Lock Wallet"
+          value={passwordHash ? "Password protected" : "Set up password"}
+          onClick={() => {
+            setLocked(true);
+            onNavigate("lock");
+          }}
         />
         <SettingRow
           icon={Bell}

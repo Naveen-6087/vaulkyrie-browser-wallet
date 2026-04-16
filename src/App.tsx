@@ -7,6 +7,7 @@ import { Dashboard } from "@/pages/Dashboard";
 import { QuantumVault } from "@/pages/QuantumVault";
 import { SendView } from "@/components/wallet/SendView";
 import { ReceiveView } from "@/components/wallet/ReceiveView";
+import { SwapView } from "@/components/wallet/SwapView";
 import { ActivityList } from "@/components/wallet/ActivityList";
 import { AddressBook } from "@/components/wallet/AddressBook";
 import { SettingsView } from "@/components/settings/SettingsView";
@@ -27,6 +28,8 @@ function App() {
     hasHydrated,
     transactions,
     network,
+    passwordHash,
+    isLocked: storeLocked,
     setOnboarded,
     setActiveAccount,
     addAccount,
@@ -43,9 +46,53 @@ function App() {
   // Sync view after zustand persist hydration completes
   useEffect(() => {
     if (hasHydrated) {
-      setView(isOnboarded ? "dashboard" : "onboarding");
+      if (isOnboarded && passwordHash && storeLocked) {
+        // User has a password and app was locked — show lock screen
+        setIsLocked(true);
+        setView("lock");
+      } else if (isOnboarded && !passwordHash) {
+        // Onboarded but no password yet — show lock screen for setup
+        setIsLocked(true);
+        setView("lock");
+      } else {
+        setView(isOnboarded ? "dashboard" : "onboarding");
+      }
     }
   }, [hasHydrated, isOnboarded]);
+
+  // Sync local lock state when store's isLocked changes (e.g. from Settings → Lock Wallet)
+  useEffect(() => {
+    if (storeLocked && !isLocked && hasHydrated && isOnboarded) {
+      setIsLocked(true);
+      setView("lock");
+    }
+  }, [storeLocked]);
+
+  // Auto-lock after 5 minutes of inactivity
+  useEffect(() => {
+    if (!isOnboarded || !passwordHash || isLocked) return;
+
+    let timeout: ReturnType<typeof setTimeout>;
+    const AUTO_LOCK_MS = 5 * 60 * 1000;
+
+    const resetTimer = () => {
+      clearTimeout(timeout);
+      timeout = setTimeout(() => {
+        setIsLocked(true);
+        setStoreLocked(true);
+        setView("lock");
+      }, AUTO_LOCK_MS);
+    };
+
+    const events = ["mousedown", "keydown", "touchstart", "scroll"];
+    events.forEach((e) => window.addEventListener(e, resetTimer));
+    resetTimer();
+
+    return () => {
+      clearTimeout(timeout);
+      events.forEach((e) => window.removeEventListener(e, resetTimer));
+    };
+  }, [isOnboarded, passwordHash, isLocked]);
 
   // Show splash screen until store has hydrated
   if (!hasHydrated) {
@@ -183,6 +230,14 @@ function App() {
         return (
           <ReceiveView
             address={activeAccount?.publicKey ?? ""}
+            onNavigate={setView}
+          />
+        );
+
+      case "swap":
+        return (
+          <SwapView
+            balance={activeAccount?.balance ?? 0}
             onNavigate={setView}
           />
         );

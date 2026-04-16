@@ -1,15 +1,15 @@
-import { useState } from "react";
-import { ArrowUpRight, AlertCircle, Loader2, Check, ExternalLink, Users } from "lucide-react";
+import { useState, useRef, useEffect } from "react";
+import { ArrowUpRight, AlertCircle, Loader2, Check, ExternalLink, Users, ChevronDown } from "lucide-react";
 import { PublicKey, SystemProgram, Transaction, LAMPORTS_PER_SOL } from "@solana/web3.js";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { signLocal, hexToBytes } from "@/services/frost/frostService";
 import { useWalletStore } from "@/store/walletStore";
-import { createConnection } from "@/services/solanaRpc";
+import { createConnection, SOL_ICON } from "@/services/solanaRpc";
 import { buildSplTransferTransaction } from "@/services/splToken";
 import { shortenAddress } from "@/lib/utils";
-import type { WalletView } from "@/types";
+import type { WalletView, Token } from "@/types";
 
 interface SendViewProps {
   balance: number;
@@ -17,6 +17,100 @@ interface SendViewProps {
 }
 
 type SendPhase = "form" | "review" | "signing" | "success" | "error";
+
+// ── Custom token dropdown with icons ────────────────────────────────
+function TokenDropdown({
+  selectedToken,
+  balance,
+  tokens,
+  onSelect,
+}: {
+  selectedToken: string;
+  balance: number;
+  tokens: Token[];
+  onSelect: (symbol: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  const solToken: Token = {
+    symbol: "SOL",
+    name: "Solana",
+    balance,
+    decimals: 9,
+    icon: SOL_ICON,
+  };
+
+  const allTokens = [solToken, ...tokens.filter((t) => t.symbol !== "SOL" && t.balance > 0)];
+  const current = allTokens.find((t) => t.symbol === selectedToken) ?? solToken;
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="flex items-center gap-3 w-full px-4 py-3 rounded-xl bg-card border border-border hover:border-primary/40 transition-colors cursor-pointer"
+      >
+        <TokenIconSmall symbol={current.symbol} icon={current.icon} />
+        <div className="flex-1 text-left min-w-0">
+          <p className="text-sm font-semibold">{current.symbol}</p>
+          <p className="text-[11px] text-muted-foreground">{current.name}</p>
+        </div>
+        <span className="text-xs text-muted-foreground font-mono mr-1">
+          {current.balance.toFixed(4)}
+        </span>
+        <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+
+      {open && (
+        <div className="absolute z-50 left-0 right-0 mt-1 rounded-xl border border-border bg-card shadow-lg overflow-hidden max-h-52 overflow-y-auto">
+          {allTokens.map((t) => (
+            <button
+              key={t.mint ?? t.symbol}
+              type="button"
+              onClick={() => { onSelect(t.symbol); setOpen(false); }}
+              className={`flex items-center gap-3 w-full px-4 py-2.5 hover:bg-accent/60 transition-colors cursor-pointer
+                ${t.symbol === selectedToken ? "bg-accent/40" : ""}`}
+            >
+              <TokenIconSmall symbol={t.symbol} icon={t.icon} />
+              <div className="flex-1 text-left min-w-0">
+                <p className="text-sm font-medium">{t.symbol}</p>
+                <p className="text-[10px] text-muted-foreground">{t.name}</p>
+              </div>
+              <span className="text-xs font-mono text-muted-foreground">
+                {t.balance.toFixed(4)}
+              </span>
+              {t.symbol === selectedToken && <Check className="h-3.5 w-3.5 text-primary shrink-0" />}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TokenIconSmall({ symbol, icon }: { symbol: string; icon?: string }) {
+  if (icon) {
+    return <img src={icon} alt={symbol} className="h-7 w-7 rounded-full object-cover shrink-0" />;
+  }
+  const hue = symbol.split("").reduce((acc, c) => acc + c.charCodeAt(0), 0) % 360;
+  return (
+    <div
+      className="h-7 w-7 rounded-full flex items-center justify-center text-[9px] font-bold text-white shrink-0"
+      style={{ background: `linear-gradient(135deg, oklch(0.60 0.15 ${hue}), oklch(0.45 0.12 ${hue + 30}))` }}
+    >
+      {symbol.slice(0, 2)}
+    </div>
+  );
+}
 
 export function SendView({ balance, onNavigate }: SendViewProps) {
   const [recipient, setRecipient] = useState("");
@@ -312,28 +406,13 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
         <h2 className="text-lg font-semibold flex-1 text-center mr-8">Send {selectedToken}</h2>
       </div>
 
-      {/* Token selector */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-sm">Token</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <select
-            value={selectedToken}
-            onChange={(e) => { setSelectedToken(e.target.value); setAmount(""); }}
-            className="w-full py-2 px-3 rounded-lg bg-background border border-border text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
-          >
-            <option value="SOL">SOL — {balance.toFixed(4)}</option>
-            {tokens
-              .filter((t) => t.symbol !== "SOL" && t.balance > 0)
-              .map((t) => (
-                <option key={t.mint ?? t.symbol} value={t.symbol}>
-                  {t.symbol} — {t.balance.toFixed(4)}
-                </option>
-              ))}
-          </select>
-        </CardContent>
-      </Card>
+      {/* Token selector — custom dropdown with icons */}
+      <TokenDropdown
+        selectedToken={selectedToken}
+        balance={balance}
+        tokens={tokens}
+        onSelect={(sym) => { setSelectedToken(sym); setAmount(""); }}
+      />
 
       <Card>
         <CardHeader>

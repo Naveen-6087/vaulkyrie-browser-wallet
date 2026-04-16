@@ -49,6 +49,8 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
   const relayRef = useRef<RelayAdapter | null>(null);
   const orchestratorRef = useRef<DkgOrchestrator | null>(null);
   const dkgStartedRef = useRef(false);
+  const dkgStartTimeRef = useRef<number>(0);
+  const MIN_ANIMATION_MS = 4000;
 
   // Buffer DKG messages that arrive before orchestrator is ready
   const pendingDkgMessages = useRef<Array<
@@ -158,6 +160,7 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
     if (participantId === 0) return; // wait for assignment
     if (dkgStartedRef.current) return; // prevent double-start
     dkgStartedRef.current = true;
+    dkgStartTimeRef.current = Date.now();
 
     setPhase("running");
     setStatusMessage("DKG ceremony in progress…");
@@ -187,23 +190,35 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
 
     orchestrator.run()
       .then((result) => {
-        setPhase("complete");
-        setProgress(100);
-        setStatusMessage("Ceremony complete — vault created!");
+        const elapsed = Date.now() - dkgStartTimeRef.current;
+        const remaining = Math.max(0, MIN_ANIMATION_MS - elapsed);
+        const finish = () => {
+          setPhase("complete");
+          setProgress(100);
+          setStatusMessage("Ceremony complete — vault created!");
 
-        try {
-          sessionStorage.setItem(
-            "vaulkyrie_dkg_result",
-            JSON.stringify({
-              groupPublicKeyHex: result.groupPublicKeyHex,
-              publicKeyPackage: result.publicKeyPackageJson,
-              keyPackages: { [result.participantId]: result.keyPackageJson },
-              threshold: result.threshold,
-              participants: result.totalParticipants,
-              createdAt: Date.now(),
-            }),
-          );
-        } catch { /* sessionStorage may be unavailable */ }
+          try {
+            sessionStorage.setItem(
+              "vaulkyrie_dkg_result",
+              JSON.stringify({
+                groupPublicKeyHex: result.groupPublicKeyHex,
+                publicKeyPackage: result.publicKeyPackageJson,
+                keyPackages: { [result.participantId]: result.keyPackageJson },
+                threshold: result.threshold,
+                participants: result.totalParticipants,
+                createdAt: Date.now(),
+              }),
+            );
+          } catch { /* sessionStorage may be unavailable */ }
+        };
+
+        if (remaining > 0) {
+          setProgress(95);
+          setStatusMessage("Finalizing key shares…");
+          setTimeout(finish, remaining);
+        } else {
+          finish();
+        }
       })
       .catch((err: unknown) => {
         setPhase("error");
