@@ -1,9 +1,19 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { motion } from "framer-motion";
-import { ArrowLeft, Users, Loader2, Check, AlertTriangle, Wifi } from "lucide-react";
+import { ArrowLeft, Users, Loader2, Check, AlertTriangle, Wifi, WifiOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import {
+  createRelay,
+  DEFAULT_RELAY_URL,
+  type RelayAdapter,
+  type ConnectionState,
+} from "@/services/relay/relayAdapter";
+import {
+  DkgOrchestrator,
+  type DkgOrchestratorProgress,
+} from "@/services/frost/dkgOrchestrator";
 import logo from "@/assets/xlogo.jpeg";
 
 interface JoinCeremonyProps {
@@ -13,89 +23,166 @@ interface JoinCeremonyProps {
 
 type JoinPhase = "enter-code" | "connecting" | "waiting" | "running" | "complete" | "error";
 
+/** Detect if relay server is reachable */
+async function isRelayAvailable(url: string): Promise<boolean> {
+  try {
+    const ws = new WebSocket(url);
+    return await new Promise<boolean>((resolve) => {
+      const timeout = setTimeout(() => { ws.close(); resolve(false); }, 2000);
+      ws.onopen = () => { clearTimeout(timeout); ws.close(); resolve(true); };
+      ws.onerror = () => { clearTimeout(timeout); resolve(false); };
+    });
+  } catch { return false; }
+}
+
 export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
   const [sessionCode, setSessionCode] = useState("");
   const [phase, setPhase] = useState<JoinPhase>("enter-code");
   const [statusMessage, setStatusMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
   const [progress, setProgress] = useState(0);
-  const channelRef = useRef<BroadcastChannel | null>(null);
+  const [connectionState, setConnectionState] = useState<ConnectionState>("disconnected");
+  const [relayMode, setRelayMode] = useState<"local" | "remote" | null>(null);
+  const [dkgParams, setDkgParams] = useState<{ threshold: number; participants: number } | null>(null);
+  const [participantId, setParticipantId] = useState<number>(0);
+
+  const relayRef = useRef<RelayAdapter | null>(null);
+  const orchestratorRef = useRef<DkgOrchestrator | null>(null);
 
   const isValidCode = /^[A-Z0-9]{6}$/.test(sessionCode.toUpperCase());
 
+  // Detect relay availability on mount
+  useEffect(() => {
+    isRelayAvailable(DEFAULT_RELAY_URL).then((available) => {
+      setRelayMode(available ? "remote" : "local");
+    });
+  }, []);
+
+  // Cleanup on unmount
   useEffect(() => {
     return () => {
-      channelRef.current?.close();
+      relayRef.current?.disconnect();
     };
   }, []);
 
-  const handleJoin = () => {
+  const handleJoin = useCallback(() => {
     if (!isValidCode) return;
 
     const code = sessionCode.toUpperCase();
+    const mode = relayMode ?? "local";
     setPhase("connecting");
-    setStatusMessage("Connecting to ceremony session...");
+    setStatusMessage("Connecting to ceremony session…");
 
     try {
-      const channel = new BroadcastChannel(`vaulkyrie-dkg-${code}`);
-      channelRef.current = channel;
-
-      channel.postMessage({
-        type: "join-request",
-        participantId: crypto.randomUUID(),
-        timestamp: Date.now(),
+      const relay = createRelay({
+        mode,
+        participantId: 0, // will be assigned by the session
+        isCoordinator: false,
+        deviceName: navigator.userAgent.includes("Mobile") ? "Mobile Device" : "Browser",
+        deviceType: navigator.userAgent.includes("Mobile") ? "mobile" : "browser",
+        relayUrl: DEFAULT_RELAY_URL,
+        sessionId: code,
+        events: {
+          onParticipantJoined: (p) => {
+            // When we receive our own participant assignment
+            if (p.participantId > 0 && participantId === 0) {
+              setParticipantId(p.participantId);
+            }
+          },
+          onStartDkg: (threshold: number, participants: number) => {
+            setDkgParams({ threshold, participants });
+            // The DKG will be started automatically when params arrive
+          },
+          onDkgRound1: (fromId: number, pkg: number[]) => {
+            orchestratorRef.current?.handleDkgRound1(fromId, pkg);
+          },
+          onDkgRound2: (fromId: number, packages: Record<number, number[]>) => {
+            orchestratorRef.current?.handleDkgRound2(fromId, packages);
+          },
+          onDkgRound3Done: (fromId: number, groupKeyHex: string) => {
+            orchestratorRef.current?.handleDkgRound3Done(fromId, groupKeyHex);
+          },
+          onError: (_fromId: number, error: string) => {
+            setPhase("error");
+            setErrorMessage(error);
+          },
+        },
+        onConnectionStateChange: (state) => {
+          setConnectionState(state);
+          if (state === "connected") {
+            setPhase("waiting");
+            setStatusMessage("Connected — waiting for ceremony to start…");
+          } else if (state === "failed") {
+            setPhase("error");
+            setErrorMessage("Connection to relay server failed");
+          }
+        },
       });
 
-      setPhase("waiting");
-      setStatusMessage("Connected — waiting for ceremony to start...");
+      relayRef.current = relay;
+      relay.connect();
 
-      channel.onmessage = (event) => {
-        const msg = event.data;
-
-        switch (msg.type) {
-          case "ceremony-start":
-            setPhase("running");
-            setStatusMessage("DKG ceremony in progress...");
-            setProgress(10);
-            break;
-
-          case "dkg-progress":
-            setProgress(msg.progress ?? 50);
-            setStatusMessage(msg.message ?? "Processing...");
-            break;
-
-          case "dkg-complete":
-            setPhase("complete");
-            setProgress(100);
-            setStatusMessage("Ceremony complete — vault created!");
-
-            if (msg.result) {
-              sessionStorage.setItem(
-                "vaulkyrie_dkg_result",
-                JSON.stringify(msg.result),
-              );
-            }
-            break;
-
-          case "ceremony-error":
-            setPhase("error");
-            setErrorMessage(msg.message ?? "Ceremony failed");
-            break;
-
-          default:
-            break;
-        }
-      };
-
-      channel.onmessageerror = () => {
-        setPhase("error");
-        setErrorMessage("Communication error with ceremony host");
-      };
+      if (mode === "remote") {
+        relay.joinSession(code);
+      } else {
+        // Local mode — set waiting immediately
+        setPhase("waiting");
+        setStatusMessage("Connected — waiting for ceremony to start…");
+      }
     } catch {
       setPhase("error");
       setErrorMessage("Failed to connect to ceremony session");
     }
-  };
+  }, [isValidCode, sessionCode, relayMode, participantId]);
+
+  // Start DKG when params arrive from coordinator
+  useEffect(() => {
+    if (!dkgParams || !relayRef.current || phase === "running") return;
+    if (participantId === 0) return; // wait for assignment
+
+    setPhase("running");
+    setStatusMessage("DKG ceremony in progress…");
+    setProgress(10);
+
+    const handleProgress = (p: DkgOrchestratorProgress) => {
+      setProgress(Math.round(p.progress));
+      setStatusMessage(p.message);
+    };
+
+    const orchestrator = new DkgOrchestrator({
+      relay: relayRef.current,
+      participantId,
+      threshold: dkgParams.threshold,
+      totalParticipants: dkgParams.participants,
+      onProgress: handleProgress,
+    });
+    orchestratorRef.current = orchestrator;
+
+    orchestrator.run()
+      .then((result) => {
+        setPhase("complete");
+        setProgress(100);
+        setStatusMessage("Ceremony complete — vault created!");
+
+        try {
+          sessionStorage.setItem(
+            "vaulkyrie_dkg_result",
+            JSON.stringify({
+              groupPublicKeyHex: result.groupPublicKeyHex,
+              publicKeyPackage: result.publicKeyPackageJson,
+              keyPackages: { [result.participantId]: result.keyPackageJson },
+              threshold: result.threshold,
+              participants: result.totalParticipants,
+              createdAt: Date.now(),
+            }),
+          );
+        } catch { /* sessionStorage may be unavailable */ }
+      })
+      .catch((err: unknown) => {
+        setPhase("error");
+        setErrorMessage(err instanceof Error ? err.message : String(err));
+      });
+  }, [dkgParams, participantId, phase]);
 
   const handleComplete = () => {
     const dkgRaw = sessionStorage.getItem("vaulkyrie_dkg_result");
@@ -120,6 +207,17 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
           <ArrowLeft className="h-5 w-5" />
         </button>
         <h2 className="text-lg font-semibold">Join Ceremony</h2>
+        {/* Relay mode badge */}
+        <span className={`ml-auto inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full font-medium ${
+          relayMode === "remote"
+            ? "bg-success/15 text-success"
+            : relayMode === "local"
+              ? "bg-warning/15 text-warning"
+              : "bg-muted text-muted-foreground"
+        }`}>
+          {relayMode === "remote" ? <Wifi className="h-2.5 w-2.5" /> : relayMode === "local" ? <WifiOff className="h-2.5 w-2.5" /> : <Loader2 className="h-2.5 w-2.5 animate-spin" />}
+          {relayMode === "remote" ? "Cross-device" : relayMode === "local" ? "Same-browser" : "…"}
+        </span>
       </div>
 
       {/* Logo */}
@@ -165,9 +263,9 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
           </Button>
 
           <p className="text-[10px] text-muted-foreground text-center">
-            Both devices must be on the same browser (same machine) for
-            BroadcastChannel pairing. Cross-device pairing requires WebSocket
-            relay (coming soon).
+            {relayMode === "remote"
+              ? "Cross-device relay detected — you can join from any device."
+              : "Relay server not detected — both devices must be on the same browser."}
           </p>
         </motion.div>
       )}
@@ -246,6 +344,8 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
               onClick={() => {
                 setPhase("enter-code");
                 setErrorMessage("");
+                relayRef.current?.disconnect();
+                relayRef.current = null;
               }}
             >
               Try Again

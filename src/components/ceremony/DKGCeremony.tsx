@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   QrCode,
@@ -20,9 +20,18 @@ import { runLocalDkg } from "@/services/frost/frostService";
 import type { FullDkgResult } from "@/services/frost/types";
 import type { LocalDkgProgress } from "@/services/frost/frostService";
 import {
+  createRelay,
   generateSessionCode,
   buildQrPayload,
-} from "@/services/relay/channelRelay";
+  DEFAULT_RELAY_URL,
+  type RelayAdapter,
+  type ConnectionState,
+} from "@/services/relay/relayAdapter";
+import type { RelayParticipant } from "@/services/relay/channelRelay";
+import {
+  DkgOrchestrator,
+  type DkgOrchestratorProgress,
+} from "@/services/frost/dkgOrchestrator";
 import logo from "@/assets/xlogo.jpeg";
 
 type CeremonyPhase =
@@ -46,11 +55,17 @@ interface DKGCeremonyProps {
   onBack: () => void;
 }
 
-// Generate a short session code for manual entry — imported from relay
-// function generateSessionCode() moved to channelRelay.ts
-
-// QR payload — imported from relay
-// function generateQRPayload() moved to channelRelay.ts
+/** Detect if relay server is reachable */
+async function isRelayAvailable(url: string): Promise<boolean> {
+  try {
+    const ws = new WebSocket(url);
+    return await new Promise<boolean>((resolve) => {
+      const timeout = setTimeout(() => { ws.close(); resolve(false); }, 2000);
+      ws.onopen = () => { clearTimeout(timeout); ws.close(); resolve(true); };
+      ws.onerror = () => { clearTimeout(timeout); resolve(false); };
+    });
+  } catch { return false; }
+}
 
 export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
   const [phase, setPhase] = useState<CeremonyPhase>("pairing");
@@ -70,121 +85,175 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
   const [dkgProgress, setDkgProgress] = useState(0);
   const [dkgMessage, setDkgMessage] = useState("");
   const [groupPublicKey, setGroupPublicKey] = useState("");
-  const [dkgResult, setDkgResult] = useState<FullDkgResult | null>(null);
-  // dkgResult is stored for future signing — suppress lint
-  void dkgResult;
   const [dkgError, setDkgError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [relayMode, setRelayMode] = useState<"local" | "remote" | null>(null);
+  const [connectionState, setConnectionState] = useState<ConnectionState>("disconnected");
 
-  const allDevicesPaired= devices.filter((d) => d.status === "ready").length >= config.totalParticipants;
+  const relayRef = useRef<RelayAdapter | null>(null);
+  const orchestratorRef = useRef<DkgOrchestrator | null>(null);
 
-  // Simulate devices joining (demo mode) — runs once on component mount
+  const allDevicesPaired = devices.filter((d) => d.status === "ready").length >= config.totalParticipants;
+
+  // Detect relay availability on mount and set up relay
   useEffect(() => {
-    const timer1 = setTimeout(() => {
-      setDevices((prev) => [
-        ...prev,
-        {
-          id: "device-2",
-          name: "iPhone 15 Pro",
-          type: "mobile",
-          status: "connecting",
-          joinedAt: Date.now(),
+    let cancelled = false;
+
+    (async () => {
+      const available = await isRelayAvailable(DEFAULT_RELAY_URL);
+      if (cancelled) return;
+
+      const mode = available ? "remote" : "local";
+      setRelayMode(mode);
+
+      const relay = createRelay({
+        mode,
+        participantId: 1, // coordinator is always participant 1
+        isCoordinator: true,
+        deviceName: "This Browser",
+        relayUrl: DEFAULT_RELAY_URL,
+        sessionId: sessionCode,
+        events: {
+          onParticipantJoined: (p: RelayParticipant) => {
+            setDevices((prev) => {
+              if (prev.some((d) => d.id === p.senderId)) return prev;
+              return [...prev, {
+                id: p.senderId,
+                name: p.deviceName,
+                type: p.deviceType,
+                status: "ready",
+                joinedAt: p.joinedAt,
+              }];
+            });
+          },
+          onParticipantLeft: (senderId: string) => {
+            setDevices((prev) => prev.filter((d) => d.id !== senderId));
+          },
+          onDkgRound1: (fromId: number, pkg: number[]) => {
+            orchestratorRef.current?.handleDkgRound1(fromId, pkg);
+          },
+          onDkgRound2: (fromId: number, packages: Record<number, number[]>) => {
+            orchestratorRef.current?.handleDkgRound2(fromId, packages);
+          },
+          onDkgRound3Done: (fromId: number, groupKeyHex: string) => {
+            orchestratorRef.current?.handleDkgRound3Done(fromId, groupKeyHex);
+          },
+          onError: (_fromId: number, error: string) => {
+            setDkgError(error);
+            setPhase("pairing");
+          },
         },
-      ]);
-    }, 2000);
-
-    const timer2 = setTimeout(() => {
-      setDevices((prev) =>
-        prev.map((d) =>
-          d.id === "device-2" ? { ...d, status: "paired" } : d
-        )
-      );
-    }, 3500);
-
-    const timer3 = setTimeout(() => {
-      setDevices((prev) =>
-        prev.map((d) =>
-          d.id === "device-2" ? { ...d, status: "ready" } : d
-        )
-      );
-    }, 4500);
-
-    const timer4 = setTimeout(() => {
-      setDevices((prev) => [
-        ...prev,
-        {
-          id: "device-3",
-          name: "MacBook Pro",
-          type: "desktop",
-          status: "connecting",
-          joinedAt: Date.now(),
+        onConnectionStateChange: setConnectionState,
+        onSessionCreated: (code: string) => {
+          console.log("[DKGCeremony] Session created:", code);
         },
-      ]);
-    }, 5500);
+      });
 
-    const timer5 = setTimeout(() => {
-      setDevices((prev) =>
-        prev.map((d) =>
-          d.id === "device-3" ? { ...d, status: "ready" } : d
-        )
-      );
-    }, 7000);
+      relayRef.current = relay;
+      relay.connect();
+
+      if (mode === "remote") {
+        relay.createSession(config.threshold, config.totalParticipants);
+      }
+    })();
 
     return () => {
-      clearTimeout(timer1);
-      clearTimeout(timer2);
-      clearTimeout(timer3);
-      clearTimeout(timer4);
-      clearTimeout(timer5);
+      cancelled = true;
+      relayRef.current?.disconnect();
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Run real FROST DKG ceremony via WASM
+  // Start DKG — multi-device via orchestrator, or local fallback
   const startDKG = useCallback(() => {
     setPhase("dkg-round1");
     setDkgProgress(0);
     setDkgError(null);
 
-    const handleProgress = (p: LocalDkgProgress) => {
-      setDkgProgress(p.progress);
-      setDkgMessage(p.message);
-      if (p.phase === "round1") setPhase("dkg-round1");
-      else if (p.phase === "round2") setPhase("dkg-round2");
-      else if (p.phase === "round3") setPhase("dkg-round3");
-    };
+    const relay = relayRef.current;
+    const useOrchestrator = relay && relayMode === "remote";
 
-    runLocalDkg(config.threshold, config.totalParticipants, handleProgress)
-      .then((result) => {
-        setGroupPublicKey(result.groupPublicKeyHex);
-        setDkgResult(result);
-        setDkgProgress(100);
-        setPhase("complete");
+    if (useOrchestrator) {
+      // Multi-device DKG via relay + orchestrator
+      const handleProgress = (p: DkgOrchestratorProgress) => {
+        setDkgProgress(Math.round(p.progress));
+        setDkgMessage(p.message);
+        if (p.phase === "round1") setPhase("dkg-round1");
+        else if (p.phase === "round2") setPhase("dkg-round2");
+        else if (p.phase === "round3" || p.phase === "validating") setPhase("dkg-round3");
+      };
 
-        // Store key packages in sessionStorage temporarily — App.tsx migrates to
-        // persistent zustand store when handleDKGComplete runs
-        try {
-          sessionStorage.setItem(
-            "vaulkyrie_dkg_result",
-            JSON.stringify({
-              groupPublicKeyHex: result.groupPublicKeyHex,
-              publicKeyPackage: result.publicKeyPackage,
-              keyPackages: result.keyPackages,
-              threshold: config.threshold,
-              participants: config.totalParticipants,
-              createdAt: Date.now(),
-            }),
-          );
-        } catch {
-          // sessionStorage may be unavailable in some contexts
-        }
-      })
-      .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
-        setDkgError(message);
-        setPhase("pairing"); // allow retry
+      const orchestrator = new DkgOrchestrator({
+        relay,
+        participantId: 1,
+        threshold: config.threshold,
+        totalParticipants: config.totalParticipants,
+        onProgress: handleProgress,
       });
-  }, [config.threshold, config.totalParticipants]);
+      orchestratorRef.current = orchestrator;
+
+      orchestrator.run()
+        .then((result) => {
+          setGroupPublicKey(result.groupPublicKeyHex);
+          setDkgProgress(100);
+          setPhase("complete");
+
+          try {
+            sessionStorage.setItem(
+              "vaulkyrie_dkg_result",
+              JSON.stringify({
+                groupPublicKeyHex: result.groupPublicKeyHex,
+                publicKeyPackage: result.publicKeyPackageJson,
+                keyPackages: { [result.participantId]: result.keyPackageJson },
+                threshold: result.threshold,
+                participants: result.totalParticipants,
+                createdAt: Date.now(),
+              }),
+            );
+          } catch { /* sessionStorage may be unavailable */ }
+        })
+        .catch((err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          setDkgError(message);
+          setPhase("pairing");
+        });
+    } else {
+      // Local single-browser DKG (demo/fallback)
+      const handleProgress = (p: LocalDkgProgress) => {
+        setDkgProgress(p.progress);
+        setDkgMessage(p.message);
+        if (p.phase === "round1") setPhase("dkg-round1");
+        else if (p.phase === "round2") setPhase("dkg-round2");
+        else if (p.phase === "round3") setPhase("dkg-round3");
+      };
+
+      runLocalDkg(config.threshold, config.totalParticipants, handleProgress)
+        .then((result) => {
+          setGroupPublicKey(result.groupPublicKeyHex);
+          setDkgProgress(100);
+          setPhase("complete");
+
+          try {
+            sessionStorage.setItem(
+              "vaulkyrie_dkg_result",
+              JSON.stringify({
+                groupPublicKeyHex: result.groupPublicKeyHex,
+                publicKeyPackage: result.publicKeyPackage,
+                keyPackages: result.keyPackages,
+                threshold: config.threshold,
+                participants: config.totalParticipants,
+                createdAt: Date.now(),
+              }),
+            );
+          } catch { /* sessionStorage may be unavailable */ }
+        })
+        .catch((err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          setDkgError(message);
+          setPhase("pairing");
+        });
+    }
+  }, [config.threshold, config.totalParticipants, relayMode]);
 
   const handleCopyCode = async () => {
     await navigator.clipboard.writeText(sessionCode);
@@ -303,6 +372,20 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
                       }}
                     />
                   </div>
+                </div>
+
+                {/* Relay mode indicator */}
+                <div className="flex items-center justify-center gap-1.5 mb-2">
+                  <span className={`inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full font-medium ${
+                    relayMode === "remote"
+                      ? "bg-success/15 text-success"
+                      : relayMode === "local"
+                        ? "bg-warning/15 text-warning"
+                        : "bg-muted text-muted-foreground"
+                  }`}>
+                    {relayMode === "remote" ? <Wifi className="h-2.5 w-2.5" /> : relayMode === "local" ? <WifiOff className="h-2.5 w-2.5" /> : <Loader2 className="h-2.5 w-2.5 animate-spin" />}
+                    {relayMode === "remote" ? "Cross-device relay" : relayMode === "local" ? "Same-browser only" : "Detecting…"}
+                  </span>
                 </div>
 
                 {/* Session code for manual entry */}

@@ -1,4 +1,4 @@
-import { Shield, ChevronRight, Globe, Key, Bell, Info, Wallet, Trash2 } from "lucide-react";
+import { Shield, ChevronRight, Globe, Key, Bell, Info, Wallet, Trash2, Users } from "lucide-react";
 import { useState } from "react";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -78,6 +78,12 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
           label="Security"
           value="Threshold signing · PQ authority"
           badge="Active"
+        />
+        <SettingRow
+          icon={Users}
+          label="Address Book"
+          value="Saved contacts"
+          onClick={() => onNavigate("contacts")}
         />
         <SettingRow
           icon={Bell}

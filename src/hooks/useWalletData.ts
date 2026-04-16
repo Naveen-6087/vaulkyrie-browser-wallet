@@ -13,7 +13,6 @@ export function useWalletData() {
   const {
     activeAccount,
     network,
-    isLocked,
     isLoading,
     tokens,
     transactions,
@@ -29,17 +28,17 @@ export function useWalletData() {
 
   // Fetch on mount and when account/network changes
   useEffect(() => {
-    if (!activeAccount || isLocked) return;
+    if (!activeAccount) return;
 
     const now = Date.now();
     if (lastFetchedAt && now - lastFetchedAt < MIN_FETCH_INTERVAL_MS) return;
 
     refreshAll();
-  }, [activeAccount?.publicKey, network, isLocked]);
+  }, [activeAccount?.publicKey, network]);
 
   // Poll every 30s for balance updates
   useEffect(() => {
-    if (!activeAccount || isLocked) {
+    if (!activeAccount) {
       if (intervalRef.current) {
         clearInterval(intervalRef.current);
         intervalRef.current = null;
@@ -57,7 +56,7 @@ export function useWalletData() {
         intervalRef.current = null;
       }
     };
-  }, [activeAccount?.publicKey, isLocked]);
+  }, [activeAccount?.publicKey]);
 
   return {
     tokens,

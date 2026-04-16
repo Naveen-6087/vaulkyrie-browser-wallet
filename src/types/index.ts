@@ -31,6 +31,12 @@ export interface Transaction {
   fee?: number;
 }
 
+export interface Contact {
+  name: string;
+  address: string;
+  addedAt: number;
+}
+
 export interface VaultState {
   address: string;
   threshold: number;
@@ -53,4 +59,5 @@ export type WalletView =
   | "vault-config"
   | "dkg-ceremony"
   | "join-ceremony"
+  | "contacts"
   | "lock";

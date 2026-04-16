@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ArrowUpRight, AlertCircle, Loader2, Check, ExternalLink } from "lucide-react";
+import { ArrowUpRight, AlertCircle, Loader2, Check, ExternalLink, Users } from "lucide-react";
 import { PublicKey, SystemProgram, Transaction, LAMPORTS_PER_SOL } from "@solana/web3.js";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -7,6 +7,8 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { signLocal, hexToBytes } from "@/services/frost/frostService";
 import { useWalletStore } from "@/store/walletStore";
 import { createConnection } from "@/services/solanaRpc";
+import { buildSplTransferTransaction } from "@/services/splToken";
+import { shortenAddress } from "@/lib/utils";
 import type { WalletView } from "@/types";
 
 interface SendViewProps {
@@ -23,15 +25,29 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
   const [phase, setPhase] = useState<SendPhase>("form");
   const [signingMessage, setSigningMessage] = useState("");
   const [txSignature, setTxSignature] = useState("");
-  const { activeAccount, network } = useWalletStore();
+  const [selectedToken, setSelectedToken] = useState("SOL");
+  const [showContacts, setShowContacts] = useState(false);
+  const { activeAccount, network, tokens, contacts } = useWalletStore();
 
-  const solBalance = balance;
+  const selectedTokenInfo = selectedToken === "SOL"
+    ? { symbol: "SOL", balance: balance, decimals: 9, mint: undefined }
+    : tokens.find((t) => t.symbol === selectedToken) ?? { symbol: selectedToken, balance: 0, decimals: 9, mint: undefined };
+  const tokenBalance = selectedTokenInfo.balance;
   const parsedAmount = parseFloat(amount) || 0;
   const isValid =
-    recipient.length >= 32 && parsedAmount > 0 && parsedAmount <= solBalance;
+    recipient.length >= 32 && parsedAmount > 0 && parsedAmount <= tokenBalance;
+
+  const matchingContacts = contacts.filter(
+    (c) =>
+      recipient.length > 0 &&
+      (c.name.toLowerCase().includes(recipient.toLowerCase()) ||
+        c.address.toLowerCase().startsWith(recipient.toLowerCase()))
+  );
 
   const handleMax = () => {
-    const maxSend = Math.max(0, solBalance - 0.005);
+    const maxSend = selectedToken === "SOL"
+      ? Math.max(0, tokenBalance - 0.005)
+      : tokenBalance;
     setAmount(maxSend.toFixed(4));
   };
 
@@ -86,13 +102,28 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
       const fromPubkey = new PublicKey(activeAccount!.publicKey);
       const toPubkey = new PublicKey(recipient);
 
-      const tx = new Transaction().add(
-        SystemProgram.transfer({
+      let tx: Transaction;
+
+      if (selectedToken === "SOL") {
+        tx = new Transaction().add(
+          SystemProgram.transfer({
+            fromPubkey,
+            toPubkey,
+            lamports: Math.floor(parsedAmount * LAMPORTS_PER_SOL),
+          }),
+        );
+      } else {
+        const tokenInfo = tokens.find((t) => t.symbol === selectedToken);
+        if (!tokenInfo?.mint) throw new Error("Token mint not found");
+        tx = await buildSplTransferTransaction(
+          connection,
           fromPubkey,
           toPubkey,
-          lamports: Math.floor(parsedAmount * LAMPORTS_PER_SOL),
-        }),
-      );
+          new PublicKey(tokenInfo.mint),
+          parsedAmount,
+          tokenInfo.decimals ?? 9,
+        );
+      }
 
       const { blockhash } = await connection.getLatestBlockhash();
       tx.recentBlockhash = blockhash;
@@ -172,7 +203,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
         </div>
         <h3 className="text-base font-semibold">Transaction Sent!</h3>
         <p className="text-xs text-muted-foreground text-center">
-          {parsedAmount} SOL sent to {recipient.substring(0, 8)}...
+          {parsedAmount} {selectedToken} sent to {recipient.substring(0, 8)}...
         </p>
         {txSignature && (
           <a
@@ -232,7 +263,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
           <CardContent className="pt-4 space-y-3">
             <div className="flex justify-between">
               <span className="text-xs text-muted-foreground">Amount</span>
-              <span className="text-sm font-bold">{parsedAmount} SOL</span>
+              <span className="text-sm font-bold">{parsedAmount} {selectedToken}</span>
             </div>
             <div className="flex justify-between">
               <span className="text-xs text-muted-foreground">To</span>
@@ -244,7 +275,11 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
             </div>
             <div className="border-t border-border pt-2 flex justify-between">
               <span className="text-xs font-medium">Total</span>
-              <span className="text-sm font-bold">{(parsedAmount + 0.000005).toFixed(6)} SOL</span>
+              <span className="text-sm font-bold">
+                {selectedToken === "SOL"
+                  ? `${(parsedAmount + 0.000005).toFixed(6)} SOL`
+                  : `${parsedAmount} ${selectedToken} + ~0.000005 SOL`}
+              </span>
             </div>
           </CardContent>
         </Card>
@@ -274,23 +309,80 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
         >
           ← Back
         </button>
-        <h2 className="text-lg font-semibold flex-1 text-center mr-8">Send SOL</h2>
+        <h2 className="text-lg font-semibold flex-1 text-center mr-8">Send {selectedToken}</h2>
       </div>
+
+      {/* Token selector */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm">Token</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <select
+            value={selectedToken}
+            onChange={(e) => { setSelectedToken(e.target.value); setAmount(""); }}
+            className="w-full py-2 px-3 rounded-lg bg-background border border-border text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
+          >
+            <option value="SOL">SOL — {balance.toFixed(4)}</option>
+            {tokens
+              .filter((t) => t.symbol !== "SOL" && t.balance > 0)
+              .map((t) => (
+                <option key={t.mint ?? t.symbol} value={t.symbol}>
+                  {t.symbol} — {t.balance.toFixed(4)}
+                </option>
+              ))}
+          </select>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-sm">Recipient</CardTitle>
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-sm">Recipient</CardTitle>
+            {contacts.length > 0 && (
+              <button
+                onClick={() => setShowContacts(!showContacts)}
+                className="text-xs text-primary hover:text-primary/80 font-medium cursor-pointer flex items-center gap-1"
+              >
+                <Users className="h-3 w-3" />
+                Contacts
+              </button>
+            )}
+          </div>
         </CardHeader>
         <CardContent>
           <Input
-            placeholder="Solana address (base58)"
+            placeholder="Solana address or contact name"
             value={recipient}
             onChange={(e) => {
               setRecipient(e.target.value);
               setError("");
+              setShowContacts(false);
             }}
             className="font-mono text-xs"
           />
+          {/* Contact suggestions */}
+          {(showContacts || matchingContacts.length > 0) && (
+            <div className="mt-2 border border-border rounded-lg overflow-hidden">
+              {(showContacts ? contacts : matchingContacts).slice(0, 5).map((c) => (
+                <button
+                  key={c.address}
+                  onClick={() => { setRecipient(c.address); setShowContacts(false); }}
+                  className="flex items-center gap-2 w-full px-3 py-2 hover:bg-accent/50 transition-colors text-left cursor-pointer"
+                >
+                  <div className="h-6 w-6 rounded-full bg-primary/15 flex items-center justify-center shrink-0">
+                    <span className="text-[10px] font-bold text-primary">
+                      {c.name.charAt(0).toUpperCase()}
+                    </span>
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-xs font-medium">{c.name}</p>
+                    <p className="text-[10px] text-muted-foreground font-mono">{shortenAddress(c.address, 6)}</p>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -321,11 +413,11 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
               min="0"
             />
             <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground font-medium">
-              SOL
+              {selectedToken}
             </span>
           </div>
           <p className="text-xs text-muted-foreground mt-2">
-            Available: {solBalance.toFixed(4)} SOL
+            Available: {tokenBalance.toFixed(4)} {selectedToken}
           </p>
         </CardContent>
       </Card>

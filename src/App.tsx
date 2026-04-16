@@ -8,6 +8,7 @@ import { QuantumVault } from "@/pages/QuantumVault";
 import { SendView } from "@/components/wallet/SendView";
 import { ReceiveView } from "@/components/wallet/ReceiveView";
 import { ActivityList } from "@/components/wallet/ActivityList";
+import { AddressBook } from "@/components/wallet/AddressBook";
 import { SettingsView } from "@/components/settings/SettingsView";
 import { OnboardingWelcome } from "@/components/onboarding/OnboardingWelcome";
 import { VaultConfigStep } from "@/components/onboarding/VaultConfigStep";
@@ -219,6 +220,9 @@ function App() {
             onNavigate={setView}
           />
         );
+
+      case "contacts":
+        return <AddressBook />;
 
       default:
         return <Dashboard onNavigate={setView} />;

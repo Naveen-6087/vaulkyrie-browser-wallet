@@ -27,11 +27,21 @@ interface VaultConfigPersist {
   totalParticipants: number;
 }
 
+interface Contact {
+  name: string;
+  address: string;
+  addedAt: number;
+}
+
 interface WalletState {
   // Auth
   isLocked: boolean;
   isOnboarded: boolean;
   hasHydrated: boolean;
+
+  // Password (PBKDF2 hash + salt, hex-encoded)
+  passwordHash: string | null;
+  passwordSalt: string | null;
 
   // Active account
   activeAccount: WalletAccount | null;
@@ -42,6 +52,12 @@ interface WalletState {
 
   // Vault configs (keyed by publicKey)
   vaultConfigs: Record<string, VaultConfigPersist>;
+
+  // Address book
+  contacts: Contact[];
+
+  // XMSS tree state (serialized per vault, keyed by publicKey)
+  xmssTrees: Record<string, string>;
 
   // Tokens & transactions (real data from RPC)
   tokens: Token[];
@@ -78,10 +94,23 @@ interface WalletState {
   // Hydration
   setHasHydrated: (hydrated: boolean) => void;
 
+  // Password management
+  setPasswordHash: (hash: string, salt: string) => void;
+  hasPassword: () => boolean;
+
   // DKG key management
   storeDkgResult: (publicKey: string, result: StoredDkgResult) => void;
   getDkgResult: (publicKey: string) => StoredDkgResult | null;
   storeVaultConfig: (publicKey: string, config: VaultConfigPersist) => void;
+
+  // Address book
+  addContact: (contact: Omit<Contact, "addedAt">) => void;
+  removeContact: (address: string) => void;
+  getContacts: () => Contact[];
+
+  // XMSS tree persistence
+  storeXmssTree: (publicKey: string, serialized: string) => void;
+  getXmssTree: (publicKey: string) => string | null;
 
   // Async actions — real Solana RPC calls
   refreshBalances: () => Promise<void>;
@@ -96,10 +125,14 @@ export const useWalletStore = create<WalletState>()(
       isLocked: true,
       isOnboarded: false,
       hasHydrated: false,
+      passwordHash: null,
+      passwordSalt: null,
       activeAccount: null,
       accounts: [],
       dkgResults: {},
       vaultConfigs: {},
+      contacts: [],
+      xmssTrees: {},
       tokens: [],
       transactions: [],
       vaultState: null,
@@ -162,6 +195,34 @@ export const useWalletStore = create<WalletState>()(
         set((state) => ({
           vaultConfigs: { ...state.vaultConfigs, [publicKey]: config },
         })),
+
+      // Password management
+      setPasswordHash: (hash, salt) =>
+        set({ passwordHash: hash, passwordSalt: salt }),
+      hasPassword: () => {
+        return get().passwordHash !== null;
+      },
+
+      // Address book
+      addContact: (contact) =>
+        set((state) => ({
+          contacts: [
+            ...state.contacts.filter((c) => c.address !== contact.address),
+            { ...contact, addedAt: Date.now() },
+          ],
+        })),
+      removeContact: (address) =>
+        set((state) => ({
+          contacts: state.contacts.filter((c) => c.address !== address),
+        })),
+      getContacts: () => get().contacts,
+
+      // XMSS tree persistence
+      storeXmssTree: (publicKey, serialized) =>
+        set((state) => ({
+          xmssTrees: { ...state.xmssTrees, [publicKey]: serialized },
+        })),
+      getXmssTree: (publicKey) => get().xmssTrees[publicKey] ?? null,
 
       refreshBalances: async () => {
         const { activeAccount, network } = get();
@@ -271,6 +332,10 @@ export const useWalletStore = create<WalletState>()(
         network: state.network,
         dkgResults: state.dkgResults,
         vaultConfigs: state.vaultConfigs,
+        passwordHash: state.passwordHash,
+        passwordSalt: state.passwordSalt,
+        contacts: state.contacts,
+        xmssTrees: state.xmssTrees,
       }),
       onRehydrateStorage: (state) => {
         return () => {

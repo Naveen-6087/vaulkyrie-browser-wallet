@@ -1,6 +1,7 @@
-import { ArrowUpRight, ArrowDownLeft, Repeat, ImageIcon } from "lucide-react";
+import { ArrowUpRight, ArrowDownLeft, Repeat, ImageIcon, ExternalLink } from "lucide-react";
 import type { Transaction } from "@/types";
 import { shortenAddress, formatSol } from "@/lib/utils";
+import { useWalletStore } from "@/store/walletStore";
 
 interface ActivityListProps {
   transactions: Transaction[];
@@ -25,6 +26,8 @@ function timeAgo(timestamp: number): string {
 }
 
 export function ActivityList({ transactions }: ActivityListProps) {
+  const { network } = useWalletStore();
+
   if (transactions.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-12 text-center">
@@ -39,6 +42,8 @@ export function ActivityList({ transactions }: ActivityListProps) {
     );
   }
 
+  const explorerBase = `https://explorer.solana.com/tx`;
+
   return (
     <div className="space-y-1">
       <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider px-1 mb-2">
@@ -48,17 +53,24 @@ export function ActivityList({ transactions }: ActivityListProps) {
         const config = typeConfig[tx.type];
         const Icon = config.icon;
         const isSend = tx.type === "send";
+        const explorerUrl = `${explorerBase}/${tx.signature}?cluster=${network}`;
 
         return (
-          <button
+          <a
             key={tx.signature}
-            className="flex items-center gap-3 w-full p-3 rounded-xl hover:bg-accent/50 transition-colors cursor-pointer"
+            href={explorerUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-3 w-full p-3 rounded-xl hover:bg-accent/50 transition-colors cursor-pointer group"
           >
             <div className="h-8 w-8 rounded-full bg-muted flex items-center justify-center shrink-0">
               <Icon className={`h-4 w-4 ${config.color}`} />
             </div>
             <div className="flex-1 min-w-0 text-left">
-              <p className="text-sm font-medium">{config.label}</p>
+              <div className="flex items-center gap-1">
+                <p className="text-sm font-medium">{config.label}</p>
+                <ExternalLink className="h-3 w-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
+              </div>
               <p className="text-xs text-muted-foreground font-mono">
                 {tx.to
                   ? `${isSend ? "to" : "from"} ${shortenAddress(tx.to)}`
@@ -70,13 +82,13 @@ export function ActivityList({ transactions }: ActivityListProps) {
                 className={`text-sm font-medium font-mono ${isSend ? "text-destructive" : "text-success"}`}
               >
                 {isSend ? "−" : "+"}
-                {formatSol(tx.amount)}
+                {formatSol(tx.amount)} SOL
               </p>
               <p className="text-[10px] text-muted-foreground">
                 {timeAgo(tx.timestamp)}
               </p>
             </div>
-          </button>
+          </a>
         );
       })}
     </div>
