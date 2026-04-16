@@ -1,0 +1,101 @@
+@import "tailwindcss";
+
+/* ── Vaulkyrie brand: Obsidian Teal ── */
+/* Primary: Teal #4ECDC4 · Dark bg with cool-neutral undertones */
+/* Influenced by Chromium (neutral blacks) and Midnight Signal (blue tint) */
+
+@theme {
+  --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+
+  --color-background: oklch(0.14 0.01 240);
+  --color-foreground: oklch(0.93 0.01 240);
+  --color-card: oklch(0.18 0.012 240);
+  --color-card-foreground: oklch(0.93 0.01 240);
+  --color-popover: oklch(0.18 0.012 240);
+  --color-popover-foreground: oklch(0.93 0.01 240);
+  --color-primary: oklch(0.78 0.12 175);
+  --color-primary-foreground: oklch(0.13 0.015 240);
+  --color-secondary: oklch(0.22 0.015 240);
+  --color-secondary-foreground: oklch(0.88 0.01 240);
+  --color-muted: oklch(0.20 0.012 240);
+  --color-muted-foreground: oklch(0.62 0.02 220);
+  --color-accent: oklch(0.22 0.015 240);
+  --color-accent-foreground: oklch(0.88 0.01 240);
+  --color-destructive: oklch(0.65 0.22 25);
+  --color-destructive-foreground: oklch(0.97 0.005 0);
+  --color-border: oklch(0.26 0.02 220);
+  --color-input: oklch(0.18 0.012 240);
+  --color-ring: oklch(0.78 0.12 175);
+
+  --color-success: oklch(0.72 0.16 155);
+  --color-warning: oklch(0.75 0.15 75);
+  --color-info: oklch(0.70 0.12 240);
+}
+
+:root {
+  color-scheme: dark;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  border-color: var(--color-border);
+}
+
+html {
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  font-variant-numeric: tabular-nums;
+}
+
+#root {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Extension popup size */
+html.popup {
+  width: 380px;
+  min-height: 600px;
+}
+
+/* Custom animations */
+@keyframes shimmer {
+  0% { transform: translateX(-200%); }
+  100% { transform: translateX(200%); }
+}
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  20%, 60% { transform: translateX(-6px); }
+  40%, 80% { transform: translateX(6px); }
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-muted-foreground);
+}

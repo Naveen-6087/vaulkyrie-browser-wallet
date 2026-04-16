@@ -1,0 +1,162 @@
+import { Shield, ChevronRight, Globe, Key, Bell, Info, Wallet, Trash2 } from "lucide-react";
+import { useState } from "react";
+import { Card } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { useWalletStore } from "@/store/walletStore";
+import { shortenAddress } from "@/lib/utils";
+import type { NetworkId, WalletView } from "@/types";
+import { NETWORKS } from "@/lib/constants";
+
+interface SettingsViewProps {
+  network: NetworkId;
+  onNavigate: (view: WalletView) => void;
+}
+
+interface SettingRowProps {
+  icon: typeof Shield;
+  label: string;
+  value?: string;
+  badge?: string;
+  onClick?: () => void;
+}
+
+function SettingRow({ icon: Icon, label, value, badge, onClick }: SettingRowProps) {
+  return (
+    <button
+      onClick={onClick}
+      className="flex items-center gap-3 w-full px-4 py-3 hover:bg-accent/50 transition-colors cursor-pointer"
+    >
+      <div className="h-8 w-8 rounded-lg bg-muted flex items-center justify-center shrink-0">
+        <Icon className="h-4 w-4 text-muted-foreground" />
+      </div>
+      <div className="flex-1 text-left">
+        <p className="text-sm font-medium">{label}</p>
+        {value && (
+          <p className="text-xs text-muted-foreground">{value}</p>
+        )}
+      </div>
+      {badge && <Badge variant="outline">{badge}</Badge>}
+      <ChevronRight className="h-4 w-4 text-muted-foreground" />
+    </button>
+  );
+}
+
+export function SettingsView({ network, onNavigate }: SettingsViewProps) {
+  const [showAccounts, setShowAccounts] = useState(false);
+  const { accounts, activeAccount, vaultConfigs, switchVault, removeAccount } = useWalletStore();
+
+  return (
+    <div className="flex flex-col gap-4 p-4 flex-1">
+      <div className="flex items-center gap-2 mb-2">
+        <button
+          onClick={() => onNavigate("dashboard")}
+          className="text-muted-foreground hover:text-foreground transition-colors text-sm cursor-pointer"
+        >
+          ← Back
+        </button>
+        <h2 className="text-lg font-semibold flex-1 text-center mr-8">
+          Settings
+        </h2>
+      </div>
+
+      <Card className="overflow-hidden divide-y divide-border">
+        <SettingRow
+          icon={Globe}
+          label="Network"
+          value={NETWORKS[network].name}
+          badge={network}
+        />
+        <SettingRow
+          icon={Key}
+          label="Accounts"
+          value={`${accounts.length} vault${accounts.length !== 1 ? "s" : ""}`}
+          onClick={() => setShowAccounts(!showAccounts)}
+        />
+        <SettingRow
+          icon={Shield}
+          label="Security"
+          value="Threshold signing · PQ authority"
+          badge="Active"
+        />
+        <SettingRow
+          icon={Bell}
+          label="Notifications"
+          value="Transaction alerts"
+        />
+        <SettingRow
+          icon={Info}
+          label="About Vaulkyrie"
+          value="v0.1.0 · Solana threshold wallet"
+        />
+      </Card>
+
+      {/* Expandable vault list */}
+      {showAccounts && (
+        <Card className="overflow-hidden divide-y divide-border">
+          <div className="px-4 py-2 bg-muted/30">
+            <p className="text-xs font-semibold text-muted-foreground">Your Vaults</p>
+          </div>
+          {accounts.map((acc) => (
+            <div
+              key={acc.publicKey}
+              className="flex items-center gap-3 px-4 py-3"
+            >
+              <Wallet className="h-4 w-4 text-muted-foreground shrink-0" />
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium truncate">
+                  {vaultConfigs[acc.publicKey]?.vaultName ?? acc.name}
+                </p>
+                <p className="text-xs text-muted-foreground font-mono">
+                  {shortenAddress(acc.publicKey)}
+                </p>
+                {vaultConfigs[acc.publicKey] && (
+                  <p className="text-[10px] text-muted-foreground">
+                    {vaultConfigs[acc.publicKey].threshold}-of-{vaultConfigs[acc.publicKey].totalParticipants} threshold
+                  </p>
+                )}
+              </div>
+              {acc.publicKey === activeAccount?.publicKey ? (
+                <Badge variant="outline" className="text-[10px]">Active</Badge>
+              ) : (
+                <div className="flex gap-1">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 text-xs"
+                    onClick={() => switchVault(acc.publicKey)}
+                  >
+                    Switch
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 text-xs text-destructive hover:text-destructive"
+                    onClick={() => {
+                      if (accounts.length > 1) removeAccount(acc.publicKey);
+                    }}
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </Button>
+                </div>
+              )}
+            </div>
+          ))}
+          <div className="px-4 py-2">
+            <Button
+              variant="outline"
+              className="w-full text-xs"
+              onClick={() => onNavigate("vault-config")}
+            >
+              + Create new vault
+            </Button>
+          </div>
+        </Card>
+      )}
+
+      <p className="text-[10px] text-muted-foreground text-center mt-auto">
+        Vaulkyrie — Threshold security for Solana
+      </p>
+    </div>
+  );
+}
