@@ -136,6 +136,7 @@ function parseTransaction(
   let amount = 0;
   let to: string | undefined;
   let from: string | undefined;
+  let token: string | undefined;
 
   if (tx?.meta) {
     const { preBalances, postBalances } = tx.meta;
@@ -144,8 +145,24 @@ function parseTransaction(
       (ak) => ak.pubkey.toBase58() === walletStr
     );
 
-    if (walletIdx >= 0 && preBalances && postBalances) {
+    // Check for SPL token transfers first
+    const splTransfer = parseSplTokenTransfer(tx, walletStr);
+    if (splTransfer) {
+      type = splTransfer.type;
+      amount = splTransfer.amount;
+      to = splTransfer.to;
+      from = splTransfer.from;
+      token = splTransfer.token;
+    } else if (walletIdx >= 0 && preBalances && postBalances) {
+      // Native SOL transfer
       const diff = postBalances[walletIdx] - preBalances[walletIdx];
+      const fee = tx.meta.fee ?? 0;
+      // If SOL change is just the fee, it's likely a token/program tx, not a SOL transfer
+      if (Math.abs(diff + fee) < 1000) {
+        // SOL only decreased by fee — skip as this is not a meaningful SOL transfer
+        return null;
+      }
+
       if (diff > 0) {
         type = "receive";
         amount = diff;
@@ -155,16 +172,22 @@ function parseTransaction(
             : undefined;
       } else {
         type = "send";
-        amount = Math.abs(diff);
+        // Subtract fee from the amount so we show the actual SOL transferred
+        amount = Math.abs(diff) - fee;
+        if (amount <= 0) return null;
         to = accounts.length > 1 ? accounts[1].pubkey.toBase58() : undefined;
       }
+      token = "SOL";
     }
   }
+
+  if (amount <= 0 && !token) return null;
 
   return {
     signature: sig.signature,
     type,
     amount,
+    token,
     to,
     from,
     timestamp: (sig.blockTime ?? 0) * 1000,
@@ -175,6 +198,100 @@ function parseTransaction(
         : "pending",
     fee: tx?.meta?.fee,
   };
+}
+
+/** Parse SPL token transfer details from a transaction */
+function parseSplTokenTransfer(
+  tx: ParsedTransactionWithMeta,
+  walletStr: string
+): { type: "send" | "receive"; amount: number; to?: string; from?: string; token: string } | null {
+  if (!tx.meta?.innerInstructions && !tx.transaction.message.instructions) return null;
+
+  const TOKEN_PROGRAM = "TokenkegQceLL7JStPeAt6xBreCXoBy6gJgp7DW7nk";
+  const TOKEN_2022 = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
+
+  // Look through parsed instructions for transfer/transferChecked
+  for (const ix of tx.transaction.message.instructions) {
+    if (!("parsed" in ix)) continue;
+    const parsed = ix as { program: string; programId: { toBase58(): string }; parsed: { type: string; info: Record<string, unknown> } };
+    const programId = parsed.programId.toBase58();
+
+    if (programId !== TOKEN_PROGRAM && programId !== TOKEN_2022) continue;
+    if (parsed.parsed.type !== "transfer" && parsed.parsed.type !== "transferChecked") continue;
+
+    const info = parsed.parsed.info;
+    const authority = info.authority as string | undefined;
+    const source = info.source as string | undefined;
+    const destination = info.destination as string | undefined;
+
+    let transferAmount = 0;
+    if (parsed.parsed.type === "transferChecked") {
+      const tokenAmount = info.tokenAmount as { uiAmount?: number; amount?: string } | undefined;
+      transferAmount = tokenAmount?.uiAmount ?? 0;
+    } else {
+      transferAmount = Number(info.amount ?? 0);
+    }
+
+    // Determine if we sent or received
+    const isSender = authority === walletStr || source === walletStr;
+
+    // Try to find token mint from pre/post token balances
+    let tokenSymbol = "SPL";
+    if (tx.meta?.preTokenBalances) {
+      for (const tb of tx.meta.preTokenBalances) {
+        if (tb.owner === walletStr || tb.mint) {
+          tokenSymbol = tb.mint?.slice(0, 6) ?? "SPL";
+          break;
+        }
+      }
+    }
+
+    return {
+      type: isSender ? "send" : "receive",
+      amount: transferAmount,
+      to: isSender ? (destination ?? undefined) : undefined,
+      from: isSender ? undefined : (source ?? undefined),
+      token: tokenSymbol,
+    };
+  }
+
+  // Also check inner instructions for SPL transfers
+  if (tx.meta?.innerInstructions) {
+    for (const inner of tx.meta.innerInstructions) {
+      for (const ix of inner.instructions) {
+        if (!("parsed" in ix)) continue;
+        const parsed = ix as { program: string; programId: { toBase58(): string }; parsed: { type: string; info: Record<string, unknown> } };
+        const programId = parsed.programId.toBase58();
+        if (programId !== TOKEN_PROGRAM && programId !== TOKEN_2022) continue;
+        if (parsed.parsed.type !== "transfer" && parsed.parsed.type !== "transferChecked") continue;
+
+        const info = parsed.parsed.info;
+        const authority = info.authority as string | undefined;
+        const source = info.source as string | undefined;
+        const destination = info.destination as string | undefined;
+
+        let transferAmount = 0;
+        if (parsed.parsed.type === "transferChecked") {
+          const tokenAmount = info.tokenAmount as { uiAmount?: number } | undefined;
+          transferAmount = tokenAmount?.uiAmount ?? 0;
+        } else {
+          transferAmount = Number(info.amount ?? 0);
+        }
+
+        const isSender = authority === walletStr || source === walletStr;
+
+        return {
+          type: isSender ? "send" : "receive",
+          amount: transferAmount,
+          to: isSender ? (destination ?? undefined) : undefined,
+          from: isSender ? undefined : (source ?? undefined),
+          token: "SPL",
+        };
+      }
+    }
+  }
+
+  return null;
 }
 
 /**

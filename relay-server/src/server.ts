@@ -103,8 +103,16 @@ wss.on("connection", (ws) => {
           return;
         }
 
-        const code = generateCode();
-        const sessionPayload = msg.payload as { threshold?: number; maxParticipants?: number; deviceName?: string } | null;
+        const sessionPayload = msg.payload as { threshold?: number; maxParticipants?: number; deviceName?: string; requestedCode?: string } | null;
+
+        // Accept client-specified code if available and not already in use
+        let code: string;
+        if (sessionPayload?.requestedCode && /^[A-Z0-9]{6}$/.test(sessionPayload.requestedCode) && !sessions.has(sessionPayload.requestedCode)) {
+          code = sessionPayload.requestedCode;
+        } else {
+          code = generateCode();
+        }
+
         const session: Session = {
           code,
           createdAt: Date.now(),
@@ -114,9 +122,10 @@ wss.on("connection", (ws) => {
           members: new Map(),
         };
 
+        // Coordinator is always participant 1
         session.members.set(msg.senderId, {
           ws,
-          participantId: msg.participantId,
+          participantId: 1,
           deviceName: (sessionPayload?.deviceName as string) ?? "Unknown",
         });
 
@@ -164,16 +173,19 @@ wss.on("connection", (ws) => {
           return;
         }
 
+        // Assign the next available participant ID (coordinator is 1)
+        const assignedParticipantId = session.members.size + 1;
+
         session.members.set(msg.senderId, {
           ws,
-          participantId: msg.participantId,
+          participantId: assignedParticipantId,
           deviceName: joinPayload?.deviceName ?? "Unknown",
         });
         session.lastActivity = Date.now();
         currentSessionCode = code;
         currentSenderId = msg.senderId;
 
-        // Send join-ack to the joiner with current participant list
+        // Send join-ack to the joiner with assigned ID and current participant list
         const participantList = Array.from(session.members.entries()).map(([id, m]) => ({
           senderId: id,
           participantId: m.participantId,
@@ -187,7 +199,7 @@ wss.on("connection", (ws) => {
           participantId: 0,
           timestamp: Date.now(),
           payload: {
-            participantId: msg.participantId,
+            participantId: assignedParticipantId,
             participants: participantList,
             threshold: session.threshold,
             maxParticipants: session.maxParticipants,
@@ -199,11 +211,11 @@ wss.on("connection", (ws) => {
           type: "participant-joined",
           sessionId: code,
           senderId: msg.senderId,
-          participantId: msg.participantId,
+          participantId: assignedParticipantId,
           timestamp: Date.now(),
           payload: {
             senderId: msg.senderId,
-            participantId: msg.participantId,
+            participantId: assignedParticipantId,
             deviceName: joinPayload?.deviceName ?? "Unknown",
           },
         });
@@ -234,6 +246,12 @@ wss.on("connection", (ws) => {
           currentSessionCode = null;
           currentSenderId = null;
         }
+        break;
+      }
+
+      // Heartbeat — always respond, even without a session
+      case "Ping": {
+        ws.send(JSON.stringify({ type: "Pong", sessionId: currentSessionCode ?? "", senderId: "server", participantId: 0, timestamp: Date.now(), payload: null }));
         break;
       }
 

@@ -82,7 +82,7 @@ export function ActivityList({ transactions }: ActivityListProps) {
                 className={`text-sm font-medium font-mono ${isSend ? "text-destructive" : "text-success"}`}
               >
                 {isSend ? "−" : "+"}
-                {formatSol(tx.amount)} SOL
+                {tx.token === "SOL" || !tx.token ? formatSol(tx.amount) : tx.amount} {tx.token ?? "SOL"}
               </p>
               <p className="text-[10px] text-muted-foreground">
                 {timeAgo(tx.timestamp)}

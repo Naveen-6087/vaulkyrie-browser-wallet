@@ -76,22 +76,16 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
     try {
       const relay = createRelay({
         mode,
-        participantId: 0, // will be assigned by the session
+        participantId: 0, // will be assigned by the server
         isCoordinator: false,
         deviceName: navigator.userAgent.includes("Mobile") ? "Mobile Device" : "Browser",
         deviceType: navigator.userAgent.includes("Mobile") ? "mobile" : "browser",
         relayUrl: DEFAULT_RELAY_URL,
         sessionId: code,
         events: {
-          onParticipantJoined: (p) => {
-            // When we receive our own participant assignment
-            if (p.participantId > 0 && participantId === 0) {
-              setParticipantId(p.participantId);
-            }
-          },
+          onParticipantJoined: () => { /* other participants joining — no action needed */ },
           onStartDkg: (threshold: number, participants: number) => {
             setDkgParams({ threshold, participants });
-            // The DKG will be started automatically when params arrive
           },
           onDkgRound1: (fromId: number, pkg: number[]) => {
             orchestratorRef.current?.handleDkgRound1(fromId, pkg);
@@ -117,6 +111,9 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
             setErrorMessage("Connection to relay server failed");
           }
         },
+        onParticipantIdAssigned: (id: number) => {
+          setParticipantId(id);
+        },
       });
 
       relayRef.current = relay;
@@ -133,7 +130,7 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
       setPhase("error");
       setErrorMessage("Failed to connect to ceremony session");
     }
-  }, [isValidCode, sessionCode, relayMode, participantId]);
+  }, [isValidCode, sessionCode, relayMode]);
 
   // Start DKG when params arrive from coordinator
   useEffect(() => {

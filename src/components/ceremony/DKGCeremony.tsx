@@ -69,8 +69,8 @@ async function isRelayAvailable(url: string): Promise<boolean> {
 
 export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
   const [phase, setPhase] = useState<CeremonyPhase>("pairing");
-  const [sessionCode] = useState(generateSessionCode);
-  const [qrPayload] = useState(() =>
+  const [sessionCode, setSessionCode] = useState(generateSessionCode);
+  const [qrPayload, setQrPayload] = useState(() =>
     buildQrPayload(sessionCode, config.threshold, config.totalParticipants),
   );
   const [devices, setDevices] = useState<DeviceInfo[]>([
@@ -146,6 +146,9 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
         onConnectionStateChange: setConnectionState,
         onSessionCreated: (code: string) => {
           console.log("[DKGCeremony] Session created:", code);
+          // Update UI if server assigned a different code
+          setSessionCode(code);
+          setQrPayload(buildQrPayload(code, config.threshold, config.totalParticipants));
         },
       });
 
@@ -153,7 +156,7 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
       relay.connect();
 
       if (mode === "remote") {
-        relay.createSession(config.threshold, config.totalParticipants);
+        relay.createSession(config.threshold, config.totalParticipants, sessionCode);
       }
     })();
 

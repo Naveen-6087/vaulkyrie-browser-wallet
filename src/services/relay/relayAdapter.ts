@@ -29,7 +29,7 @@ export interface RelayAdapter {
   getConnectionState(): ConnectionState;
 
   // Session management (remote only)
-  createSession(threshold: number, maxParticipants: number): void;
+  createSession(threshold: number, maxParticipants: number, requestedCode?: string): void;
   joinSession(code: string): void;
 
   // DKG broadcasting
@@ -102,7 +102,7 @@ class LocalRelayAdapter implements RelayAdapter {
 
 class RemoteRelayAdapter implements RelayAdapter {
   readonly mode: RelayMode = "remote";
-  readonly participantId: number;
+  get participantId() { return this.relay.participantId; }
   readonly isCoordinator: boolean;
 
   private relay: WebSocketRelay;
@@ -120,7 +120,7 @@ class RemoteRelayAdapter implements RelayAdapter {
   getSessionCode() { return this.relay.getSessionCode(); }
   getConnectionState() { return this.relay.getConnectionState(); }
 
-  createSession(threshold: number, maxParticipants: number) { this.relay.createSession(threshold, maxParticipants); }
+  createSession(threshold: number, maxParticipants: number, requestedCode?: string) { this.relay.createSession(threshold, maxParticipants, requestedCode); }
   joinSession(code: string) { this.relay.joinSession(code); }
 
   broadcastDkgRound1(pkg: number[]) { this.relay.broadcastDkgRound1(pkg); }
@@ -152,6 +152,7 @@ export interface CreateRelayOptions {
   relayUrl?: string;
   onConnectionStateChange?: (state: ConnectionState) => void;
   onSessionCreated?: (code: string) => void;
+  onParticipantIdAssigned?: (id: number) => void;
 }
 
 export function createRelay(opts: CreateRelayOptions): RelayAdapter {
@@ -174,6 +175,7 @@ export function createRelay(opts: CreateRelayOptions): RelayAdapter {
     events: opts.events,
     onConnectionStateChange: opts.onConnectionStateChange,
     onSessionCreated: opts.onSessionCreated,
+    onParticipantIdAssigned: opts.onParticipantIdAssigned,
   });
 }
 

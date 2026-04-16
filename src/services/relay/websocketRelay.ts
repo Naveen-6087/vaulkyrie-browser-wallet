@@ -49,6 +49,7 @@ export interface WebSocketRelayOptions {
   events: RelayEvents;
   onConnectionStateChange?: (state: ConnectionState) => void;
   onSessionCreated?: (code: string) => void;
+  onParticipantIdAssigned?: (id: number) => void;
 }
 
 // ── WebSocketRelay class ─────────────────────────────────────────────
@@ -59,13 +60,15 @@ export class WebSocketRelay {
   private reconnectAttempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private intentionallyClosed = false;
+  private pendingMessages: Array<{ type: string; payload: unknown }> = [];
+  private sessionReady = false;
 
   private connectionState: ConnectionState = "disconnected";
   private sessionCode: string | null = null;
 
   readonly relayUrl: string;
   readonly senderId: string;
-  readonly participantId: number;
+  participantId: number;
   readonly isCoordinator: boolean;
   readonly deviceName: string;
   readonly deviceType: "browser" | "mobile" | "desktop";
@@ -74,6 +77,7 @@ export class WebSocketRelay {
   private events: RelayEvents;
   private onConnectionStateChange?: (state: ConnectionState) => void;
   private onSessionCreated?: (code: string) => void;
+  private onParticipantIdAssigned?: (id: number) => void;
 
   constructor(opts: WebSocketRelayOptions) {
     this.relayUrl = opts.relayUrl ?? DEFAULT_RELAY_URL;
@@ -85,6 +89,7 @@ export class WebSocketRelay {
     this.events = opts.events;
     this.onConnectionStateChange = opts.onConnectionStateChange;
     this.onSessionCreated = opts.onSessionCreated;
+    this.onParticipantIdAssigned = opts.onParticipantIdAssigned;
 
     // Add self to participants
     this.participants.set(this.senderId, {
@@ -117,7 +122,8 @@ export class WebSocketRelay {
     this.ws.onopen = () => {
       this.setConnectionState("connected");
       this.reconnectAttempts = 0;
-      this.startHeartbeat();
+      // Flush any messages queued before connection opened
+      this.flushPendingMessages();
     };
 
     this.ws.onmessage = (event) => {
@@ -164,14 +170,15 @@ export class WebSocketRelay {
     this.setConnectionState("disconnected");
   }
 
-  /** Create a new session (coordinator only) */
-  createSession(threshold: number, maxParticipants: number): void {
-    this.send({
+  /** Create a new session (coordinator only). Sends the desired session code to the server. */
+  createSession(threshold: number, maxParticipants: number, requestedCode?: string): void {
+    this.sendOrQueue({
       type: "create-session",
       payload: {
         threshold,
         maxParticipants,
         deviceName: this.deviceName,
+        requestedCode: requestedCode ?? this.sessionCode,
       },
     });
   }
@@ -179,7 +186,7 @@ export class WebSocketRelay {
   /** Join an existing session by code */
   joinSession(code: string): void {
     this.sessionCode = code;
-    this.send({
+    this.sendOrQueue({
       type: "join",
       payload: {
         code,
@@ -245,6 +252,23 @@ export class WebSocketRelay {
 
   // ── Internal ──────────────────────────────────────────────────────
 
+  /** Queue a message to send when connected, or send immediately */
+  private sendOrQueue(partial: { type: string; payload: unknown }): void {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.send(partial);
+    } else {
+      this.pendingMessages.push(partial);
+    }
+  }
+
+  /** Flush queued messages after connection opens */
+  private flushPendingMessages(): void {
+    const queued = this.pendingMessages.splice(0);
+    for (const msg of queued) {
+      this.send(msg);
+    }
+  }
+
   private send(partial: { type: string; payload: unknown }): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       console.warn("[ws-relay] Cannot send — not connected");
@@ -269,6 +293,8 @@ export class WebSocketRelay {
       case "session-created": {
         const sp = msg.payload as { code: string; threshold: number; maxParticipants: number };
         this.sessionCode = sp.code;
+        this.sessionReady = true;
+        this.startHeartbeat();
         this.onSessionCreated?.(sp.code);
         return;
       }
@@ -280,6 +306,16 @@ export class WebSocketRelay {
           threshold: number;
           maxParticipants: number;
         };
+        // Update our own participant ID from server assignment
+        if (jp.participantId > 0) {
+          this.participantId = jp.participantId;
+          // Update our own entry in participants map
+          const self = this.participants.get(this.senderId);
+          if (self) self.participantId = jp.participantId;
+          this.onParticipantIdAssigned?.(jp.participantId);
+        }
+        this.sessionReady = true;
+        this.startHeartbeat();
         // Populate participant list from server state
         for (const p of jp.participants) {
           if (p.senderId !== this.senderId && !this.participants.has(p.senderId)) {
