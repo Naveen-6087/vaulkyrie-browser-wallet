@@ -224,26 +224,31 @@ function parseSplTokenTransfer(
     const source = info.source as string | undefined;
     const destination = info.destination as string | undefined;
 
+    // Determine if we sent or received
+    const isSender = authority === walletStr || source === walletStr;
+
+    // Find token mint and decimals from pre/post token balances
+    let tokenSymbol = "SPL";
+    let tokenDecimals = 0;
+    if (tx.meta?.preTokenBalances) {
+      for (const tb of tx.meta.preTokenBalances) {
+        if (tb.owner === walletStr || tb.mint) {
+          const known = tb.mint ? KNOWN_MINTS[tb.mint] : undefined;
+          tokenSymbol = known?.symbol ?? tb.mint?.slice(0, 6) ?? "SPL";
+          tokenDecimals = tb.uiTokenAmount?.decimals ?? known?.decimals ?? 0;
+          break;
+        }
+      }
+    }
+
     let transferAmount = 0;
     if (parsed.parsed.type === "transferChecked") {
       const tokenAmount = info.tokenAmount as { uiAmount?: number; amount?: string } | undefined;
       transferAmount = tokenAmount?.uiAmount ?? 0;
     } else {
-      transferAmount = Number(info.amount ?? 0);
-    }
-
-    // Determine if we sent or received
-    const isSender = authority === walletStr || source === walletStr;
-
-    // Try to find token mint from pre/post token balances
-    let tokenSymbol = "SPL";
-    if (tx.meta?.preTokenBalances) {
-      for (const tb of tx.meta.preTokenBalances) {
-        if (tb.owner === walletStr || tb.mint) {
-          tokenSymbol = tb.mint?.slice(0, 6) ?? "SPL";
-          break;
-        }
-      }
+      // Regular transfer: amount is in raw units, convert to UI amount
+      const rawAmount = Number(info.amount ?? 0);
+      transferAmount = tokenDecimals > 0 ? rawAmount / 10 ** tokenDecimals : rawAmount;
     }
 
     return {
@@ -270,22 +275,37 @@ function parseSplTokenTransfer(
         const source = info.source as string | undefined;
         const destination = info.destination as string | undefined;
 
+        const isSender = authority === walletStr || source === walletStr;
+
+        // Find token decimals from pre/post token balances
+        let innerTokenSymbol = "SPL";
+        let innerTokenDecimals = 0;
+        if (tx.meta?.preTokenBalances) {
+          for (const tb of tx.meta.preTokenBalances) {
+            if (tb.owner === walletStr || tb.mint) {
+              const known = tb.mint ? KNOWN_MINTS[tb.mint] : undefined;
+              innerTokenSymbol = known?.symbol ?? tb.mint?.slice(0, 6) ?? "SPL";
+              innerTokenDecimals = tb.uiTokenAmount?.decimals ?? known?.decimals ?? 0;
+              break;
+            }
+          }
+        }
+
         let transferAmount = 0;
         if (parsed.parsed.type === "transferChecked") {
           const tokenAmount = info.tokenAmount as { uiAmount?: number } | undefined;
           transferAmount = tokenAmount?.uiAmount ?? 0;
         } else {
-          transferAmount = Number(info.amount ?? 0);
+          const rawAmount = Number(info.amount ?? 0);
+          transferAmount = innerTokenDecimals > 0 ? rawAmount / 10 ** innerTokenDecimals : rawAmount;
         }
-
-        const isSender = authority === walletStr || source === walletStr;
 
         return {
           type: isSender ? "send" : "receive",
           amount: transferAmount,
           to: isSender ? (destination ?? undefined) : undefined,
           from: isSender ? undefined : (source ?? undefined),
-          token: "SPL",
+          token: innerTokenSymbol,
         };
       }
     }

@@ -72,9 +72,11 @@ export function ActivityList({ transactions }: ActivityListProps) {
                 <ExternalLink className="h-3 w-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
               </div>
               <p className="text-xs text-muted-foreground font-mono">
-                {tx.to
-                  ? `${isSend ? "to" : "from"} ${shortenAddress(tx.to)}`
-                  : shortenAddress(tx.signature, 6)}
+                {isSend && tx.to
+                  ? `to ${shortenAddress(tx.to)}`
+                  : !isSend && tx.from
+                    ? `from ${shortenAddress(tx.from)}`
+                    : shortenAddress(tx.signature, 6)}
               </p>
             </div>
             <div className="text-right">

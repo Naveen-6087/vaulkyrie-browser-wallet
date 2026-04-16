@@ -108,7 +108,6 @@ class RemoteRelayAdapter implements RelayAdapter {
   private relay: WebSocketRelay;
 
   constructor(opts: WebSocketRelayOptions) {
-    this.participantId = opts.participantId;
     this.isCoordinator = opts.isCoordinator;
     this.relay = new WebSocketRelay(opts);
   }

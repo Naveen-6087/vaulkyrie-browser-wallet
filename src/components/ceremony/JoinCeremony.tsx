@@ -48,6 +48,14 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
 
   const relayRef = useRef<RelayAdapter | null>(null);
   const orchestratorRef = useRef<DkgOrchestrator | null>(null);
+  const dkgStartedRef = useRef(false);
+
+  // Buffer DKG messages that arrive before orchestrator is ready
+  const pendingDkgMessages = useRef<Array<
+    | { type: "round1"; fromId: number; pkg: number[] }
+    | { type: "round2"; fromId: number; packages: Record<number, number[]> }
+    | { type: "round3"; fromId: number; groupKeyHex: string }
+  >>([]);
 
   const isValidCode = /^[A-Z0-9]{6}$/.test(sessionCode.toUpperCase());
 
@@ -88,13 +96,25 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
             setDkgParams({ threshold, participants });
           },
           onDkgRound1: (fromId: number, pkg: number[]) => {
-            orchestratorRef.current?.handleDkgRound1(fromId, pkg);
+            if (orchestratorRef.current) {
+              orchestratorRef.current.handleDkgRound1(fromId, pkg);
+            } else {
+              pendingDkgMessages.current.push({ type: "round1", fromId, pkg });
+            }
           },
           onDkgRound2: (fromId: number, packages: Record<number, number[]>) => {
-            orchestratorRef.current?.handleDkgRound2(fromId, packages);
+            if (orchestratorRef.current) {
+              orchestratorRef.current.handleDkgRound2(fromId, packages);
+            } else {
+              pendingDkgMessages.current.push({ type: "round2", fromId, packages });
+            }
           },
           onDkgRound3Done: (fromId: number, groupKeyHex: string) => {
-            orchestratorRef.current?.handleDkgRound3Done(fromId, groupKeyHex);
+            if (orchestratorRef.current) {
+              orchestratorRef.current.handleDkgRound3Done(fromId, groupKeyHex);
+            } else {
+              pendingDkgMessages.current.push({ type: "round3", fromId, groupKeyHex });
+            }
           },
           onError: (_fromId: number, error: string) => {
             setPhase("error");
@@ -136,6 +156,8 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
   useEffect(() => {
     if (!dkgParams || !relayRef.current || phase === "running") return;
     if (participantId === 0) return; // wait for assignment
+    if (dkgStartedRef.current) return; // prevent double-start
+    dkgStartedRef.current = true;
 
     setPhase("running");
     setStatusMessage("DKG ceremony in progress…");
@@ -154,6 +176,14 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
       onProgress: handleProgress,
     });
     orchestratorRef.current = orchestrator;
+
+    // Replay any DKG messages that arrived before orchestrator was ready
+    const buffered = pendingDkgMessages.current.splice(0);
+    for (const msg of buffered) {
+      if (msg.type === "round1") orchestrator.handleDkgRound1(msg.fromId, msg.pkg);
+      else if (msg.type === "round2") orchestrator.handleDkgRound2(msg.fromId, msg.packages);
+      else if (msg.type === "round3") orchestrator.handleDkgRound3Done(msg.fromId, msg.groupKeyHex);
+    }
 
     orchestrator.run()
       .then((result) => {
