@@ -68,10 +68,11 @@ function getSwappableTokens(walletTokens: Token[]): Token[] {
 }
 
 function SwapTokenIcon({ symbol, icon }: { symbol: string; icon?: string }) {
-  if (icon) {
-    return <img src={icon} alt={symbol} className="h-8 w-8 rounded-full object-cover shrink-0" />;
-  }
+  const [failed, setFailed] = useState(false);
   const hue = symbol.split("").reduce((acc, c) => acc + c.charCodeAt(0), 0) % 360;
+  if (icon && !failed) {
+    return <img src={icon} alt={symbol} className="h-8 w-8 rounded-full object-cover shrink-0" onError={() => setFailed(true)} />;
+  }
   return (
     <div
       className="h-8 w-8 rounded-full flex items-center justify-center text-[10px] font-bold text-white shrink-0"
@@ -147,7 +148,8 @@ function SwapTokenSelector({
 }
 
 export function SwapView({ balance, onNavigate }: SwapViewProps) {
-  const { tokens, activeAccount } = useWalletStore();
+  const { tokens, activeAccount, network } = useWalletStore();
+  const isDevnet = network !== "mainnet";
 
   const swappable = getSwappableTokens(tokens);
   // Set SOL balance from prop
@@ -164,7 +166,7 @@ export function SwapView({ balance, onNavigate }: SwapViewProps) {
   const parsedInput = parseFloat(inputAmount) || 0;
 
   const fetchQuote = useCallback(async (amount: number) => {
-    if (amount <= 0) { setQuote(null); return; }
+    if (amount <= 0 || isDevnet) { setQuote(null); if (isDevnet) setError("Swap quotes require mainnet"); return; }
 
     const fromMint = fromToken.mint ?? SOL_MINT;
     const toMint = toToken.mint ?? SOL_MINT;
@@ -194,7 +196,7 @@ export function SwapView({ balance, onNavigate }: SwapViewProps) {
     } finally {
       setQuoteLoading(false);
     }
-  }, [fromToken, toToken]);
+  }, [fromToken, toToken, isDevnet]);
 
   // Debounced quote fetch
   useEffect(() => {
@@ -235,6 +237,19 @@ export function SwapView({ balance, onNavigate }: SwapViewProps) {
         </button>
         <h2 className="text-lg font-semibold flex-1 text-center mr-8">Swap</h2>
       </div>
+
+      {/* Devnet notice */}
+      {isDevnet && (
+        <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl px-4 py-3 flex items-start gap-2.5">
+          <AlertCircle className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
+          <div>
+            <p className="text-xs text-amber-200 font-medium">Swap is mainnet-only</p>
+            <p className="text-[10px] text-amber-200/70 mt-0.5">
+              Jupiter aggregator operates on mainnet. Switch to mainnet in Settings to use swap.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* From token */}
       <Card>

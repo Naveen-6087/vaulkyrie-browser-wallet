@@ -8,6 +8,7 @@ import { QuantumVault } from "@/pages/QuantumVault";
 import { SendView } from "@/components/wallet/SendView";
 import { ReceiveView } from "@/components/wallet/ReceiveView";
 import { SwapView } from "@/components/wallet/SwapView";
+import { PolicyView } from "@/components/wallet/PolicyView";
 import { ActivityList } from "@/components/wallet/ActivityList";
 import { AddressBook } from "@/components/wallet/AddressBook";
 import { SettingsView } from "@/components/settings/SettingsView";
@@ -278,6 +279,9 @@ function App() {
 
       case "contacts":
         return <AddressBook />;
+
+      case "policy":
+        return <PolicyView onNavigate={setView} />;
 
       default:
         return <Dashboard onNavigate={setView} />;

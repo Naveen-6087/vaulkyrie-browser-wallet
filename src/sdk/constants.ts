@@ -62,6 +62,7 @@ export const ACCOUNT_SIZE = {
   SpendOrchestrationState: 184,
   RecoveryState: 152,
   PolicyConfigState: 128,
+  PolicyEvaluationState: 256,
 } as const;
 
 // ── Enums ────────────────────────────────────────────────────────────
@@ -130,6 +131,8 @@ export const SEED = {
   AuthorityProof: "authority_proof",
   QuantumVault: "quantum_vault",
   SpendOrchestration: "spend_orch",
+  PolicyConfig: "policy_config",
+  PolicyEvaluation: "policy_eval",
 } as const;
 
 // ── Crypto constants ─────────────────────────────────────────────────

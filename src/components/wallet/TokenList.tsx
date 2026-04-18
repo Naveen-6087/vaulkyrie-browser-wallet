@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { formatUsd } from "@/lib/utils";
 import { Card } from "@/components/ui/card";
 import type { Token } from "@/types";
@@ -7,17 +8,19 @@ interface TokenListProps {
 }
 
 function TokenIcon({ symbol, icon }: { symbol: string; icon?: string }) {
-  if (icon) {
+  const [failed, setFailed] = useState(false);
+  const hue = symbol.split("").reduce((acc, c) => acc + c.charCodeAt(0), 0) % 360;
+
+  if (icon && !failed) {
     return (
       <img
         src={icon}
         alt={symbol}
         className="h-8 w-8 rounded-full object-cover"
+        onError={() => setFailed(true)}
       />
     );
   }
-  // Gradient fallback based on symbol hash
-  const hue = symbol.split("").reduce((acc, c) => acc + c.charCodeAt(0), 0) % 360;
   return (
     <div
       className="h-8 w-8 rounded-full flex items-center justify-center text-[10px] font-bold text-white"

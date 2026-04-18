@@ -60,4 +60,5 @@ export type WalletView =
   | "dkg-ceremony"
   | "join-ceremony"
   | "contacts"
-  | "lock";
+  | "lock"
+  | "policy";

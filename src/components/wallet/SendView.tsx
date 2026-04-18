@@ -98,10 +98,11 @@ function TokenDropdown({
 }
 
 function TokenIconSmall({ symbol, icon }: { symbol: string; icon?: string }) {
-  if (icon) {
-    return <img src={icon} alt={symbol} className="h-7 w-7 rounded-full object-cover shrink-0" />;
-  }
+  const [failed, setFailed] = useState(false);
   const hue = symbol.split("").reduce((acc, c) => acc + c.charCodeAt(0), 0) % 360;
+  if (icon && !failed) {
+    return <img src={icon} alt={symbol} className="h-7 w-7 rounded-full object-cover shrink-0" onError={() => setFailed(true)} />;
+  }
   return (
     <div
       className="h-7 w-7 rounded-full flex items-center justify-center text-[9px] font-bold text-white shrink-0"

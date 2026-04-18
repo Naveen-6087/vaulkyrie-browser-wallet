@@ -80,6 +80,12 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
           badge="Active"
         />
         <SettingRow
+          icon={Shield}
+          label="Policy Engine"
+          value="Arcium MXE private evaluation"
+          onClick={() => onNavigate("policy")}
+        />
+        <SettingRow
           icon={Users}
           label="Address Book"
           value="Saved contacts"
