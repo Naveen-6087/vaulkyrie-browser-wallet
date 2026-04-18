@@ -189,7 +189,7 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
     dkgStartTimeRef.current = Date.now();
 
     const relay = relayRef.current;
-    const useOrchestrator = relay && relayMode === "remote";
+    const useOrchestrator = relay && devices.length > 1;
 
     if (useOrchestrator) {
       // Multi-device DKG via relay + orchestrator
@@ -277,7 +277,7 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
           setPhase("pairing");
         });
     }
-  }, [config.threshold, config.totalParticipants, relayMode]);
+  }, [config.threshold, config.totalParticipants, devices.length, delayedComplete]);
 
   const handleCopyCode = async () => {
     await navigator.clipboard.writeText(sessionCode);

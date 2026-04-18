@@ -40,6 +40,8 @@ export const RelayMessageType = {
   SignComplete: "sign-complete",
   /** Error from a participant */
   Error: "error",
+  /** Coordinator assigns participant ID to a joiner */
+  IdAssign: "id-assign",
 } as const;
 
 export type RelayMessageType = (typeof RelayMessageType)[keyof typeof RelayMessageType];
@@ -84,6 +86,7 @@ export interface RelayEvents {
   onSignComplete?: (signatureHex: string, verified: boolean) => void;
   onStartDkg?: (threshold: number, participants: number) => void;
   onError?: (fromId: number, error: string) => void;
+  onParticipantIdAssigned?: (id: number) => void;
 }
 
 // ── Channel Relay class ──────────────────────────────────────────────
@@ -99,11 +102,12 @@ export class ChannelRelay {
 
   readonly sessionId: string;
   readonly senderId: string;
-  readonly participantId: number;
+  participantId: number;
   readonly isCoordinator: boolean;
 
   private participants = new Map<string, RelayParticipant>();
   private events: RelayEvents;
+  private nextAssignableId = 2;
 
   constructor(opts: {
     sessionId: string;
@@ -253,9 +257,17 @@ export class ChannelRelay {
     switch (msg.type) {
       case RelayMessageType.Join: {
         const jp = msg.payload as JoinPayload;
+        let assignedPid = msg.participantId;
+        if (this.isCoordinator && msg.participantId === 0) {
+          assignedPid = this.nextAssignableId++;
+          this.broadcast(RelayMessageType.IdAssign, {
+            targetSenderId: msg.senderId,
+            assignedId: assignedPid,
+          });
+        }
         const participant: RelayParticipant = {
           senderId: msg.senderId,
-          participantId: msg.participantId,
+          participantId: assignedPid,
           deviceName: jp.deviceName,
           deviceType: jp.deviceType,
           joinedAt: msg.timestamp,
@@ -333,6 +345,17 @@ export class ChannelRelay {
       case RelayMessageType.Error:
         this.events.onError?.(msg.participantId, msg.payload as string);
         break;
+
+      case RelayMessageType.IdAssign: {
+        const idPayload = msg.payload as { targetSenderId: string; assignedId: number };
+        if (idPayload.targetSenderId === this.senderId) {
+          this.participantId = idPayload.assignedId;
+          const self = this.participants.get(this.senderId);
+          if (self) self.participantId = idPayload.assignedId;
+          this.events.onParticipantIdAssigned?.(idPayload.assignedId);
+        }
+        break;
+      }
     }
   }
 }

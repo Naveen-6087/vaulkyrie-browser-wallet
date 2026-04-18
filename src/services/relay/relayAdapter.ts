@@ -156,12 +156,16 @@ export interface CreateRelayOptions {
 
 export function createRelay(opts: CreateRelayOptions): RelayAdapter {
   if (opts.mode === "local") {
+    const events: RelayEvents = { ...opts.events };
+    if (opts.onParticipantIdAssigned) {
+      events.onParticipantIdAssigned = opts.onParticipantIdAssigned;
+    }
     return new LocalRelayAdapter({
       sessionId: opts.sessionId ?? generateSessionCode(),
       participantId: opts.participantId,
       isCoordinator: opts.isCoordinator,
       deviceName: opts.deviceName,
-      events: opts.events,
+      events,
     });
   }
 
