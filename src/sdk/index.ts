@@ -9,3 +9,15 @@ export * from "./accounts";
 export * from "./errors";
 export { VaulkyrieClient } from "./client";
 export { PolicyMxeClient, findPolicyConfigPda, findPolicyEvaluationPda } from "./policyClient";
+export {
+  createInitPolicyConfigInstruction,
+  createOpenPolicyEvaluationInstruction,
+  createFinalizePolicyEvaluationInstruction,
+  createAbortPolicyEvaluationInstruction,
+  createQueueArciumComputationInstruction,
+} from "./policyInstructions";
+export type {
+  InitPolicyConfigParams,
+  OpenPolicyEvaluationParams,
+  FinalizePolicyEvaluationParams,
+} from "./policyInstructions";
