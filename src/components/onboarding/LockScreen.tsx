@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
-import { Lock, Eye, EyeOff, Fingerprint, Loader2 } from "lucide-react";
+import { Lock, Eye, EyeOff, Loader2 } from "lucide-react";
 import { hashPassword, verifyPassword } from "@/lib/crypto";
 import { useWalletStore } from "@/store/walletStore";
 import logo from "@/assets/xlogo.jpeg";
@@ -169,17 +169,7 @@ export function LockScreen({ onUnlock }: LockScreenProps) {
         </motion.button>
       </motion.form>
 
-      {!isSetup && (
-        <motion.button
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ delay: 0.6 }}
-          className="mt-6 flex flex-col items-center gap-1.5 text-muted-foreground/60 hover:text-muted-foreground transition-colors cursor-pointer"
-        >
-          <Fingerprint className="h-6 w-6" />
-          <span className="text-[10px]">Use biometrics</span>
-        </motion.button>
-      )}
+      {/* Biometric auth — hidden until WebAuthn support is implemented */}
     </div>
   );
 }

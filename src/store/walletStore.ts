@@ -19,6 +19,10 @@ interface StoredDkgResult {
   threshold: number;
   participants: number;
   createdAt: number;
+  /** Which participant this device was during DKG */
+  participantId?: number;
+  /** Whether the vault was created via multi-device ceremony */
+  isMultiDevice?: boolean;
 }
 
 interface VaultConfigPersist {
@@ -176,7 +180,7 @@ export const useWalletStore = create<WalletState>()(
       setTokens: (tokens) => set({ tokens }),
       setTransactions: (transactions) => set({ transactions }),
       setVaultState: (vaultState) => set({ vaultState }),
-      setNetwork: (network) => set({ network }),
+      setNetwork: (network) => set({ network, tokens: [], transactions: [], vaultState: null, lastFetchedAt: null }),
       setCurrentView: (currentView) => set({ currentView }),
       clearError: () => set({ error: null }),
 

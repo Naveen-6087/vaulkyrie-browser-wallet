@@ -206,6 +206,8 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
                 keyPackages: { [result.participantId]: result.keyPackageJson },
                 threshold: result.threshold,
                 participants: result.totalParticipants,
+                participantId: result.participantId,
+                isMultiDevice: true,
                 createdAt: Date.now(),
               }),
             );

@@ -194,7 +194,7 @@ function parseTransaction(
     }
   }
 
-  if (amount <= 0 && !token) return null;
+  if (amount <= 0 || !token) return null;
 
   return {
     signature: sig.signature,

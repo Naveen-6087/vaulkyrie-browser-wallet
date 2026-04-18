@@ -1,10 +1,12 @@
-import { useState, useRef, useEffect } from "react";
-import { ArrowUpRight, AlertCircle, Loader2, Check, ExternalLink, Users, ChevronDown } from "lucide-react";
+import { useState, useRef, useEffect, useCallback } from "react";
+import { ArrowUpRight, AlertCircle, Loader2, Check, ExternalLink, Users, ChevronDown, Radio } from "lucide-react";
 import { PublicKey, SystemProgram, Transaction, LAMPORTS_PER_SOL } from "@solana/web3.js";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { signLocal, hexToBytes } from "@/services/frost/frostService";
+import { SigningOrchestrator } from "@/services/frost/signingOrchestrator";
+import { createRelay, DEFAULT_RELAY_URL, type RelayAdapter } from "@/services/relay/relayAdapter";
 import { useWalletStore } from "@/store/walletStore";
 import { createConnection, SOL_ICON } from "@/services/solanaRpc";
 import { buildSplTransferTransaction } from "@/services/splToken";
@@ -16,7 +18,7 @@ interface SendViewProps {
   onNavigate: (view: WalletView) => void;
 }
 
-type SendPhase = "form" | "review" | "signing" | "success" | "error";
+type SendPhase = "form" | "review" | "signing" | "coordinate" | "success" | "error";
 
 // ── Custom token dropdown with icons ────────────────────────────────
 function TokenDropdown({
@@ -120,6 +122,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
   const [phase, setPhase] = useState<SendPhase>("form");
   const [signingMessage, setSigningMessage] = useState("");
   const [txSignature, setTxSignature] = useState("");
+  const [signingSessionCode, setSigningSessionCode] = useState("");
   const [selectedToken, setSelectedToken] = useState("SOL");
   const [showContacts, setShowContacts] = useState(false);
   const { activeAccount, network, tokens, contacts } = useWalletStore();
@@ -180,6 +183,8 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
             keyPackages: parsed.keyPackages ?? {},
             threshold: parsed.threshold ?? 2,
             participants: parsed.participants ?? 3,
+            participantId: parsed.participantId,
+            isMultiDevice: parsed.isMultiDevice,
             createdAt: Date.now(),
           };
           persistDkg(pubKey, dkg);
@@ -224,31 +229,63 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
       tx.recentBlockhash = blockhash;
       tx.feePayer = fromPubkey;
 
-      // Serialize the message for FROST signing
       const messageBytes = tx.serializeMessage();
 
-      // Select signers (use first `threshold` participants)
-      setSigningMessage(`Running FROST threshold signing (${dkg.threshold}-of-${dkg.participants})...`);
-      const signerIds = Array.from({ length: dkg.threshold }, (_, i) => i + 1);
+      // Determine available key packages
+      const availableKeyIds = Object.keys(dkg.keyPackages).map(Number);
+      const hasAllKeys = availableKeyIds.length >= dkg.threshold;
+      const isMultiDevice = dkg.isMultiDevice === true;
 
-      const { signatureHex, verified } = await signLocal(
-        messageBytes,
-        dkg.keyPackages,
-        dkg.publicKeyPackage,
-        signerIds,
-      );
+      let signatureHex: string;
+      let verified: boolean;
+
+      if (hasAllKeys && !isMultiDevice) {
+        // Single-device (local DKG): sign locally with all key packages
+        setSigningMessage(`Running FROST threshold signing (${dkg.threshold}-of-${dkg.participants})...`);
+        const signerIds = availableKeyIds.slice(0, dkg.threshold);
+        const result = await signLocal(messageBytes, dkg.keyPackages, dkg.publicKeyPackage, signerIds);
+        signatureHex = result.signatureHex;
+        verified = result.verified;
+      } else {
+        // Multi-device: coordinate signing across devices via relay
+        setPhase("coordinate");
+        setSigningMessage("Connecting to relay for multi-device signing...");
+
+        const myParticipantId = dkg.participantId ?? availableKeyIds[0] ?? 1;
+        const myKeyPkg = dkg.keyPackages[myParticipantId];
+
+        if (!myKeyPkg) {
+          throw new Error(
+            `No key package found for participant ${myParticipantId}. ` +
+            `Available: [${availableKeyIds.join(", ")}]`
+          );
+        }
+
+        // Use first `threshold` participant IDs as signers
+        const signerIds = Array.from({ length: dkg.threshold }, (_, i) => i + 1);
+
+        const result = await runMultiDeviceSigning(
+          myParticipantId,
+          myKeyPkg,
+          dkg.publicKeyPackage,
+          messageBytes,
+          signerIds,
+          (msg) => setSigningMessage(msg),
+        );
+        signatureHex = result.signatureHex;
+        verified = result.verified;
+      }
 
       if (!verified) {
         throw new Error("FROST signature verification failed");
       }
 
+      setPhase("signing");
       setSigningMessage("Signature verified! Submitting to Solana...");
 
-      // Attach the signature to the transaction
       const sigBytes = hexToBytes(signatureHex);
       tx.addSignature(fromPubkey, Buffer.from(sigBytes));
 
-      // Send the raw signed transaction
       const rawTx = tx.serialize();
       const signature = await connection.sendRawTransaction(rawTx, {
         skipPreflight: false,
@@ -263,6 +300,117 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
       setPhase("error");
     }
   };
+
+  /** Run multi-device FROST signing via WebSocket relay */
+  const runMultiDeviceSigning = useCallback(async (
+    participantId: number,
+    keyPackageJson: string,
+    publicKeyPackageJson: string,
+    message: Uint8Array,
+    signerIds: number[],
+    onStatus: (msg: string) => void,
+  ) => {
+    const isCoordinator = participantId === 1;
+
+    return new Promise<{ signatureHex: string; publicKeyHex: string; verified: boolean }>((resolve, reject) => {
+      let orchestrator: SigningOrchestrator | null = null;
+      let relay: RelayAdapter | null = null;
+      let signersReady = 0;
+      const requiredSigners = signerIds.length;
+
+      const cleanup = () => {
+        if (relay) {
+          try { relay.disconnect(); } catch { /* ignore */ }
+        }
+      };
+
+      relay = createRelay({
+        mode: "remote",
+        participantId,
+        isCoordinator,
+        deviceName: `Signer ${participantId}`,
+        relayUrl: DEFAULT_RELAY_URL,
+        events: {
+          onParticipantJoined: (_id, _name) => {
+            signersReady++;
+            onStatus(`Signers connected: ${signersReady}/${requiredSigners}`);
+
+            // Once enough signers are connected, start signing
+            if (signersReady >= requiredSigners && orchestrator && isCoordinator) {
+              orchestrator.run()
+                .then((result) => {
+                  cleanup();
+                  resolve(result);
+                })
+                .catch((err) => {
+                  cleanup();
+                  reject(err);
+                });
+            }
+          },
+          onParticipantLeft: () => {
+            signersReady = Math.max(0, signersReady - 1);
+            onStatus(`Signer disconnected. Connected: ${signersReady}/${requiredSigners}`);
+          },
+          onSignRound1: (fromId, commitments) => {
+            orchestrator?.handleSignRound1(fromId, commitments);
+          },
+          onSignRound2: (fromId, share) => {
+            orchestrator?.handleSignRound2(fromId, share);
+          },
+          onError: (err) => {
+            cleanup();
+            reject(new Error(`Signing relay error: ${err}`));
+          },
+          // DKG events (unused during signing)
+          onDkgRound1: () => {},
+          onDkgRound2: () => {},
+          onDkgRound3Done: () => {},
+          onStartDkg: () => {},
+          onSignComplete: (_sig, _verified) => {},
+        },
+        onConnectionStateChange: (state) => {
+          if (state === "connected") {
+            onStatus("Connected to relay. Waiting for other signers...");
+          } else if (state === "error" || state === "closed") {
+            cleanup();
+            reject(new Error("Relay connection failed"));
+          }
+        },
+        onSessionCreated: (code) => {
+          onStatus(`Signing session created: ${code}. Share with other signers.`);
+          setSigningSessionCode(code);
+        },
+      });
+
+      orchestrator = new SigningOrchestrator({
+        relay,
+        participantId,
+        keyPackageJson,
+        publicKeyPackageJson,
+        message,
+        signerIds,
+        onProgress: (p) => {
+          onStatus(p.message);
+        },
+      });
+
+      relay.connect();
+
+      // For coordinator, create the signing session
+      if (isCoordinator) {
+        setTimeout(() => {
+          relay!.createSession(requiredSigners, requiredSigners);
+        }, 500);
+      }
+
+      // Timeout after 2 minutes
+      setTimeout(() => {
+        cleanup();
+        reject(new Error("Signing timed out. Not enough signers connected within 2 minutes."));
+      }, 120_000);
+    });
+  }, []);
 
   const explorerUrl = txSignature
     ? `https://explorer.solana.com/tx/${txSignature}?cluster=${network}`
@@ -281,6 +429,34 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
         </div>
         <h3 className="text-base font-semibold">Threshold Signing</h3>
         <p className="text-xs text-muted-foreground text-center px-8">
+          {signingMessage}
+        </p>
+      </div>
+    );
+  }
+
+  if (phase === "coordinate") {
+    return (
+      <div className="flex flex-col gap-4 p-4 flex-1 items-center justify-center">
+        <div className="relative mb-4">
+          <div className="absolute -inset-4 bg-orange-500/20 rounded-full blur-xl animate-pulse" />
+          <div className="relative h-16 w-16 rounded-full bg-orange-500/15 border-2 border-orange-500/40 flex items-center justify-center">
+            <Radio className="h-8 w-8 text-orange-400 animate-pulse" />
+          </div>
+        </div>
+        <h3 className="text-base font-semibold">Multi-Device Signing</h3>
+        {signingSessionCode && (
+          <div className="flex flex-col items-center gap-1 mt-2">
+            <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Session Code</p>
+            <code className="text-lg font-mono font-bold text-primary tracking-[.3em] bg-primary/10 px-4 py-1.5 rounded-lg select-all">
+              {signingSessionCode}
+            </code>
+            <p className="text-[10px] text-muted-foreground mt-1">
+              Share this code with other vault signers
+            </p>
+          </div>
+        )}
+        <p className="text-xs text-muted-foreground text-center px-8 mt-2">
           {signingMessage}
         </p>
       </div>

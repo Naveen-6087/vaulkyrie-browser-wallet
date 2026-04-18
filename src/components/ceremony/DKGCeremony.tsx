@@ -226,6 +226,8 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
                   keyPackages: { [result.participantId]: result.keyPackageJson },
                   threshold: result.threshold,
                   participants: result.totalParticipants,
+                  participantId: result.participantId,
+                  isMultiDevice: true,
                   createdAt: Date.now(),
                 }),
               );

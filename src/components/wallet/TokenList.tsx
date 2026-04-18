@@ -65,7 +65,7 @@ export function TokenList({ tokens }: TokenListProps) {
             </div>
             <div className="text-right">
               <p className="text-sm font-medium font-mono">
-                {token.balance.toLocaleString(undefined, {
+                {(token.balance ?? 0).toLocaleString("en-US", {
                   maximumFractionDigits: 4,
                 })}
               </p>
