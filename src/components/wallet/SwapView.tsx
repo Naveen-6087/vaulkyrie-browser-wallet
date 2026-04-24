@@ -1,10 +1,11 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { ArrowDownUp, Loader2, AlertCircle, ChevronDown, Check, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { useWalletStore } from "@/store/walletStore";
-import { KNOWN_MINTS, SOL_ICON } from "@/services/solanaRpc";
+import { KNOWN_MINTS, SOL_ICON, createConnection } from "@/services/solanaRpc";
+import { signAndSendVersionedTransaction } from "@/services/frost/signTransaction";
 import type { WalletView, Token } from "@/types";
 
 interface SwapViewProps {
@@ -22,6 +23,7 @@ interface JupiterQuote {
 }
 
 const JUPITER_QUOTE_API = "https://quote-api.jup.ag/v6/quote";
+const JUPITER_SWAP_API = "https://quote-api.jup.ag/v6/swap";
 const SOL_MINT = "So11111111111111111111111111111111111111112";
 
 // Tokens available for swap (SOL + KNOWN_MINTS)
@@ -148,22 +150,53 @@ function SwapTokenSelector({
 }
 
 export function SwapView({ balance, onNavigate }: SwapViewProps) {
-  const { tokens, network } = useWalletStore();
+  const { activeAccount, tokens, network, refreshAll } = useWalletStore();
   const isDevnet = network !== "mainnet";
 
-  const swappable = getSwappableTokens(tokens);
-  // Set SOL balance from prop
-  if (swappable[0]?.symbol === "SOL") swappable[0].balance = balance;
+  const swappable = useMemo(() => {
+    const merged = getSwappableTokens(tokens);
+    if (merged[0]?.symbol === "SOL") merged[0].balance = balance;
+    return merged;
+  }, [tokens, balance]);
 
   const [fromToken, setFromToken] = useState<Token>(swappable[0]);
   const [toToken, setToToken] = useState<Token>(swappable.find((t) => t.symbol === "USDC") ?? swappable[1] ?? swappable[0]);
   const [inputAmount, setInputAmount] = useState("");
   const [quote, setQuote] = useState<JupiterQuote | null>(null);
   const [quoteLoading, setQuoteLoading] = useState(false);
+  const [swapLoading, setSwapLoading] = useState(false);
+  const [swapStatus, setSwapStatus] = useState("");
+  const [txSignature, setTxSignature] = useState("");
   const [error, setError] = useState("");
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const parsedInput = parseFloat(inputAmount) || 0;
+
+  useEffect(() => {
+    if (swappable.length === 0) return;
+
+    const nextFrom = swappable.find((token) => token.symbol === fromToken.symbol) ?? swappable[0];
+    const preferredTo =
+      swappable.find((token) => token.symbol === toToken.symbol && token.symbol !== nextFrom.symbol) ??
+      swappable.find((token) => token.symbol !== nextFrom.symbol) ??
+      nextFrom;
+
+    if (
+      nextFrom.symbol !== fromToken.symbol ||
+      nextFrom.balance !== fromToken.balance ||
+      nextFrom.mint !== fromToken.mint
+    ) {
+      setFromToken(nextFrom);
+    }
+
+    if (
+      preferredTo.symbol !== toToken.symbol ||
+      preferredTo.balance !== toToken.balance ||
+      preferredTo.mint !== toToken.mint
+    ) {
+      setToToken(preferredTo);
+    }
+  }, [fromToken.balance, fromToken.mint, fromToken.symbol, swappable, toToken.balance, toToken.mint, toToken.symbol]);
 
   const fetchQuote = useCallback(async (amount: number) => {
     if (amount <= 0 || isDevnet) { setQuote(null); if (isDevnet) setError("Swap quotes require mainnet"); return; }
@@ -224,7 +257,76 @@ export function SwapView({ balance, onNavigate }: SwapViewProps) {
   const priceImpact = quote ? parseFloat(quote.priceImpactPct) : 0;
   const route = quote?.routePlan?.map((r) => r.swapInfo.label).join(" → ") ?? "";
 
-  const canSwap = parsedInput > 0 && parsedInput <= (fromToken.balance || 0) && quote && !quoteLoading;
+  const canSwap =
+    parsedInput > 0 &&
+    parsedInput <= (fromToken.balance || 0) &&
+    quote &&
+    !quoteLoading &&
+    !swapLoading;
+  const explorerUrl = txSignature ? `https://explorer.solana.com/tx/${txSignature}?cluster=${network}` : "";
+
+  const handleSwap = useCallback(async () => {
+    if (!activeAccount?.publicKey) {
+      setError("No active wallet selected");
+      return;
+    }
+    if (isDevnet) {
+      setError("Swap execution requires mainnet");
+      return;
+    }
+    if (!quote) {
+      setError("Get a quote before swapping");
+      return;
+    }
+
+    setSwapLoading(true);
+    setSwapStatus("Requesting swap transaction...");
+    setError("");
+    setTxSignature("");
+
+    try {
+      const response = await fetch(JUPITER_SWAP_API, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          quoteResponse: quote,
+          userPublicKey: activeAccount.publicKey,
+          wrapAndUnwrapSol: true,
+          dynamicComputeUnitLimit: true,
+        }),
+      });
+
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(text || `Swap build failed (${response.status})`);
+      }
+
+      const payload = await response.json() as { swapTransaction?: string };
+      if (!payload.swapTransaction) {
+        throw new Error("Jupiter did not return a swap transaction");
+      }
+
+      const connection = createConnection(network);
+      const signature = await signAndSendVersionedTransaction(
+        connection,
+        payload.swapTransaction,
+        activeAccount.publicKey,
+        setSwapStatus,
+      );
+
+      setTxSignature(signature);
+      setSwapStatus("Swap submitted");
+      setInputAmount("");
+      setQuote(null);
+      await refreshAll();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Swap execution failed");
+    } finally {
+      setSwapLoading(false);
+    }
+  }, [activeAccount?.publicKey, isDevnet, network, quote, refreshAll]);
 
   return (
     <div className="flex flex-col gap-4 p-4 flex-1">
@@ -361,19 +463,42 @@ export function SwapView({ balance, onNavigate }: SwapViewProps) {
         </div>
       )}
 
+      {swapStatus && !error && (
+        <div className="flex items-center gap-2 text-xs px-1 text-muted-foreground">
+          {swapLoading ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" /> : <Check className="h-3.5 w-3.5 shrink-0 text-success" />}
+          <span>{swapStatus}</span>
+        </div>
+      )}
+
+      {txSignature && (
+        <div className="px-1">
+          <a
+            href={explorerUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+          >
+            View swap on Explorer
+            <ExternalLink className="h-3 w-3" />
+          </a>
+        </div>
+      )}
+
       <div className="mt-auto">
         <Button
           className="w-full gap-2"
           size="lg"
           disabled={!canSwap}
-          onClick={() => {
-            // Swap execution via Jupiter swap API would go here
-            // For now show a preview toast
-            setError("Swap execution coming soon — quote preview only");
-          }}
+          onClick={handleSwap}
         >
           <ArrowDownUp className="h-4 w-4" />
-          {quoteLoading ? "Getting quote…" : parsedInput > 0 && parsedInput > (fromToken.balance || 0) ? "Insufficient balance" : "Swap"}
+          {quoteLoading
+            ? "Getting quote…"
+            : swapLoading
+              ? "Submitting swap…"
+              : parsedInput > 0 && parsedInput > (fromToken.balance || 0)
+                ? "Insufficient balance"
+                : "Swap"}
         </Button>
         <p className="text-[10px] text-muted-foreground text-center mt-2 flex items-center justify-center gap-1">
           Powered by Jupiter
