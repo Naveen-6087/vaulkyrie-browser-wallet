@@ -19,6 +19,7 @@ import {
   createInitPolicyConfigInstruction,
   createOpenPolicyEvaluationInstruction,
   createAbortPolicyEvaluationInstruction,
+  createQueueArciumComputationInstruction,
 } from "@/sdk/policyInstructions";
 import { signAndSendTransaction } from "@/services/frost/signTransaction";
 import { NETWORKS } from "@/lib/constants";
@@ -123,6 +124,7 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
   const [actionMsg, setActionMsg] = useState("");
   const [txSignature, setTxSignature] = useState("");
   const [abortingEval, setAbortingEval] = useState<string | null>(null);
+  const [queueingEval, setQueueingEval] = useState<string | null>(null);
 
   const [initVersion, setInitVersion] = useState("1");
 
@@ -412,6 +414,43 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
       setError(e instanceof Error ? e.message : "Failed to abort evaluation");
     } finally {
       setAbortingEval(null);
+    }
+  };
+
+  const handleQueueEvaluation = async (
+    evalAddress: PublicKey,
+    evaluation: PolicyEvaluationAccount,
+  ) => {
+    if (!activeAccount?.publicKey) return;
+    setQueueingEval(evalAddress.toBase58());
+    setActionMsg("Queueing Arcium computation...");
+
+    try {
+      const authority = new PublicKey(activeAccount.publicKey);
+
+      await withRpcFallback(network, async (connection) => {
+        const ix = createQueueArciumComputationInstruction(
+          evalAddress,
+          authority,
+          evaluation.computationOffset,
+        );
+
+        const tx = new Transaction().add(ix);
+
+        return signAndSendTransaction(
+          connection,
+          tx,
+          activeAccount.publicKey,
+          (msg) => setActionMsg(msg),
+        );
+      });
+
+      await fetchPolicyData();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to queue Arcium computation");
+      setPhase("error");
+    } finally {
+      setQueueingEval(null);
     }
   };
 
@@ -787,6 +826,31 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
 
       <Card>
         <CardContent className="pt-4 pb-3">
+          <div className="rounded-xl border border-primary/15 bg-primary/5 px-3 py-3 mb-4 space-y-3">
+            <div className="flex items-center gap-2">
+              <ShieldCheck className="h-4 w-4 text-primary" />
+              <span className="text-sm font-medium">How Arcium is wired here</span>
+            </div>
+            <div className="grid grid-cols-2 gap-2 text-[11px] text-muted-foreground">
+              <div className="rounded-lg bg-background/70 px-3 py-2 border border-border">
+                <p className="font-medium text-foreground">1. Local policy profiles</p>
+                <p>Human-readable wallet rules for send/admin actions.</p>
+              </div>
+              <div className="rounded-lg bg-background/70 px-3 py-2 border border-border">
+                <p className="font-medium text-foreground">2. On-chain bridge</p>
+                <p>Creates the MXE-linked config PDA on devnet.</p>
+              </div>
+              <div className="rounded-lg bg-background/70 px-3 py-2 border border-border">
+                <p className="font-medium text-foreground">3. Evaluation request</p>
+                <p>Binds an action summary and policy commitment on-chain.</p>
+              </div>
+              <div className="rounded-lg bg-background/70 px-3 py-2 border border-border">
+                <p className="font-medium text-foreground">4. Queue computation</p>
+                <p>Hands the request into the Arcium computation stage.</p>
+              </div>
+            </div>
+          </div>
+
           <div className="flex items-center justify-between mb-3">
             <span className="text-sm font-medium text-muted-foreground">Policy Profiles</span>
             <Button
@@ -916,7 +980,7 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
           ) : error ? (
             <div className="text-sm text-destructive py-2">{error}</div>
           ) : config ? (
-            <div className="space-y-2">
+            <div className="space-y-3">
               <div className="flex justify-between text-xs">
                 <span className="text-muted-foreground">Status</span>
                 <span className="text-emerald-400 font-medium flex items-center gap-1">
@@ -937,6 +1001,11 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
                 <span className="font-mono text-[10px] truncate max-w-[140px]">
                   {VAULKYRIE_POLICY_MXE_PROGRAM_ID.toBase58().slice(0, 12)}…
                 </span>
+              </div>
+              <div className="rounded-lg border border-border bg-background/60 px-3 py-2 text-[10px] text-muted-foreground">
+                {evaluations.some((ev) => ev.account.status === PolicyEvaluationStatus.ComputationQueued)
+                  ? "Arcium queue step has been exercised for this vault. Wait for the bridge/callback side to finalize decisions."
+                  : "Next test step: open an evaluation, then queue it into the Arcium computation stage."}
               </div>
             </div>
           ) : (
@@ -1005,22 +1074,6 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
                       Code: {ev.account.reasonCode}
                     </span>
                   )}
-                  {ev.account.status === PolicyEvaluationStatus.Pending && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => handleAbortEvaluation(ev.address)}
-                      disabled={abortingEval === ev.address.toBase58()}
-                      className="h-6 px-2 ml-auto text-red-400 hover:text-red-300"
-                    >
-                      {abortingEval === ev.address.toBase58() ? (
-                        <Loader2 className="h-3 w-3 animate-spin" />
-                      ) : (
-                        <XCircle className="h-3 w-3" />
-                      )}
-                      <span className="text-[10px] ml-1">Abort</span>
-                    </Button>
-                  )}
                 </div>
                 <div className="grid grid-cols-2 gap-1 text-[10px] text-muted-foreground">
                   <span>Action hash</span>
@@ -1031,7 +1084,47 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
                   <span className="font-mono text-right">{ev.account.requestNonce.toString()}</span>
                   <span>Expiry slot</span>
                   <span className="font-mono text-right">{ev.account.expirySlot.toString()}</span>
+                  <span>Computation offset</span>
+                  <span className="font-mono text-right">{ev.account.computationOffset.toString()}</span>
                 </div>
+                {ev.account.status === PolicyEvaluationStatus.Pending && (
+                  <div className="mt-3 flex gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="flex-1"
+                      onClick={() => handleQueueEvaluation(ev.address, ev.account)}
+                      disabled={queueingEval === ev.address.toBase58()}
+                    >
+                      {queueingEval === ev.address.toBase58() ? (
+                        <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                      ) : (
+                        <ShieldCheck className="h-3.5 w-3.5 mr-1" />
+                      )}
+                      Queue Arcium
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => handleAbortEvaluation(ev.address)}
+                      disabled={abortingEval === ev.address.toBase58()}
+                      className="text-red-400 hover:text-red-300"
+                    >
+                      {abortingEval === ev.address.toBase58() ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <XCircle className="h-3.5 w-3.5" />
+                      )}
+                      <span className="text-[10px] ml-1">Abort</span>
+                    </Button>
+                  </div>
+                )}
+                {ev.account.status === PolicyEvaluationStatus.ComputationQueued && (
+                  <div className="mt-3 rounded-lg border border-blue-400/20 bg-blue-400/5 px-3 py-2 text-[10px] text-muted-foreground">
+                    This request has been queued into the Arcium stage. The remaining finalize/callback
+                    path still depends on the bridge-side private computation flow.
+                  </div>
+                )}
               </CardContent>
             </Card>
           ))}
@@ -1041,9 +1134,9 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
       <div className="mt-auto bg-primary/5 rounded-xl px-4 py-3 text-[10px] text-muted-foreground">
         <p className="font-medium text-foreground/70 mb-1">How to use this screen</p>
         <p>
-          1. Create human-readable policy profiles for common send/admin rules. 2. Initialize the
-          on-chain bridge when you want to test the MXE flow. 3. Open evaluations that bind a real
-          action summary to the selected policy instead of using anonymous placeholder hashes.
+          1. Create a local policy profile. 2. Initialize the on-chain bridge once per vault. 3. Open
+          an evaluation from a send flow or manually here. 4. Queue the evaluation into the Arcium
+          computation stage. Final decision callbacks are the next bridge-side feature still to wire.
         </p>
       </div>
     </div>
