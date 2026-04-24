@@ -99,6 +99,7 @@ interface WalletState {
 
   // Network
   network: NetworkId;
+  relayUrl: string;
 
   // UI
   currentView: WalletView;
@@ -120,6 +121,7 @@ interface WalletState {
   setCollectibles: (collectibles: Collectible[]) => void;
   setVaultState: (state: VaultState | null) => void;
   setNetwork: (network: NetworkId) => void;
+  setRelayUrl: (relayUrl: string) => void;
   setCurrentView: (view: WalletView) => void;
   clearError: () => void;
 
@@ -190,6 +192,7 @@ export const useWalletStore = create<WalletState>()(
       collectibles: [],
       vaultState: null,
       network: DEFAULT_NETWORK,
+      relayUrl: import.meta.env.VITE_RELAY_URL ?? "ws://localhost:8765",
       currentView: "dashboard",
       isLoading: false,
       error: null,
@@ -243,6 +246,7 @@ export const useWalletStore = create<WalletState>()(
         vaultState: null,
         lastFetchedAt: null,
       }),
+      setRelayUrl: (relayUrl) => set({ relayUrl }),
       setCurrentView: (currentView) => set({ currentView }),
       clearError: () => set({ error: null }),
 
@@ -473,6 +477,7 @@ export const useWalletStore = create<WalletState>()(
         accounts: state.accounts,
         activeAccount: state.activeAccount,
         network: state.network,
+        relayUrl: state.relayUrl,
         dkgResults: state.dkgResults,
         vaultConfigs: state.vaultConfigs,
         passwordHash: state.passwordHash,

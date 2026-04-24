@@ -12,6 +12,7 @@ import { PolicyView } from "@/components/wallet/PolicyView";
 import { ActivityList } from "@/components/wallet/ActivityList";
 import { AddressBook } from "@/components/wallet/AddressBook";
 import { SettingsView } from "@/components/settings/SettingsView";
+import { ApprovalCenter } from "@/components/extension/ApprovalCenter";
 import { OnboardingWelcome } from "@/components/onboarding/OnboardingWelcome";
 import { VaultConfigStep } from "@/components/onboarding/VaultConfigStep";
 import { LockScreen } from "@/components/onboarding/LockScreen";
@@ -45,6 +46,11 @@ function App() {
   const [isLocked, setIsLocked] = useState(false);
   const [vaultConfig, setVaultConfig] = useState<VaultConfig | null>(null);
 
+  const requestedView =
+    typeof window !== "undefined" && new URLSearchParams(window.location.search).get("view") === "approval"
+      ? "approval"
+      : null;
+
   // Sync view after zustand persist hydration completes
   useEffect(() => {
     if (!hasHydrated) return;
@@ -57,12 +63,12 @@ function App() {
         setIsLocked(true);
         setView("lock");
       } else {
-        setView(isOnboarded ? "dashboard" : "onboarding");
+        setView(isOnboarded ? (requestedView ?? "dashboard") : "onboarding");
       }
     }, 0);
 
     return () => window.clearTimeout(timer);
-  }, [hasHydrated, isOnboarded, passwordHash, storeLocked]);
+  }, [hasHydrated, isOnboarded, passwordHash, requestedView, storeLocked]);
 
   // Sync local lock state when store's isLocked changes (e.g. from Settings → Lock Wallet)
   useEffect(() => {
@@ -187,13 +193,13 @@ function App() {
     if (isLocked) {
       return (
         <LockScreen
-          onUnlock={() => {
-            setIsLocked(false);
-            setStoreLocked(false);
-            setView("dashboard");
-          }}
-        />
-      );
+            onUnlock={() => {
+              setIsLocked(false);
+              setStoreLocked(false);
+              setView(requestedView ?? "dashboard");
+            }}
+          />
+        );
     }
 
     switch (view) {
@@ -303,6 +309,9 @@ function App() {
 
       case "policy":
         return <PolicyView onNavigate={setView} />;
+
+      case "approval":
+        return <ApprovalCenter onNavigate={setView} />;
 
       default:
         return <Dashboard onNavigate={setView} />;

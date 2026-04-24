@@ -6,7 +6,6 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import {
   createRelay,
-  DEFAULT_RELAY_URL,
   type RelayAdapter,
   type ConnectionState,
 } from "@/services/relay/relayAdapter";
@@ -15,6 +14,7 @@ import {
   type DkgOrchestratorProgress,
 } from "@/services/frost/dkgOrchestrator";
 import logo from "@/assets/xlogo.jpeg";
+import { useWalletStore } from "@/store/walletStore";
 
 interface JoinCeremonyProps {
   onComplete: (groupPublicKey?: string) => void;
@@ -36,6 +36,7 @@ async function isRelayAvailable(url: string): Promise<boolean> {
 }
 
 export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
+  const relayUrl = useWalletStore((state) => state.relayUrl);
   const [sessionCode, setSessionCode] = useState("");
   const [phase, setPhase] = useState<JoinPhase>("enter-code");
   const [statusMessage, setStatusMessage] = useState("");
@@ -63,10 +64,10 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
 
   // Detect relay availability on mount
   useEffect(() => {
-    isRelayAvailable(DEFAULT_RELAY_URL).then((available) => {
+    isRelayAvailable(relayUrl).then((available) => {
       setRelayMode(available ? "remote" : "local");
     });
-  }, []);
+  }, [relayUrl]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -90,7 +91,7 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
         isCoordinator: false,
         deviceName: navigator.userAgent.includes("Mobile") ? "Mobile Device" : "Browser",
         deviceType: navigator.userAgent.includes("Mobile") ? "mobile" : "browser",
-        relayUrl: DEFAULT_RELAY_URL,
+        relayUrl,
         sessionId: code,
         events: {
           onParticipantJoined: () => { /* other participants joining — no action needed */ },
@@ -152,7 +153,7 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
       setPhase("error");
       setErrorMessage("Failed to connect to ceremony session");
     }
-  }, [isValidCode, sessionCode, relayMode]);
+  }, [isValidCode, relayMode, relayUrl, sessionCode]);
 
   // Start DKG when params arrive from coordinator
   useEffect(() => {

@@ -22,7 +22,6 @@ import {
   createRelay,
   generateSessionCode,
   buildQrPayload,
-  DEFAULT_RELAY_URL,
   type RelayAdapter,
   type ConnectionState,
 } from "@/services/relay/relayAdapter";
@@ -32,6 +31,7 @@ import {
   type DkgOrchestratorProgress,
 } from "@/services/frost/dkgOrchestrator";
 import logo from "@/assets/xlogo.jpeg";
+import { useWalletStore } from "@/store/walletStore";
 
 type CeremonyPhase =
   | "pairing"       // Show QR / waiting for devices
@@ -67,6 +67,7 @@ async function isRelayAvailable(url: string): Promise<boolean> {
 }
 
 export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
+  const relayUrl = useWalletStore((state) => state.relayUrl);
   const [phase, setPhase] = useState<CeremonyPhase>("pairing");
   const [sessionCode, setSessionCode] = useState(generateSessionCode);
   const [qrPayload, setQrPayload] = useState(() =>
@@ -101,7 +102,7 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
     let cancelled = false;
 
     (async () => {
-      const available = await isRelayAvailable(DEFAULT_RELAY_URL);
+      const available = await isRelayAvailable(relayUrl);
       if (cancelled) return;
 
       const mode = available ? "remote" : "local";
@@ -112,7 +113,7 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
         participantId: 1, // coordinator is always participant 1
         isCoordinator: true,
         deviceName: "This Browser",
-        relayUrl: DEFAULT_RELAY_URL,
+        relayUrl,
         sessionId: sessionCode,
         events: {
           onParticipantJoined: (p: RelayParticipant) => {
@@ -166,7 +167,7 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
       relayRef.current?.disconnect();
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [relayUrl]);
 
   // Start DKG — multi-device via orchestrator, or local fallback
   const delayedComplete = useCallback((fn: () => void) => {

@@ -92,4 +92,5 @@ export type WalletView =
   | "join-ceremony"
   | "contacts"
   | "lock"
-  | "policy";
+  | "policy"
+  | "approval";

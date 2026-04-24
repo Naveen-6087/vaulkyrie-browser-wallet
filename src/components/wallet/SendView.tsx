@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { signLocal, hexToBytes } from "@/services/frost/frostService";
 import { SigningOrchestrator } from "@/services/frost/signingOrchestrator";
-import { createRelay, DEFAULT_RELAY_URL, generateSessionCode, type RelayAdapter } from "@/services/relay/relayAdapter";
+import { createRelay, generateSessionCode, type RelayAdapter } from "@/services/relay/relayAdapter";
 import type { SignRequestPayload } from "@/services/relay/channelRelay";
 import { useWalletStore } from "@/store/walletStore";
 import { createConnection, SOL_ICON } from "@/services/solanaRpc";
@@ -167,7 +167,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
   const [selectedToken, setSelectedToken] = useState("SOL");
   const [selectedPolicyProfileId, setSelectedPolicyProfileId] = useState("");
   const [showContacts, setShowContacts] = useState(false);
-  const { activeAccount, network, tokens, contacts, getPolicyProfiles, setPendingPolicyRequest } = useWalletStore();
+  const { activeAccount, network, relayUrl, tokens, contacts, getPolicyProfiles, setPendingPolicyRequest } = useWalletStore();
   const relayRef = useRef<RelayAdapter | null>(null);
   const orchestratorRef = useRef<SigningOrchestrator | null>(null);
   const pendingSigningMessagesRef = useRef<BufferedSigningMessage[]>([]);
@@ -475,7 +475,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
     onStatus: (msg: string) => void,
   ) => {
     cleanupRelayState();
-    const relayMode = await canReachRelay(DEFAULT_RELAY_URL) ? "remote" : "local";
+    const relayMode = await canReachRelay(relayUrl) ? "remote" : "local";
     const requestedSessionCode = generateSessionCode();
 
     setSigningSessionCode(requestedSessionCode);
@@ -495,7 +495,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
         participantId,
         isCoordinator: true,
         deviceName: `Signer ${participantId}`,
-        relayUrl: DEFAULT_RELAY_URL,
+        relayUrl,
         sessionId: requestedSessionCode,
         events: {
           onParticipantJoined: () => {
@@ -592,6 +592,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
     network,
     parsedAmount,
     queueOrHandleSigningMessage,
+    relayUrl,
     recipient,
     runSigningOrchestrator,
     selectedToken,
@@ -617,13 +618,13 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
 
       const availableKeyIds = Object.keys(dkg.keyPackages).map(Number);
       const myParticipantId = dkg.participantId ?? availableKeyIds[0] ?? 1;
-      const relayMode = await canReachRelay(DEFAULT_RELAY_URL) ? "remote" : "local";
+      const relayMode = await canReachRelay(relayUrl) ? "remote" : "local";
       const relay = createRelay({
         mode: relayMode,
         participantId: myParticipantId,
         isCoordinator: false,
         deviceName: `Signer ${myParticipantId}`,
-        relayUrl: DEFAULT_RELAY_URL,
+        relayUrl,
         sessionId: sessionCode,
         events: {
           onParticipantJoined: () => {
@@ -680,7 +681,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
       setError(err instanceof Error ? err.message : String(err));
       setPhase("error");
     }
-  }, [cleanupRelayState, joinSessionCode, loadDkgState, queueOrHandleSigningMessage]);
+  }, [cleanupRelayState, joinSessionCode, loadDkgState, queueOrHandleSigningMessage, relayUrl]);
 
   const handleApproveSigningRequest = useCallback(async () => {
     if (!pendingSignRequest || !relayRef.current) {

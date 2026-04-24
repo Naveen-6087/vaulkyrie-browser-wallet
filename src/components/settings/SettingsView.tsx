@@ -45,6 +45,7 @@ function SettingRow({ icon: Icon, label, value, badge, onClick }: SettingRowProp
 export function SettingsView({ network, onNavigate }: SettingsViewProps) {
   const [showAccounts, setShowAccounts] = useState(false);
   const [showSecurity, setShowSecurity] = useState(false);
+  const [relayDraft, setRelayDraft] = useState("");
   const {
     accounts,
     activeAccount,
@@ -54,7 +55,9 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
     setLocked,
     passwordHash,
     securityPreferences,
+    relayUrl,
     unlockBlockedUntil,
+    setRelayUrl,
     updateSecurityPreferences,
   } = useWalletStore();
 
@@ -67,6 +70,10 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
     const interval = window.setInterval(() => setCurrentTime(Date.now()), 1000);
     return () => window.clearInterval(interval);
   }, [activeCooldown]);
+
+  useEffect(() => {
+    setRelayDraft(relayUrl);
+  }, [relayUrl]);
 
   return (
     <div className="flex flex-col gap-4 p-4 flex-1">
@@ -107,6 +114,17 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
           label="Policy Engine"
           value="Arcium MXE private evaluation"
           onClick={() => onNavigate("policy")}
+        />
+        <SettingRow
+          icon={Shield}
+          label="DApp Approvals"
+          value="Review extension connect/sign requests"
+          onClick={() => onNavigate("approval")}
+        />
+        <SettingRow
+          icon={Globe}
+          label="Cross-device Relay"
+          value={relayUrl.replace(/^wss?:\/\//, "")}
         />
         <SettingRow
           icon={Users}
@@ -194,6 +212,38 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
           </div>
         </Card>
       )}
+
+      <Card className="overflow-hidden">
+        <div className="border-b border-border px-4 py-3">
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+            Cross-device relay
+          </p>
+        </div>
+        <div className="space-y-3 p-4">
+          <p className="text-xs text-muted-foreground">
+            Vaulkyrie connects to a separately deployed relay server for cross-device ceremonies.
+            Use a <span className="font-mono">wss://</span> endpoint here for the published
+            Chrome extension.
+          </p>
+          <input
+            value={relayDraft}
+            onChange={(event) => setRelayDraft(event.target.value)}
+            placeholder="wss://relay.example.com"
+            className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+          />
+          <Button
+            variant="outline"
+            className="w-full"
+            onClick={() => {
+              const nextRelayUrl = relayDraft.trim();
+              if (!nextRelayUrl) return;
+              setRelayUrl(nextRelayUrl);
+            }}
+          >
+            Save relay URL
+          </Button>
+        </div>
+      </Card>
 
       {/* Expandable vault list */}
       {showAccounts && (
