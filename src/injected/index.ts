@@ -1,3 +1,6 @@
+import { Buffer } from "buffer";
+import { Transaction, VersionedTransaction } from "@solana/web3.js";
+
 type ProviderEventName = "connect" | "disconnect" | "accountChanged";
 type ProviderMethod =
   | "getState"
@@ -18,6 +21,11 @@ interface ProviderResponse<T = unknown> {
   id: string;
   result?: T;
   error?: string;
+}
+
+interface SignTransactionResult {
+  signedTransaction: string;
+  kind: "legacy" | "versioned";
 }
 
 class InjectedPublicKey {
@@ -94,12 +102,32 @@ class VaulkyrieProvider {
     this.emit("accountChanged", null);
   }
 
-  async signTransaction(): Promise<never> {
-    throw new Error("Vaulkyrie extension transaction signing is not implemented yet.");
+  async signTransaction(
+    transaction: { serialize: (...args: unknown[]) => Uint8Array; version?: unknown },
+  ): Promise<Transaction | VersionedTransaction> {
+    const isVersioned = typeof transaction.version !== "undefined";
+    const serializedBytes = isVersioned
+      ? transaction.serialize()
+      : transaction.serialize({
+          requireAllSignatures: false,
+          verifySignatures: false,
+        });
+
+    const result = await this.postRequest<SignTransactionResult>("signTransaction", {
+      serializedTransaction: Buffer.from(serializedBytes).toString("base64"),
+      kind: isVersioned ? "versioned" : "legacy",
+    });
+
+    const signedBytes = Buffer.from(result.signedTransaction, "base64");
+    return result.kind === "versioned"
+      ? VersionedTransaction.deserialize(signedBytes)
+      : Transaction.from(signedBytes);
   }
 
-  async signAllTransactions(): Promise<never> {
-    throw new Error("Vaulkyrie extension transaction signing is not implemented yet.");
+  async signAllTransactions(
+    transactions: Array<{ serialize: (...args: unknown[]) => Uint8Array; version?: unknown }>,
+  ): Promise<Array<Transaction | VersionedTransaction>> {
+    return Promise.all(transactions.map((transaction) => this.signTransaction(transaction)));
   }
 
   async signMessage(): Promise<never> {

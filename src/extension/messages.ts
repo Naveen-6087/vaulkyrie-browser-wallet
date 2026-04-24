@@ -13,6 +13,16 @@ export type ExtensionRpcMethod =
   | "getTransactions"
   | "signTransaction";
 
+export interface SignTransactionParams {
+  serializedTransaction: string;
+  kind: "legacy" | "versioned";
+}
+
+export interface SignTransactionResult {
+  signedTransaction: string;
+  kind: "legacy" | "versioned";
+}
+
 export interface ExtensionRpcRequest {
   type: typeof VAULKYRIE_EXTENSION_RPC;
   id: string;

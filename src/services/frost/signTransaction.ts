@@ -7,6 +7,7 @@
  */
 
 import { PublicKey, Transaction, VersionedTransaction, type Connection } from "@solana/web3.js";
+import { Buffer } from "buffer";
 import { signLocal, hexToBytes } from "./frostService";
 import { useWalletStore } from "@/store/walletStore";
 
@@ -28,7 +29,7 @@ export function loadDkgResult(publicKey: string): DkgResult {
   const { getDkgResult, storeDkgResult } = useWalletStore.getState();
   let dkg = getDkgResult(publicKey);
 
-  if (!dkg) {
+  if (!dkg && typeof sessionStorage !== "undefined") {
     const dkgJson = sessionStorage.getItem("vaulkyrie_dkg_result");
     if (dkgJson) {
       const parsed = JSON.parse(dkgJson);
@@ -53,6 +54,8 @@ export function loadDkgResult(publicKey: string): DkgResult {
 
   return dkg;
 }
+
+export type SerializedTransactionKind = "legacy" | "versioned";
 
 async function signThresholdMessage(
   walletPubkey: string,
@@ -83,6 +86,44 @@ async function signThresholdMessage(
   }
 
   return hexToBytes(result.signatureHex);
+}
+
+export async function signSerializedTransaction(
+  serializedTransactionBase64: string,
+  walletPubkey: string,
+  kind: SerializedTransactionKind,
+): Promise<{ signedTransactionBase64: string; kind: SerializedTransactionKind }> {
+  const fromPubkey = new PublicKey(walletPubkey);
+  const rawBytes = Buffer.from(serializedTransactionBase64, "base64");
+
+  if (kind === "versioned") {
+    const transaction = VersionedTransaction.deserialize(rawBytes);
+    const signatureBytes = await signThresholdMessage(
+      walletPubkey,
+      transaction.message.serialize(),
+    );
+    transaction.addSignature(fromPubkey, signatureBytes);
+    return {
+      signedTransactionBase64: Buffer.from(transaction.serialize()).toString("base64"),
+      kind,
+    };
+  }
+
+  const transaction = Transaction.from(rawBytes);
+  const signatureBytes = await signThresholdMessage(
+    walletPubkey,
+    transaction.serializeMessage(),
+  );
+  transaction.addSignature(fromPubkey, Buffer.from(signatureBytes));
+  return {
+    signedTransactionBase64: Buffer.from(
+      transaction.serialize({
+        requireAllSignatures: false,
+        verifySignatures: false,
+      }),
+    ).toString("base64"),
+    kind,
+  };
 }
 
 /**

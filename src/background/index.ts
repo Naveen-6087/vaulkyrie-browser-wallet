@@ -10,6 +10,11 @@ import {
   fetchTransactionHistory,
   withRpcFallback,
 } from "@/services/solanaRpc";
+import { signSerializedTransaction } from "@/services/frost/signTransaction";
+import type {
+  SignTransactionParams,
+  SignTransactionResult,
+} from "@/extension/messages";
 
 chrome.runtime.onInstalled.addListener(() => {
   console.log("[Vaulkyrie] Extension installed");
@@ -61,7 +66,28 @@ async function handleRpcRequest(message: ExtensionRpcRequest) {
       if (providerState.isLocked) {
         throw new Error("Vaulkyrie is locked. Unlock the wallet before signing.");
       }
-      throw new Error("Extension transaction signing is not implemented yet.");
+      if (!providerState.publicKey) {
+        throw new Error("No active Vaulkyrie account found.");
+      }
+      if (!message.params) {
+        throw new Error("Missing transaction payload.");
+      }
+      {
+        const params = message.params as unknown as SignTransactionParams;
+        if (!params.serializedTransaction || !params.kind) {
+          throw new Error("Transaction payload is incomplete.");
+        }
+        const result = await signSerializedTransaction(
+          params.serializedTransaction,
+          providerState.publicKey,
+          params.kind,
+        );
+        const response: SignTransactionResult = {
+          signedTransaction: result.signedTransactionBase64,
+          kind: result.kind,
+        };
+        return response;
+      }
     default:
       throw new Error(`Unsupported extension RPC method: ${message.method}`);
   }
