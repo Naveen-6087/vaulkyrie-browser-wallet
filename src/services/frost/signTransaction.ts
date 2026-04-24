@@ -126,6 +126,13 @@ export async function signSerializedTransaction(
   };
 }
 
+export async function signMessageBytes(
+  walletPubkey: string,
+  messageBytes: Uint8Array,
+): Promise<Uint8Array> {
+  return signThresholdMessage(walletPubkey, messageBytes);
+}
+
 /**
  * Sign a pre-built Transaction with the vault's FROST threshold key,
  * then submit it to the network.

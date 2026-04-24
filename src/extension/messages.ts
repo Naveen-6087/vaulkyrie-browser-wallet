@@ -11,7 +11,8 @@ export type ExtensionRpcMethod =
   | "disconnect"
   | "getBalance"
   | "getTransactions"
-  | "signTransaction";
+  | "signTransaction"
+  | "signMessage";
 
 export interface SignTransactionParams {
   serializedTransaction: string;
@@ -21,6 +22,15 @@ export interface SignTransactionParams {
 export interface SignTransactionResult {
   signedTransaction: string;
   kind: "legacy" | "versioned";
+}
+
+export interface SignMessageParams {
+  message: string;
+}
+
+export interface SignMessageResult {
+  signature: string;
+  publicKey: string;
 }
 
 export interface ExtensionRpcRequest {

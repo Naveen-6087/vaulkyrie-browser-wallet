@@ -8,7 +8,8 @@ type ProviderMethod =
   | "disconnect"
   | "getBalance"
   | "getTransactions"
-  | "signTransaction";
+  | "signTransaction"
+  | "signMessage";
 
 interface ProviderState {
   connected: boolean;
@@ -26,6 +27,11 @@ interface ProviderResponse<T = unknown> {
 interface SignTransactionResult {
   signedTransaction: string;
   kind: "legacy" | "versioned";
+}
+
+interface SignMessageResult {
+  signature: string;
+  publicKey: string;
 }
 
 class InjectedPublicKey {
@@ -130,8 +136,18 @@ class VaulkyrieProvider {
     return Promise.all(transactions.map((transaction) => this.signTransaction(transaction)));
   }
 
-  async signMessage(): Promise<never> {
-    throw new Error("Vaulkyrie extension message signing is not implemented yet.");
+  async signMessage(message: Uint8Array | string): Promise<{ publicKey: InjectedPublicKey | null; signature: Uint8Array }> {
+    const messageBytes =
+      typeof message === "string" ? new TextEncoder().encode(message) : new Uint8Array(message);
+
+    const result = await this.postRequest<SignMessageResult>("signMessage", {
+      message: Buffer.from(messageBytes).toString("base64"),
+    });
+
+    return {
+      publicKey: result.publicKey ? new InjectedPublicKey(result.publicKey) : this.publicKey,
+      signature: Uint8Array.from(Buffer.from(result.signature, "base64")),
+    };
   }
 
   private emit(event: ProviderEventName, ...args: unknown[]) {

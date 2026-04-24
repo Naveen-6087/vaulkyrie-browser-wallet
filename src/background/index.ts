@@ -10,8 +10,10 @@ import {
   fetchTransactionHistory,
   withRpcFallback,
 } from "@/services/solanaRpc";
-import { signSerializedTransaction } from "@/services/frost/signTransaction";
+import { signMessageBytes, signSerializedTransaction } from "@/services/frost/signTransaction";
 import type {
+  SignMessageParams,
+  SignMessageResult,
   SignTransactionParams,
   SignTransactionResult,
 } from "@/extension/messages";
@@ -85,6 +87,31 @@ async function handleRpcRequest(message: ExtensionRpcRequest) {
         const response: SignTransactionResult = {
           signedTransaction: result.signedTransactionBase64,
           kind: result.kind,
+        };
+        return response;
+      }
+    case "signMessage":
+      if (providerState.isLocked) {
+        throw new Error("Vaulkyrie is locked. Unlock the wallet before signing.");
+      }
+      if (!providerState.publicKey) {
+        throw new Error("No active Vaulkyrie account found.");
+      }
+      if (!message.params) {
+        throw new Error("Missing message payload.");
+      }
+      {
+        const params = message.params as unknown as SignMessageParams;
+        if (!params.message) {
+          throw new Error("Message payload is incomplete.");
+        }
+        const signature = await signMessageBytes(
+          providerState.publicKey,
+          Buffer.from(params.message, "base64"),
+        );
+        const response: SignMessageResult = {
+          signature: Buffer.from(signature).toString("base64"),
+          publicKey: providerState.publicKey,
         };
         return response;
       }
