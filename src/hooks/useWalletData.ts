@@ -16,12 +16,14 @@ export function useWalletData() {
     isLoading,
     tokens,
     transactions,
+    collectibles,
     vaultState,
     error,
     lastFetchedAt,
     refreshAll,
     refreshBalances,
     refreshTransactions,
+    refreshCollectibles,
   } = useWalletStore();
 
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -73,6 +75,7 @@ export function useWalletData() {
   return {
     tokens,
     transactions,
+    collectibles,
     vaultState,
     isLoading,
     error,
@@ -80,5 +83,6 @@ export function useWalletData() {
     refreshAll,
     refreshBalances,
     refreshTransactions,
+    refreshCollectibles,
   };
 }

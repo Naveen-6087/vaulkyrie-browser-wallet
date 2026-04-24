@@ -1,4 +1,5 @@
 import { BalanceCard } from "@/components/wallet/BalanceCard";
+import { CollectiblesGrid } from "@/components/wallet/CollectiblesGrid";
 import { TokenList } from "@/components/wallet/TokenList";
 import { ActivityList } from "@/components/wallet/ActivityList";
 import { useWalletData } from "@/hooks/useWalletData";
@@ -12,6 +13,7 @@ interface DashboardProps {
 export function Dashboard({ onNavigate }: DashboardProps) {
   const {
     tokens,
+    collectibles,
     transactions,
     isLoading,
     error,
@@ -66,6 +68,11 @@ export function Dashboard({ onNavigate }: DashboardProps) {
       )}
 
       <TokenList tokens={tokens} />
+      <CollectiblesGrid
+        collectibles={collectibles}
+        isLoading={isLoading}
+        onNavigate={onNavigate}
+      />
       <ActivityList transactions={transactions} />
     </div>
   );

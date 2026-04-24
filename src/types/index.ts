@@ -31,6 +31,15 @@ export interface Transaction {
   fee?: number;
 }
 
+export interface Collectible {
+  mint: string;
+  name: string;
+  symbol?: string;
+  image?: string;
+  collection?: string;
+  description?: string;
+}
+
 export interface Contact {
   name: string;
   address: string;

@@ -5,6 +5,7 @@ import type {
   WalletAccount,
   Token,
   Transaction,
+  Collectible,
   VaultState,
   WalletView,
   PolicyProfile,
@@ -16,6 +17,7 @@ import {
   createVaulkyrieClient,
   fetchTokenBalances,
   fetchTransactionHistory,
+  fetchCollectibles,
   fetchTokenPrices,
 } from "../services/solanaRpc";
 
@@ -80,6 +82,7 @@ interface WalletState {
   // Tokens & transactions (real data from RPC)
   tokens: Token[];
   transactions: Transaction[];
+  collectibles: Collectible[];
 
   // Vault state (Vaulkyrie on-chain accounts)
   vaultState: VaultState | null;
@@ -104,6 +107,7 @@ interface WalletState {
   switchVault: (publicKey: string) => void;
   setTokens: (tokens: Token[]) => void;
   setTransactions: (transactions: Transaction[]) => void;
+  setCollectibles: (collectibles: Collectible[]) => void;
   setVaultState: (state: VaultState | null) => void;
   setNetwork: (network: NetworkId) => void;
   setCurrentView: (view: WalletView) => void;
@@ -139,6 +143,7 @@ interface WalletState {
   // Async actions — real Solana RPC calls
   refreshBalances: () => Promise<void>;
   refreshTransactions: () => Promise<void>;
+  refreshCollectibles: () => Promise<void>;
   refreshVaultState: () => Promise<void>;
   refreshAll: () => Promise<void>;
 }
@@ -161,6 +166,7 @@ export const useWalletStore = create<WalletState>()(
       pendingPolicyRequest: null,
       tokens: [],
       transactions: [],
+      collectibles: [],
       vaultState: null,
       network: DEFAULT_NETWORK,
       currentView: "dashboard",
@@ -196,6 +202,7 @@ export const useWalletStore = create<WalletState>()(
             isLoading: false,
             tokens: [],
             transactions: [],
+            collectibles: [],
             vaultState: null,
             lastFetchedAt: null,
           });
@@ -203,6 +210,7 @@ export const useWalletStore = create<WalletState>()(
       },
       setTokens: (tokens) => set({ tokens }),
       setTransactions: (transactions) => set({ transactions }),
+      setCollectibles: (collectibles) => set({ collectibles }),
       setVaultState: (vaultState) => set({ vaultState }),
       setNetwork: (network) => set({
         network,
@@ -210,6 +218,7 @@ export const useWalletStore = create<WalletState>()(
         isLoading: false,
         tokens: [],
         transactions: [],
+        collectibles: [],
         vaultState: null,
         lastFetchedAt: null,
       }),
@@ -343,6 +352,20 @@ export const useWalletStore = create<WalletState>()(
         }
       },
 
+      refreshCollectibles: async () => {
+        const { activeAccount, network } = get();
+        if (!activeAccount) return;
+
+        try {
+          const connection = createConnection(network);
+          const pubkey = new PublicKey(activeAccount.publicKey);
+          const collectibles = await fetchCollectibles(connection, pubkey);
+          set({ collectibles });
+        } catch (err) {
+          console.warn("Failed to refresh collectibles:", err);
+        }
+      },
+
       refreshVaultState: async () => {
         const { activeAccount, network } = get();
         if (!activeAccount) return;
@@ -374,10 +397,11 @@ export const useWalletStore = create<WalletState>()(
       },
 
       refreshAll: async () => {
-        const { refreshBalances, refreshTransactions, refreshVaultState } = get();
+        const { refreshBalances, refreshTransactions, refreshCollectibles, refreshVaultState } = get();
         await Promise.all([
           refreshBalances(),
           refreshTransactions(),
+          refreshCollectibles(),
           refreshVaultState(),
         ]);
       },

@@ -9,14 +9,19 @@ import {
   LAMPORTS_PER_SOL,
   type ParsedTransactionWithMeta,
   type ConfirmedSignatureInfo,
+  type ParsedAccountData,
 } from "@solana/web3.js";
 import { NETWORKS, type NetworkId } from "@/lib/constants";
 import { VaulkyrieClient } from "@/sdk/client";
-import type { Token, Transaction } from "@/types";
+import type { Token, Transaction, Collectible } from "@/types";
 
 const TOKEN_PROGRAM_ID = new PublicKey(
   "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 );
+const METADATA_PROGRAM_ID = new PublicKey(
+  "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s"
+);
+const MAX_COLLECTIBLES = 24;
 
 export const KNOWN_MINTS: Record<string, { symbol: string; name: string; decimals: number; icon: string }> = {
   "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": { symbol: "USDC", name: "USD Coin", decimals: 6, icon: "https://raw.githubusercontent.com/solana-labs/token-list/main/assets/mainnet/EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v/logo.png" },
@@ -101,6 +106,140 @@ export async function fetchTokenBalances(
   }
 
   return tokens;
+}
+
+function normalizeAssetUrl(url?: string): string | undefined {
+  if (!url) return undefined;
+  if (url.startsWith("ipfs://")) {
+    return `https://ipfs.io/ipfs/${url.slice("ipfs://".length)}`;
+  }
+  if (url.startsWith("ar://")) {
+    return `https://arweave.net/${url.slice("ar://".length)}`;
+  }
+  return url;
+}
+
+function readMetadataString(dataView: DataView, bytes: Uint8Array, offset: number): { value: string; offset: number } {
+  const length = dataView.getUint32(offset, true);
+  const start = offset + 4;
+  const end = start + length;
+  const value = new TextDecoder().decode(bytes.slice(start, end)).replace(/\0/g, "").trim();
+  return { value, offset: end };
+}
+
+function parseMetaplexMetadata(data: Uint8Array): { name: string; symbol: string; uri: string } | null {
+  try {
+    const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+    const offset = 1 + 32 + 32; // key + update authority + mint
+    const name = readMetadataString(view, data, offset);
+    const symbol = readMetadataString(view, data, name.offset);
+    const uri = readMetadataString(view, data, symbol.offset);
+    return {
+      name: name.value,
+      symbol: symbol.value,
+      uri: uri.value,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function fetchCollectibleJson(uri?: string): Promise<Partial<Collectible> | null> {
+  const normalized = normalizeAssetUrl(uri);
+  if (!normalized) return null;
+
+  try {
+    const response = await fetch(normalized);
+    if (!response.ok) return null;
+    const json = await response.json() as {
+      name?: string;
+      symbol?: string;
+      description?: string;
+      image?: string;
+      collection?: { name?: string };
+      properties?: { files?: Array<{ uri?: string; type?: string }> };
+    };
+    const image = normalizeAssetUrl(
+      json.image ?? json.properties?.files?.find((file) => file.type?.startsWith("image/"))?.uri,
+    );
+
+    return {
+      name: json.name?.trim(),
+      symbol: json.symbol?.trim(),
+      description: json.description?.trim(),
+      collection: json.collection?.name?.trim(),
+      image,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchCollectibles(
+  connection: Connection,
+  publicKey: PublicKey,
+): Promise<Collectible[]> {
+  try {
+    const tokenAccounts = await connection.getParsedTokenAccountsByOwner(
+      publicKey,
+      { programId: TOKEN_PROGRAM_ID },
+    );
+
+    const nftMints = tokenAccounts.value
+      .map(({ account }) => {
+        const parsed = account.data as ParsedAccountData;
+        const info = parsed.parsed?.info;
+        const amount = info?.tokenAmount?.amount;
+        const decimals = info?.tokenAmount?.decimals;
+        const mint = info?.mint as string | undefined;
+
+        if (!mint || decimals !== 0 || amount !== "1") return null;
+        return mint;
+      })
+      .filter((mint): mint is string => Boolean(mint))
+      .slice(0, MAX_COLLECTIBLES);
+
+    if (nftMints.length === 0) return [];
+
+    const metadataPdas = nftMints.map((mint) =>
+      PublicKey.findProgramAddressSync(
+        [
+          new TextEncoder().encode("metadata"),
+          METADATA_PROGRAM_ID.toBytes(),
+          new PublicKey(mint).toBytes(),
+        ],
+        METADATA_PROGRAM_ID,
+      )[0],
+    );
+
+    const metadataAccounts = await connection.getMultipleAccountsInfo(metadataPdas);
+    const baseAssets = metadataAccounts.map((account, index) => {
+      const parsed = account?.data ? parseMetaplexMetadata(account.data) : null;
+      return {
+        mint: nftMints[index],
+        name: parsed?.name || `Collectible ${index + 1}`,
+        symbol: parsed?.symbol || "NFT",
+        uri: parsed?.uri,
+      };
+    });
+
+    const metadataJson = await Promise.all(baseAssets.map((asset) => fetchCollectibleJson(asset.uri)));
+
+    return baseAssets.map((asset, index) => {
+      const json = metadataJson[index];
+      return {
+        mint: asset.mint,
+        name: json?.name || asset.name,
+        symbol: json?.symbol || asset.symbol,
+        description: json?.description,
+        collection: json?.collection,
+        image: json?.image,
+      };
+    });
+  } catch (err) {
+    console.warn("Failed to fetch collectibles:", err);
+    return [];
+  }
 }
 
 export async function fetchTransactionHistory(
