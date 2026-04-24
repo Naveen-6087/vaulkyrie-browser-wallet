@@ -145,6 +145,7 @@ interface WalletState {
   // XMSS tree persistence
   storeXmssTree: (publicKey: string, serialized: string) => void;
   getXmssTree: (publicKey: string) => string | null;
+  clearXmssTree: (publicKey: string) => void;
 
   // Policy profile persistence
   upsertPolicyProfile: (publicKey: string, profile: PolicyProfile) => void;
@@ -316,6 +317,12 @@ export const useWalletStore = create<WalletState>()(
           xmssTrees: { ...state.xmssTrees, [publicKey]: serialized },
         })),
       getXmssTree: (publicKey) => get().xmssTrees[publicKey] ?? null,
+      clearXmssTree: (publicKey) =>
+        set((state) => {
+          const next = { ...state.xmssTrees };
+          delete next[publicKey];
+          return { xmssTrees: next };
+        }),
 
       upsertPolicyProfile: (publicKey, profile) =>
         set((state) => {

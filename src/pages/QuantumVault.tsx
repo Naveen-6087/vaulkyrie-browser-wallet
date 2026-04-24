@@ -9,8 +9,9 @@
  *   - Authority rotation prompt when XMSS leaves near exhaustion
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { PublicKey } from "@solana/web3.js";
 import {
   Shield,
   Lock,
@@ -33,10 +34,13 @@ import {
   quantumSplitDigest,
   quantumCloseDigest,
   bytesToHex,
+  deserializeXmssTree,
   serializeAuthProof,
+  serializeXmssTree,
   type XmssTree,
 } from "@/services/quantum/wots";
 import type { WalletView } from "@/types";
+import { useWalletStore } from "@/store/walletStore";
 
 // ── Vault Status ─────────────────────────────────────────────────────
 
@@ -63,9 +67,10 @@ interface QuantumVaultProps {
 }
 
 export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
+  const { activeAccount, storeXmssTree, getXmssTree, clearXmssTree } = useWalletStore();
   const [vault, setVault] = useState<QuantumVaultState>({
     status: VaultStatus.None,
-    balance: 0,
+    balance: activeAccount?.balance ?? 0,
     authorityRootHex: "",
     nextLeafIndex: 0,
     totalLeaves: 0,
@@ -85,6 +90,36 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
   const remainingSignatures = vault.totalLeaves - vault.nextLeafIndex;
   const isNearExhaustion = vault.status === VaultStatus.Active && remainingSignatures <= 3;
 
+  useEffect(() => {
+    if (!walletAddress) return;
+
+    const serialized = getXmssTree(walletAddress);
+    if (!serialized) {
+      setVault((prev) => ({
+        ...prev,
+        balance: activeAccount?.balance ?? prev.balance,
+      }));
+      return;
+    }
+
+    try {
+      const tree = deserializeXmssTree(serialized);
+      const totalLeaves = 1 << tree.depth;
+      const exhausted = tree.nextLeafIndex >= totalLeaves;
+
+      setVault({
+        status: exhausted ? VaultStatus.Exhausted : VaultStatus.Active,
+        balance: activeAccount?.balance ?? 0,
+        authorityRootHex: bytesToHex(tree.root),
+        nextLeafIndex: tree.nextLeafIndex,
+        totalLeaves,
+        xmssTree: tree,
+      });
+    } catch (err) {
+      console.warn("Failed to restore quantum vault state:", err);
+    }
+  }, [activeAccount?.balance, getXmssTree, walletAddress]);
+
   // ── Open Vault ───────────────────────────────────────────────────
 
   const handleOpenVault = async () => {
@@ -100,23 +135,13 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
 
       setVault({
         status: VaultStatus.Active,
-        balance: 0, // Would come from on-chain
+        balance: activeAccount?.balance ?? 0,
         authorityRootHex: bytesToHex(tree.root),
         nextLeafIndex: 0,
         totalLeaves: 1 << tree.depth,
         xmssTree: tree,
       });
-
-      // Persist the tree in sessionStorage
-      sessionStorage.setItem(
-        "vaulkyrie_xmss_tree",
-        JSON.stringify({
-          depth: tree.depth,
-          nextLeafIndex: tree.nextLeafIndex,
-          rootHex: bytesToHex(tree.root),
-          createdAt: Date.now(),
-        }),
-      );
+      storeXmssTree(walletAddress, serializeXmssTree(tree));
 
       setStatusMessage("Quantum vault initialized!");
       setActivePanel("overview");
@@ -147,8 +172,8 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
 
     try {
       const amountLamports = BigInt(Math.floor(amount * 1e9));
-      const destBytes = new Uint8Array(32); // Would be real pubkey
-      const refundBytes = new Uint8Array(32); // Would be wallet pubkey
+      const destBytes = new PublicKey(splitDestination).toBytes();
+      const refundBytes = new PublicKey(walletAddress).toBytes();
 
       const digest = await quantumSplitDigest(amountLamports, destBytes, refundBytes);
       setStatusMessage("Signing with WOTS+ (one-time signature)...");
@@ -171,14 +196,22 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
       const proof = serializeAuthProof(publicKey, signature, leafIndex, authPath);
       setLastProofHex(bytesToHex(proof).substring(0, 64) + "...");
 
+      const totalLeaves = 1 << vault.xmssTree.depth;
+      const nextLeafIndex = vault.xmssTree.nextLeafIndex;
+      const nextStatus = nextLeafIndex >= totalLeaves ? VaultStatus.Exhausted : VaultStatus.Active;
+
       setVault((prev) => ({
         ...prev,
-        nextLeafIndex: prev.nextLeafIndex + 1,
+        status: nextStatus,
+        nextLeafIndex,
+        totalLeaves,
+        xmssTree: vault.xmssTree,
       }));
+      storeXmssTree(walletAddress, serializeXmssTree(vault.xmssTree));
 
       setStatusMessage(
         `Split signed! Leaf #${leafIndex} consumed. ` +
-          `${vault.totalLeaves - leafIndex - 1} signatures remaining.`,
+          `${Math.max(0, totalLeaves - nextLeafIndex)} signatures remaining.`,
       );
       setSplitAmount("");
       setSplitDestination("");
@@ -199,7 +232,7 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
     setStatusMessage("Computing close digest...");
 
     try {
-      const refundBytes = new Uint8Array(32); // Would be wallet pubkey
+      const refundBytes = new PublicKey(walletAddress).toBytes();
       const digest = await quantumCloseDigest(refundBytes);
 
       setStatusMessage("Signing vault close with WOTS+...");
@@ -226,8 +259,7 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
         totalLeaves: 0,
         xmssTree: null,
       });
-
-      sessionStorage.removeItem("vaulkyrie_xmss_tree");
+      clearXmssTree(walletAddress);
       setStatusMessage("Quantum vault closed. All funds returned to refund address.");
       setActivePanel("overview");
     } catch (err) {

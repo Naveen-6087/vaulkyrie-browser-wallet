@@ -88,6 +88,17 @@ export interface XmssAuthPath {
   siblings: Uint8Array[];
 }
 
+interface SerializedXmssTree {
+  depth: number;
+  nextLeafIndex: number;
+  rootHex: string;
+  keys: Array<{
+    secretKey: string[];
+    publicKey: string[];
+    publicKeyHash: string;
+  }>;
+}
+
 // ── Key Generation ───────────────────────────────────────────────────
 
 /** Generate a single WOTS+ key pair */
@@ -483,4 +494,34 @@ export function hexToBytes(hex: string): Uint8Array {
     bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16);
   }
   return bytes;
+}
+
+export function serializeXmssTree(tree: XmssTree): string {
+  const serialized: SerializedXmssTree = {
+    depth: tree.depth,
+    nextLeafIndex: tree.nextLeafIndex,
+    rootHex: bytesToHex(tree.root),
+    keys: tree.keys.map((key) => ({
+      secretKey: key.secretKey.elements.map(bytesToHex),
+      publicKey: key.publicKey.elements.map(bytesToHex),
+      publicKeyHash: bytesToHex(key.publicKeyHash),
+    })),
+  };
+
+  return JSON.stringify(serialized);
+}
+
+export function deserializeXmssTree(serialized: string): XmssTree {
+  const parsed = JSON.parse(serialized) as SerializedXmssTree;
+
+  return {
+    depth: parsed.depth,
+    nextLeafIndex: parsed.nextLeafIndex,
+    root: hexToBytes(parsed.rootHex),
+    keys: parsed.keys.map((key) => ({
+      secretKey: { elements: key.secretKey.map(hexToBytes) },
+      publicKey: { elements: key.publicKey.map(hexToBytes) },
+      publicKeyHash: hexToBytes(key.publicKeyHash),
+    })),
+  };
 }
