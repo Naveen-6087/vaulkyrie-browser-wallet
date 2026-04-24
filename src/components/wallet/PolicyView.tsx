@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { PublicKey, Connection, Transaction, SystemProgram } from "@solana/web3.js";
+import { PublicKey, Transaction, SystemProgram } from "@solana/web3.js";
 import {
   Shield, ShieldCheck, ShieldAlert, ShieldX,
   Loader2, RefreshCw, Clock, Plus, XCircle, AlertCircle, Check, ExternalLink,
@@ -22,6 +22,7 @@ import {
 } from "@/sdk/policyInstructions";
 import { signAndSendTransaction } from "@/services/frost/signTransaction";
 import { NETWORKS } from "@/lib/constants";
+import { withRpcFallback } from "@/services/solanaRpc";
 import type { WalletView, PolicyProfile, PendingPolicyRequest } from "@/types";
 import type { PolicyConfigAccount, PolicyEvaluationAccount } from "@/sdk/types";
 
@@ -169,12 +170,6 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
     seedEvaluationDraft(pendingPolicyRequest);
   }, [pendingPolicyRequest, seedEvaluationDraft]);
 
-  const getConnection = useCallback(() => {
-    const rpcUrl = NETWORKS[network]?.rpcUrl;
-    if (!rpcUrl) throw new Error("No RPC URL for network");
-    return new Connection(rpcUrl, "confirmed");
-  }, [network]);
-
   const fetchPolicyData = useCallback(async () => {
     if (!activeAccount?.publicKey) {
       setLoading(false);
@@ -185,25 +180,27 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
     setError("");
 
     try {
-      const connection = getConnection();
-      const client = new PolicyMxeClient(connection);
       const pubkey = new PublicKey(activeAccount.publicKey);
-      const configResult = await client.getPolicyConfig(pubkey);
+      const result = await withRpcFallback(network, async (connection) => {
+        const client = new PolicyMxeClient(connection);
+        const configResult = await client.getPolicyConfig(pubkey);
 
-      if (configResult) {
-        setConfig(configResult.account);
-        const evals = await client.getEvaluationsForVault(pubkey);
-        setEvaluations(evals);
-      } else {
-        setConfig(null);
-        setEvaluations([]);
-      }
+        if (!configResult) {
+          return { config: null, evaluations: [] };
+        }
+
+        const evaluations = await client.getEvaluationsForVault(pubkey);
+        return { config: configResult.account, evaluations };
+      });
+
+      setConfig(result.config);
+      setEvaluations(result.evaluations);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to fetch policy data");
     } finally {
       setLoading(false);
     }
-  }, [activeAccount?.publicKey, getConnection]);
+  }, [activeAccount?.publicKey, network]);
 
   useEffect(() => {
     fetchPolicyData();
@@ -266,37 +263,37 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
     try {
       const authority = new PublicKey(activeAccount.publicKey);
       const [configPda, bump] = findPolicyConfigPda(authority);
-      const connection = getConnection();
 
       setActionMsg("Building init_policy_config transaction...");
+      const sig = await withRpcFallback(network, async (connection) => {
+        const ix = createInitPolicyConfigInstruction(configPda, authority, {
+          coreProgram: VAULKYRIE_CORE_PROGRAM_ID.toBytes(),
+          arciumProgram: VAULKYRIE_POLICY_MXE_PROGRAM_ID.toBytes(),
+          mxeAccount: VAULKYRIE_POLICY_MXE_PROGRAM_ID.toBytes(),
+          policyVersion: BigInt(initVersion || "1"),
+          bump,
+        });
 
-      const ix = createInitPolicyConfigInstruction(configPda, authority, {
-        coreProgram: VAULKYRIE_CORE_PROGRAM_ID.toBytes(),
-        arciumProgram: VAULKYRIE_POLICY_MXE_PROGRAM_ID.toBytes(),
-        mxeAccount: VAULKYRIE_POLICY_MXE_PROGRAM_ID.toBytes(),
-        policyVersion: BigInt(initVersion || "1"),
-        bump,
+        const rentLamports = await connection.getMinimumBalanceForRentExemption(
+          ACCOUNT_SIZE.PolicyConfigState,
+        );
+        const fundIx = SystemProgram.createAccount({
+          fromPubkey: authority,
+          newAccountPubkey: configPda,
+          lamports: rentLamports,
+          space: ACCOUNT_SIZE.PolicyConfigState,
+          programId: VAULKYRIE_POLICY_MXE_PROGRAM_ID,
+        });
+
+        const tx = new Transaction().add(fundIx, ix);
+
+        return signAndSendTransaction(
+          connection,
+          tx,
+          activeAccount.publicKey,
+          (msg) => setActionMsg(msg),
+        );
       });
-
-      const rentLamports = await connection.getMinimumBalanceForRentExemption(
-        ACCOUNT_SIZE.PolicyConfigState,
-      );
-      const fundIx = SystemProgram.createAccount({
-        fromPubkey: authority,
-        newAccountPubkey: configPda,
-        lamports: rentLamports,
-        space: ACCOUNT_SIZE.PolicyConfigState,
-        programId: VAULKYRIE_POLICY_MXE_PROGRAM_ID,
-      });
-
-      const tx = new Transaction().add(fundIx, ix);
-
-      const sig = await signAndSendTransaction(
-        connection,
-        tx,
-        activeAccount.publicKey,
-        (msg) => setActionMsg(msg),
-      );
 
       setTxSignature(sig);
       setPhase("success");
@@ -318,11 +315,8 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
         new PublicKey(evalRecipient.trim());
       }
 
-      const connection = getConnection();
       const [configPda] = findPolicyConfigPda(authority);
       const nonce = config.nextRequestNonce;
-      const currentSlot = await connection.getSlot();
-      const expirySlot = BigInt(currentSlot) + BigInt(evalExpirySlots || "200");
 
       const actionPayload = {
         profileId: selectedProfile?.id ?? null,
@@ -342,40 +336,44 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
       const [evalPda] = findPolicyEvaluationPda(configPda, actionHash);
 
       setActionMsg("Building open_policy_evaluation transaction...");
+      const sig = await withRpcFallback(network, async (connection) => {
+        const currentSlot = await connection.getSlot();
+        const expirySlot = BigInt(currentSlot) + BigInt(evalExpirySlots || "200");
 
-      const ix = createOpenPolicyEvaluationInstruction(
-        configPda,
-        evalPda,
-        authority,
-        {
-          vaultId: authority.toBytes(),
-          actionHash,
-          encryptedInputCommitment: encryptedInput,
-          requestNonce: nonce,
-          expirySlot,
-          computationOffset: 0n,
-        },
-      );
+        const ix = createOpenPolicyEvaluationInstruction(
+          configPda,
+          evalPda,
+          authority,
+          {
+            vaultId: authority.toBytes(),
+            actionHash,
+            encryptedInputCommitment: encryptedInput,
+            requestNonce: nonce,
+            expirySlot,
+            computationOffset: 0n,
+          },
+        );
 
-      const rentLamports = await connection.getMinimumBalanceForRentExemption(
-        ACCOUNT_SIZE.PolicyEvaluationState,
-      );
-      const fundIx = SystemProgram.createAccount({
-        fromPubkey: authority,
-        newAccountPubkey: evalPda,
-        lamports: rentLamports,
-        space: ACCOUNT_SIZE.PolicyEvaluationState,
-        programId: VAULKYRIE_POLICY_MXE_PROGRAM_ID,
+        const rentLamports = await connection.getMinimumBalanceForRentExemption(
+          ACCOUNT_SIZE.PolicyEvaluationState,
+        );
+        const fundIx = SystemProgram.createAccount({
+          fromPubkey: authority,
+          newAccountPubkey: evalPda,
+          lamports: rentLamports,
+          space: ACCOUNT_SIZE.PolicyEvaluationState,
+          programId: VAULKYRIE_POLICY_MXE_PROGRAM_ID,
+        });
+
+        const tx = new Transaction().add(fundIx, ix);
+
+        return signAndSendTransaction(
+          connection,
+          tx,
+          activeAccount.publicKey,
+          (msg) => setActionMsg(msg),
+        );
       });
-
-      const tx = new Transaction().add(fundIx, ix);
-
-      const sig = await signAndSendTransaction(
-        connection,
-        tx,
-        activeAccount.publicKey,
-        (msg) => setActionMsg(msg),
-      );
 
       setPendingPolicyRequest(null);
       setTxSignature(sig);
@@ -385,7 +383,7 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
       setError(e instanceof Error ? e.message : "Failed to open evaluation");
       setPhase("error");
     }
-  }, [activeAccount?.publicKey, config, evalActionType, evalAmount, evalExpirySlots, evalRecipient, evalToken, fetchPolicyData, getConnection, selectedProfile, setPendingPolicyRequest]);
+  }, [activeAccount?.publicKey, config, evalActionType, evalAmount, evalExpirySlots, evalRecipient, evalToken, fetchPolicyData, network, selectedProfile, setPendingPolicyRequest]);
 
   const handleAbortEvaluation = async (evalAddress: PublicKey) => {
     if (!activeAccount?.publicKey) return;
@@ -393,21 +391,21 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
 
     try {
       const authority = new PublicKey(activeAccount.publicKey);
-      const connection = getConnection();
+      await withRpcFallback(network, async (connection) => {
+        const ix = createAbortPolicyEvaluationInstruction(
+          evalAddress,
+          authority,
+          1,
+        );
 
-      const ix = createAbortPolicyEvaluationInstruction(
-        evalAddress,
-        authority,
-        1,
-      );
+        const tx = new Transaction().add(ix);
 
-      const tx = new Transaction().add(ix);
-
-      await signAndSendTransaction(
-        connection,
-        tx,
-        activeAccount.publicKey,
-      );
+        return signAndSendTransaction(
+          connection,
+          tx,
+          activeAccount.publicKey,
+        );
+      });
 
       fetchPolicyData();
     } catch (e) {

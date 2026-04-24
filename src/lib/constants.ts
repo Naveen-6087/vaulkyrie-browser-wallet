@@ -2,18 +2,27 @@ export const NETWORKS = {
   mainnet: {
     name: "Mainnet",
     rpcUrl: "https://api.mainnet-beta.solana.com",
+    rpcUrls: [
+      "https://api.mainnet-beta.solana.com",
+      "https://rpc.ankr.com/solana",
+    ],
     explorerUrl: "https://explorer.solana.com",
     color: "#14F195",
   },
   devnet: {
     name: "Devnet",
     rpcUrl: "https://api.devnet.solana.com",
+    rpcUrls: [
+      "https://api.devnet.solana.com",
+      "https://rpc.ankr.com/solana_devnet",
+    ],
     explorerUrl: "https://explorer.solana.com/?cluster=devnet",
     color: "#9945FF",
   },
   testnet: {
     name: "Testnet",
     rpcUrl: "https://api.testnet.solana.com",
+    rpcUrls: ["https://api.testnet.solana.com"],
     explorerUrl: "https://explorer.solana.com/?cluster=testnet",
     color: "#FFB84D",
   },

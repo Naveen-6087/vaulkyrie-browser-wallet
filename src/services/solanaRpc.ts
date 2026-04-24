@@ -43,8 +43,46 @@ export const KNOWN_MINTS: Record<string, { symbol: string; name: string; decimal
 
 export const SOL_ICON = KNOWN_MINTS["So11111111111111111111111111111111111111112"].icon;
 
-export function createConnection(network: NetworkId): Connection {
-  return new Connection(NETWORKS[network].rpcUrl, "confirmed");
+export function getRpcUrls(network: NetworkId): string[] {
+  const endpoints = NETWORKS[network].rpcUrls ?? [NETWORKS[network].rpcUrl];
+  return [...new Set(endpoints)];
+}
+
+export function createConnection(network: NetworkId, rpcUrl?: string): Connection {
+  return new Connection(rpcUrl ?? NETWORKS[network].rpcUrl, "confirmed");
+}
+
+function isRetryableRpcError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes("403") ||
+    message.includes("429") ||
+    message.toLowerCase().includes("access forbidden") ||
+    message.toLowerCase().includes("failed to fetch") ||
+    message.toLowerCase().includes("network request failed")
+  );
+}
+
+export async function withRpcFallback<T>(
+  network: NetworkId,
+  operation: (connection: Connection, rpcUrl: string) => Promise<T>,
+): Promise<T> {
+  const rpcUrls = getRpcUrls(network);
+  let lastError: unknown;
+
+  for (const rpcUrl of rpcUrls) {
+    try {
+      return await operation(createConnection(network, rpcUrl), rpcUrl);
+    } catch (error) {
+      lastError = error;
+      if (!isRetryableRpcError(error) || rpcUrl === rpcUrls[rpcUrls.length - 1]) {
+        throw error;
+      }
+      console.warn(`RPC ${rpcUrl} failed, retrying next endpoint...`, error);
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error("All RPC endpoints failed");
 }
 
 export function createVaulkyrieClient(network: NetworkId): VaulkyrieClient {

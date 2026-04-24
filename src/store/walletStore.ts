@@ -13,12 +13,12 @@ import type {
 } from "../types";
 import { DEFAULT_NETWORK, type NetworkId } from "../lib/constants";
 import {
-  createConnection,
   createVaulkyrieClient,
   fetchTokenBalances,
   fetchTransactionHistory,
   fetchCollectibles,
   fetchTokenPrices,
+  withRpcFallback,
 } from "../services/solanaRpc";
 
 // Per-vault DKG key material stored in localStorage
@@ -353,10 +353,10 @@ export const useWalletStore = create<WalletState>()(
 
         set({ isLoading: true, error: null });
         try {
-          const connection = createConnection(network);
           const pubkey = new PublicKey(activeAccount.publicKey);
-
-          const tokens = await fetchTokenBalances(connection, pubkey);
+          const tokens = await withRpcFallback(network, (connection) =>
+            fetchTokenBalances(connection, pubkey),
+          );
           const symbols = tokens.map((t) => t.symbol);
           const prices = await fetchTokenPrices(symbols);
 
@@ -398,9 +398,10 @@ export const useWalletStore = create<WalletState>()(
         if (!activeAccount) return;
 
         try {
-          const connection = createConnection(network);
           const pubkey = new PublicKey(activeAccount.publicKey);
-          const transactions = await fetchTransactionHistory(connection, pubkey);
+          const transactions = await withRpcFallback(network, (connection) =>
+            fetchTransactionHistory(connection, pubkey),
+          );
           set({ transactions });
         } catch (err) {
           console.warn("Failed to refresh transactions:", err);
@@ -412,9 +413,10 @@ export const useWalletStore = create<WalletState>()(
         if (!activeAccount) return;
 
         try {
-          const connection = createConnection(network);
           const pubkey = new PublicKey(activeAccount.publicKey);
-          const collectibles = await fetchCollectibles(connection, pubkey);
+          const collectibles = await withRpcFallback(network, (connection) =>
+            fetchCollectibles(connection, pubkey),
+          );
           set({ collectibles });
         } catch (err) {
           console.warn("Failed to refresh collectibles:", err);

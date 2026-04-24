@@ -11,7 +11,6 @@
 
 import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { PublicKey } from "@solana/web3.js";
 import {
   Shield,
   Lock,
@@ -172,8 +171,8 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
 
     try {
       const amountLamports = BigInt(Math.floor(amount * 1e9));
-      const destBytes = new PublicKey(splitDestination).toBytes();
-      const refundBytes = new PublicKey(walletAddress).toBytes();
+      const destBytes = new Uint8Array(32);
+      const refundBytes = new Uint8Array(32);
 
       const digest = await quantumSplitDigest(amountLamports, destBytes, refundBytes);
       setStatusMessage("Signing with WOTS+ (one-time signature)...");
@@ -232,7 +231,7 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
     setStatusMessage("Computing close digest...");
 
     try {
-      const refundBytes = new PublicKey(walletAddress).toBytes();
+      const refundBytes = new Uint8Array(32);
       const digest = await quantumCloseDigest(refundBytes);
 
       setStatusMessage("Signing vault close with WOTS+...");
