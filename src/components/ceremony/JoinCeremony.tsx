@@ -6,6 +6,7 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import {
   createRelay,
+  probeRelayAvailability,
   type RelayAdapter,
   type ConnectionState,
 } from "@/services/relay/relayAdapter";
@@ -22,18 +23,6 @@ interface JoinCeremonyProps {
 }
 
 type JoinPhase = "enter-code" | "connecting" | "waiting" | "running" | "complete" | "error";
-
-/** Detect if relay server is reachable */
-async function isRelayAvailable(url: string): Promise<boolean> {
-  try {
-    const ws = new WebSocket(url);
-    return await new Promise<boolean>((resolve) => {
-      const timeout = setTimeout(() => { ws.close(); resolve(false); }, 2000);
-      ws.onopen = () => { clearTimeout(timeout); ws.close(); resolve(true); };
-      ws.onerror = () => { clearTimeout(timeout); resolve(false); };
-    });
-  } catch { return false; }
-}
 
 export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
   const relayUrl = useWalletStore((state) => state.relayUrl);
@@ -64,7 +53,7 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
 
   // Detect relay availability on mount
   useEffect(() => {
-    isRelayAvailable(relayUrl).then((available) => {
+    probeRelayAvailability(relayUrl).then((available) => {
       setRelayMode(available ? "remote" : "local");
     });
   }, [relayUrl]);

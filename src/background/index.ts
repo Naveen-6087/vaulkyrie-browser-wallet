@@ -21,6 +21,7 @@ import {
   approveOrigin,
   enqueueExtensionApproval,
   isOriginApproved,
+  markOriginUsed,
   removeExtensionApproval,
   waitForExtensionApproval,
   type ExtensionApprovalMethod,
@@ -47,6 +48,12 @@ function senderOrigin(sender: chrome.runtime.MessageSender): string {
     }
   }
   return "Unknown origin";
+}
+
+function ensurePageSender(sender: chrome.runtime.MessageSender): void {
+  if (!sender.tab?.id || !sender.tab.url) {
+    throw new Error("Vaulkyrie rejected a request from an unknown page context.");
+  }
 }
 
 function approvalSummary(method: ExtensionApprovalMethod, params?: Record<string, unknown>): string {
@@ -97,17 +104,31 @@ async function requestApproval(
       throw new Error("Request rejected by user.");
     }
     if (method === "connect") {
-      await approveOrigin(origin);
+      await approveOrigin(origin, accountPublicKey);
     }
   } finally {
     await removeExtensionApproval(request.id);
   }
 }
 
+async function ensureApprovedOrigin(
+  sender: chrome.runtime.MessageSender,
+  accountPublicKey: string | null,
+): Promise<string> {
+  ensurePageSender(sender);
+  const origin = senderOrigin(sender);
+  if (!(await isOriginApproved(origin, accountPublicKey))) {
+    throw new Error("This site is not connected to the active vault. Connect it first.");
+  }
+  await markOriginUsed(origin, accountPublicKey);
+  return origin;
+}
+
 async function handleRpcRequest(
   message: ExtensionRpcRequest,
   sender: chrome.runtime.MessageSender,
 ) {
+  ensurePageSender(sender);
   const providerState = await readExtensionProviderState();
 
   switch (message.method) {
@@ -120,8 +141,10 @@ async function handleRpcRequest(
       if (!providerState.publicKey) {
         throw new Error("No active Vaulkyrie account found. Open the wallet and create or import one first.");
       }
-      if (!(await isOriginApproved(senderOrigin(sender)))) {
+      if (!(await isOriginApproved(senderOrigin(sender), providerState.publicKey))) {
         await requestApproval(sender, "connect", providerState.publicKey);
+      } else {
+        await markOriginUsed(senderOrigin(sender), providerState.publicKey);
       }
       return providerState;
     case "disconnect":
@@ -130,6 +153,7 @@ async function handleRpcRequest(
       if (!providerState.publicKey) {
         throw new Error("No active Vaulkyrie account found.");
       }
+      await ensureApprovedOrigin(sender, providerState.publicKey);
 
       const lamports = await withRpcFallback(providerState.network, (connection) =>
         fetchSolBalance(connection, new PublicKey(providerState.publicKey!)),
@@ -143,6 +167,7 @@ async function handleRpcRequest(
       if (!providerState.publicKey) {
         throw new Error("No active Vaulkyrie account found.");
       }
+      await ensureApprovedOrigin(sender, providerState.publicKey);
 
       const transactions = await withRpcFallback(providerState.network, (connection) =>
         fetchTransactionHistory(connection, new PublicKey(providerState.publicKey!), 20),

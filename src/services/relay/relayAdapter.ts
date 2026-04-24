@@ -14,6 +14,7 @@ export { generateSessionCode, buildQrPayload };
 export type { RelayEvents, RelayParticipant, ConnectionState };
 
 export type RelayMode = "local" | "remote";
+const LOCAL_RELAY_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
 
 export interface RelayAdapter {
   readonly mode: RelayMode;
@@ -157,6 +158,92 @@ export interface CreateRelayOptions {
   onParticipantIdAssigned?: (id: number) => void;
 }
 
+export interface RelayUrlValidation {
+  ok: boolean;
+  normalizedUrl: string;
+  error?: string;
+  isLocal: boolean;
+}
+
+export function validateRelayUrl(input: string): RelayUrlValidation {
+  const normalizedUrl = input.trim();
+
+  if (!normalizedUrl) {
+    return {
+      ok: false,
+      normalizedUrl,
+      error: "Relay URL cannot be empty.",
+      isLocal: false,
+    };
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(normalizedUrl);
+  } catch {
+    return {
+      ok: false,
+      normalizedUrl,
+      error: "Relay URL must be a valid ws:// or wss:// endpoint.",
+      isLocal: false,
+    };
+  }
+
+  if (parsed.protocol !== "ws:" && parsed.protocol !== "wss:") {
+    return {
+      ok: false,
+      normalizedUrl,
+      error: "Relay URL must start with ws:// or wss://.",
+      isLocal: false,
+    };
+  }
+
+  const isLocal = LOCAL_RELAY_HOSTS.has(parsed.hostname);
+  if (parsed.protocol === "ws:" && !isLocal) {
+    return {
+      ok: false,
+      normalizedUrl,
+      error: "Use wss:// for non-local relay endpoints.",
+      isLocal,
+    };
+  }
+
+  return {
+    ok: true,
+    normalizedUrl: parsed.toString(),
+    isLocal,
+  };
+}
+
+export async function probeRelayAvailability(
+  url: string,
+  timeoutMs: number = 2000,
+): Promise<boolean> {
+  const validation = validateRelayUrl(url);
+  if (!validation.ok) return false;
+
+  try {
+    const ws = new WebSocket(validation.normalizedUrl);
+    return await new Promise<boolean>((resolve) => {
+      const timeout = setTimeout(() => {
+        ws.close();
+        resolve(false);
+      }, timeoutMs);
+      ws.onopen = () => {
+        clearTimeout(timeout);
+        ws.close();
+        resolve(true);
+      };
+      ws.onerror = () => {
+        clearTimeout(timeout);
+        resolve(false);
+      };
+    });
+  } catch {
+    return false;
+  }
+}
+
 export function createRelay(opts: CreateRelayOptions): RelayAdapter {
   if (opts.mode === "local") {
     const events: RelayEvents = { ...opts.events };
@@ -172,8 +259,13 @@ export function createRelay(opts: CreateRelayOptions): RelayAdapter {
     });
   }
 
+  const relayUrlValidation = validateRelayUrl(opts.relayUrl ?? DEFAULT_RELAY_URL);
+  if (!relayUrlValidation.ok) {
+    throw new Error(relayUrlValidation.error);
+  }
+
   return new RemoteRelayAdapter({
-    relayUrl: opts.relayUrl,
+    relayUrl: relayUrlValidation.normalizedUrl,
     participantId: opts.participantId,
     isCoordinator: opts.isCoordinator,
     deviceName: opts.deviceName,

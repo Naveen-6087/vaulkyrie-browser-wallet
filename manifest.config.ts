@@ -35,6 +35,9 @@ export default defineManifest({
     },
   ],
   permissions: ["storage", "activeTab", "notifications"],
+  content_security_policy: {
+    extension_pages: "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; base-uri 'self';",
+  },
   host_permissions: [
     "https://api.mainnet-beta.solana.com/*",
     "https://api.devnet.solana.com/*",

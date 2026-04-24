@@ -1,6 +1,13 @@
 export type ExtensionApprovalMethod = "connect" | "signTransaction" | "signMessage";
 export type ExtensionApprovalStatus = "pending" | "approved" | "rejected";
 
+export interface ApprovedOriginRecord {
+  origin: string;
+  accountPublicKey: string | null;
+  approvedAt: number;
+  lastUsedAt: number;
+}
+
 export interface ExtensionApprovalRequest {
   id: string;
   origin: string;
@@ -63,6 +70,53 @@ async function setStorageValue<T>(key: string, value: T): Promise<void> {
   }
 
   localStorage.setItem(key, JSON.stringify(value));
+}
+
+function normalizeApprovedOriginRecords(
+  value: unknown,
+): ApprovedOriginRecord[] {
+  if (!Array.isArray(value)) return [];
+
+  return value.flatMap((entry) => {
+    if (typeof entry === "string") {
+      return [{
+        origin: entry,
+        accountPublicKey: null,
+        approvedAt: 0,
+        lastUsedAt: 0,
+      }];
+    }
+
+    if (
+      entry &&
+      typeof entry === "object" &&
+      "origin" in entry &&
+      typeof entry.origin === "string"
+    ) {
+      return [{
+        origin: entry.origin,
+        accountPublicKey:
+          "accountPublicKey" in entry && typeof entry.accountPublicKey === "string"
+            ? entry.accountPublicKey
+            : null,
+        approvedAt:
+          "approvedAt" in entry && typeof entry.approvedAt === "number"
+            ? entry.approvedAt
+            : 0,
+        lastUsedAt:
+          "lastUsedAt" in entry && typeof entry.lastUsedAt === "number"
+            ? entry.lastUsedAt
+            : 0,
+      }];
+    }
+
+    return [];
+  });
+}
+
+async function readApprovedOriginRecords(): Promise<ApprovedOriginRecord[]> {
+  const raw = await getStorageValue<unknown[]>(APPROVED_ORIGINS_KEY, []);
+  return normalizeApprovedOriginRecords(raw);
 }
 
 export async function listExtensionApprovals(): Promise<ExtensionApprovalRequest[]> {
@@ -131,17 +185,78 @@ export async function waitForExtensionApproval(
   throw new Error("Approval request timed out.");
 }
 
-export async function listApprovedOrigins(): Promise<string[]> {
-  return getStorageValue<string[]>(APPROVED_ORIGINS_KEY, []);
+export async function listApprovedOrigins(
+  accountPublicKey?: string | null,
+): Promise<ApprovedOriginRecord[]> {
+  const approvedOrigins = await readApprovedOriginRecords();
+  const filtered = accountPublicKey === undefined
+    ? approvedOrigins
+    : approvedOrigins.filter((record) => record.accountPublicKey === accountPublicKey);
+
+  return filtered.sort((left, right) => right.lastUsedAt - left.lastUsedAt);
 }
 
-export async function isOriginApproved(origin: string): Promise<boolean> {
-  const approvedOrigins = await listApprovedOrigins();
-  return approvedOrigins.includes(origin);
+export async function isOriginApproved(
+  origin: string,
+  accountPublicKey: string | null,
+): Promise<boolean> {
+  const approvedOrigins = await listApprovedOrigins(accountPublicKey);
+  return approvedOrigins.some((record) => record.origin === origin);
 }
 
-export async function approveOrigin(origin: string): Promise<void> {
-  const approvedOrigins = await listApprovedOrigins();
-  if (approvedOrigins.includes(origin)) return;
-  await setStorageValue(APPROVED_ORIGINS_KEY, [...approvedOrigins, origin]);
+export async function approveOrigin(
+  origin: string,
+  accountPublicKey: string | null,
+): Promise<void> {
+  const approvedOrigins = await readApprovedOriginRecords();
+  const now = Date.now();
+  const existingIndex = approvedOrigins.findIndex(
+    (record) => record.origin === origin && record.accountPublicKey === accountPublicKey,
+  );
+
+  if (existingIndex >= 0) {
+    approvedOrigins[existingIndex] = {
+      ...approvedOrigins[existingIndex],
+      lastUsedAt: now,
+    };
+    await setStorageValue(APPROVED_ORIGINS_KEY, approvedOrigins);
+    return;
+  }
+
+  await setStorageValue(APPROVED_ORIGINS_KEY, [
+    {
+      origin,
+      accountPublicKey,
+      approvedAt: now,
+      lastUsedAt: now,
+    },
+    ...approvedOrigins,
+  ]);
+}
+
+export async function markOriginUsed(
+  origin: string,
+  accountPublicKey: string | null,
+): Promise<void> {
+  const approvedOrigins = await readApprovedOriginRecords();
+  const now = Date.now();
+  const nextOrigins = approvedOrigins.map((record) =>
+    record.origin === origin && record.accountPublicKey === accountPublicKey
+      ? { ...record, lastUsedAt: now }
+      : record,
+  );
+  await setStorageValue(APPROVED_ORIGINS_KEY, nextOrigins);
+}
+
+export async function revokeOrigin(
+  origin: string,
+  accountPublicKey: string | null,
+): Promise<void> {
+  const approvedOrigins = await readApprovedOriginRecords();
+  await setStorageValue(
+    APPROVED_ORIGINS_KEY,
+    approvedOrigins.filter(
+      (record) => !(record.origin === origin && record.accountPublicKey === accountPublicKey),
+    ),
+  );
 }

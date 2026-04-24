@@ -1,5 +1,6 @@
 import {
   PublicKey,
+  SystemProgram,
   TransactionInstruction,
 } from "@solana/web3.js";
 import { Instruction, VAULKYRIE_CORE_PROGRAM_ID } from "./constants";
@@ -177,6 +178,7 @@ export function createInitAuthorityInstruction(
 }
 
 export function createInitQuantumVaultInstruction(
+  payer: PublicKey,
   vault: PublicKey,
   params: InitQuantumVaultParams,
   programId: PublicKey = VAULKYRIE_CORE_PROGRAM_ID
@@ -188,7 +190,11 @@ export function createInitQuantumVaultInstruction(
   return makeIx(
     Instruction.InitQuantumVault,
     buf,
-    [{ pubkey: vault, isSigner: false, isWritable: true }],
+    [
+      { pubkey: payer, isSigner: true, isWritable: true },
+      { pubkey: vault, isSigner: false, isWritable: true },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    ],
     programId
   );
 }

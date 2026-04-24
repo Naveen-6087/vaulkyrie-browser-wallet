@@ -66,7 +66,7 @@ export interface WotsSignature {
 export interface WotsKeyPair {
   secretKey: WotsSecretKey;
   publicKey: WotsPublicKey;
-  /** SHA-256 hash of the concatenated public key elements */
+  /** Merkleized public key hash matching solana-winternitz PDA binding */
   publicKeyHash: Uint8Array;
 }
 
@@ -99,6 +99,12 @@ interface SerializedXmssTree {
   }>;
 }
 
+interface SerializedWotsKeyPair {
+  secretKey: string[];
+  publicKey: string[];
+  publicKeyHash: string;
+}
+
 // ── Key Generation ───────────────────────────────────────────────────
 
 /** Generate a single WOTS+ key pair */
@@ -117,18 +123,18 @@ export async function generateWotsKeyPair(): Promise<WotsKeyPair> {
     publicElements.push(await chainHash(secretElements[i], CHAIN_LEN));
   }
 
-  // Compute public key hash
-  const concat = new Uint8Array(WOTS_PUBKEY_LEN);
-  for (let i = 0; i < CHAINS; i++) {
-    concat.set(publicElements[i], i * HASH_LEN);
-  }
-  const publicKeyHash = await sha256(concat);
+  const publicKey = { elements: publicElements };
+  const publicKeyHash = await merklizeWotsPublicKey(publicKey);
 
   return {
     secretKey: { elements: secretElements },
-    publicKey: { elements: publicElements },
+    publicKey,
     publicKeyHash,
   };
+}
+
+export async function merklizeWotsPublicKey(publicKey: WotsPublicKey): Promise<Uint8Array> {
+  return computeMerkleRoot(publicKey.elements);
 }
 
 // ── Message Digest ───────────────────────────────────────────────────
@@ -235,6 +241,21 @@ export async function wotsVerify(
   }
 
   return true;
+}
+
+export async function wotsSignMessage(
+  message: Uint8Array,
+  secretKey: WotsSecretKey,
+): Promise<WotsSignature> {
+  return wotsSign(await sha256(message), secretKey);
+}
+
+export async function wotsVerifyMessage(
+  message: Uint8Array,
+  signature: WotsSignature,
+  publicKey: WotsPublicKey,
+): Promise<boolean> {
+  return wotsVerify(await sha256(message), signature, publicKey);
 }
 
 // ── XMSS Tree ────────────────────────────────────────────────────────
@@ -523,5 +544,25 @@ export function deserializeXmssTree(serialized: string): XmssTree {
       publicKey: { elements: key.publicKey.map(hexToBytes) },
       publicKeyHash: hexToBytes(key.publicKeyHash),
     })),
+  };
+}
+
+export function serializeWotsKeyPair(keyPair: WotsKeyPair): string {
+  const serialized: SerializedWotsKeyPair = {
+    secretKey: keyPair.secretKey.elements.map(bytesToHex),
+    publicKey: keyPair.publicKey.elements.map(bytesToHex),
+    publicKeyHash: bytesToHex(keyPair.publicKeyHash),
+  };
+
+  return JSON.stringify(serialized);
+}
+
+export function deserializeWotsKeyPair(serialized: string): WotsKeyPair {
+  const parsed = JSON.parse(serialized) as SerializedWotsKeyPair;
+
+  return {
+    secretKey: { elements: parsed.secretKey.map(hexToBytes) },
+    publicKey: { elements: parsed.publicKey.map(hexToBytes) },
+    publicKeyHash: hexToBytes(parsed.publicKeyHash),
   };
 }

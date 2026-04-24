@@ -82,6 +82,7 @@ interface WalletState {
 
   // XMSS tree state (serialized per vault, keyed by publicKey)
   xmssTrees: Record<string, string>;
+  quantumVaultKeys: Record<string, string>;
 
   // Local policy profiles stored per vault
   policyProfiles: Record<string, PolicyProfile[]>;
@@ -149,6 +150,9 @@ interface WalletState {
   storeXmssTree: (publicKey: string, serialized: string) => void;
   getXmssTree: (publicKey: string) => string | null;
   clearXmssTree: (publicKey: string) => void;
+  storeQuantumVaultKey: (publicKey: string, serialized: string) => void;
+  getQuantumVaultKey: (publicKey: string) => string | null;
+  clearQuantumVaultKey: (publicKey: string) => void;
 
   // Policy profile persistence
   upsertPolicyProfile: (publicKey: string, profile: PolicyProfile) => void;
@@ -185,6 +189,7 @@ export const useWalletStore = create<WalletState>()(
       vaultConfigs: {},
       contacts: [],
       xmssTrees: {},
+      quantumVaultKeys: {},
       policyProfiles: {},
       pendingPolicyRequest: null,
       tokens: [],
@@ -327,6 +332,17 @@ export const useWalletStore = create<WalletState>()(
           const next = { ...state.xmssTrees };
           delete next[publicKey];
           return { xmssTrees: next };
+        }),
+      storeQuantumVaultKey: (publicKey, serialized) =>
+        set((state) => ({
+          quantumVaultKeys: { ...state.quantumVaultKeys, [publicKey]: serialized },
+        })),
+      getQuantumVaultKey: (publicKey) => get().quantumVaultKeys[publicKey] ?? null,
+      clearQuantumVaultKey: (publicKey) =>
+        set((state) => {
+          const next = { ...state.quantumVaultKeys };
+          delete next[publicKey];
+          return { quantumVaultKeys: next };
         }),
 
       upsertPolicyProfile: (publicKey, profile) =>
@@ -488,6 +504,7 @@ export const useWalletStore = create<WalletState>()(
         securityPreferences: state.securityPreferences,
         contacts: state.contacts,
         xmssTrees: state.xmssTrees,
+        quantumVaultKeys: state.quantumVaultKeys,
         policyProfiles: state.policyProfiles,
       }),
       onRehydrateStorage: (state) => {

@@ -1,13 +1,17 @@
 import { useCallback, useEffect, useState } from "react";
-import { Check, Clock, Shield, XCircle } from "lucide-react";
+import { Check, Clock, Shield, Trash2, XCircle } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import {
   listPendingExtensionApprovals,
+  listApprovedOrigins,
+  revokeOrigin,
+  type ApprovedOriginRecord,
   resolveExtensionApproval,
   type ExtensionApprovalRequest,
 } from "@/extension/approvalStorage";
 import type { WalletView } from "@/types";
+import { useWalletStore } from "@/store/walletStore";
 
 interface ApprovalCenterProps {
   onNavigate: (view: WalletView) => void;
@@ -27,19 +31,26 @@ function formatMethodLabel(method: ExtensionApprovalRequest["method"]): string {
 }
 
 export function ApprovalCenter({ onNavigate }: ApprovalCenterProps) {
+  const activeAccount = useWalletStore((state) => state.activeAccount);
   const [approvals, setApprovals] = useState<ExtensionApprovalRequest[]>([]);
+  const [approvedOrigins, setApprovedOrigins] = useState<ApprovedOriginRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [actingOn, setActingOn] = useState<string | null>(null);
+  const activePublicKey = activeAccount?.publicKey ?? null;
 
   const loadApprovals = useCallback(async () => {
     setLoading(true);
     try {
-      const next = await listPendingExtensionApprovals();
-      setApprovals(next);
+      const [nextApprovals, nextApprovedOrigins] = await Promise.all([
+        listPendingExtensionApprovals(),
+        listApprovedOrigins(activePublicKey),
+      ]);
+      setApprovals(nextApprovals);
+      setApprovedOrigins(nextApprovedOrigins);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [activePublicKey]);
 
   useEffect(() => {
     void loadApprovals();
@@ -56,6 +67,16 @@ export function ApprovalCenter({ onNavigate }: ApprovalCenterProps) {
     setActingOn(id);
     try {
       await resolveExtensionApproval(id, status);
+      await loadApprovals();
+    } finally {
+      setActingOn(null);
+    }
+  };
+
+  const handleRevokeOrigin = async (origin: string) => {
+    setActingOn(origin);
+    try {
+      await revokeOrigin(origin, activePublicKey);
       await loadApprovals();
     } finally {
       setActingOn(null);
@@ -81,6 +102,49 @@ export function ApprovalCenter({ onNavigate }: ApprovalCenterProps) {
           <div className="rounded-xl border border-primary/15 bg-primary/5 px-3 py-3 text-[11px] text-muted-foreground">
             Requests from websites show up here before Vaulkyrie connects or signs on their behalf.
           </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="pt-4 space-y-3">
+          <div>
+            <p className="text-sm font-medium">Connected sites</p>
+            <p className="text-[11px] text-muted-foreground">
+              Approvals are scoped to the active vault and can be revoked at any time.
+            </p>
+          </div>
+
+          {approvedOrigins.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-border px-3 py-4 text-center text-[11px] text-muted-foreground">
+              No approved sites for this vault yet.
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {approvedOrigins.map((record) => (
+                <div
+                  key={`${record.origin}-${record.accountPublicKey ?? "none"}`}
+                  className="flex items-center gap-3 rounded-xl border border-border px-3 py-3"
+                >
+                  <Shield className="h-4 w-4 text-primary shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <p className="truncate text-sm font-medium">{record.origin}</p>
+                    <p className="text-[11px] text-muted-foreground">
+                      Last used {record.lastUsedAt ? new Date(record.lastUsedAt).toLocaleString() : "recently"}
+                    </p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void handleRevokeOrigin(record.origin)}
+                    disabled={actingOn === record.origin}
+                  >
+                    <Trash2 className="mr-1 h-3.5 w-3.5" />
+                    Revoke
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
         </CardContent>
       </Card>
 

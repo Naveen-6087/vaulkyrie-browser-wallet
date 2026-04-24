@@ -22,6 +22,7 @@ import {
   createRelay,
   generateSessionCode,
   buildQrPayload,
+  probeRelayAvailability,
   type RelayAdapter,
   type ConnectionState,
 } from "@/services/relay/relayAdapter";
@@ -52,18 +53,6 @@ interface DKGCeremonyProps {
   config: VaultConfig;
   onComplete: (groupPublicKey: string) => void;
   onBack: () => void;
-}
-
-/** Detect if relay server is reachable */
-async function isRelayAvailable(url: string): Promise<boolean> {
-  try {
-    const ws = new WebSocket(url);
-    return await new Promise<boolean>((resolve) => {
-      const timeout = setTimeout(() => { ws.close(); resolve(false); }, 2000);
-      ws.onopen = () => { clearTimeout(timeout); ws.close(); resolve(true); };
-      ws.onerror = () => { clearTimeout(timeout); resolve(false); };
-    });
-  } catch { return false; }
 }
 
 export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
@@ -102,7 +91,7 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
     let cancelled = false;
 
     (async () => {
-      const available = await isRelayAvailable(relayUrl);
+      const available = await probeRelayAvailability(relayUrl);
       if (cancelled) return;
 
       const mode = available ? "remote" : "local";

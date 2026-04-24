@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { signLocal, hexToBytes } from "@/services/frost/frostService";
 import { SigningOrchestrator } from "@/services/frost/signingOrchestrator";
-import { createRelay, generateSessionCode, type RelayAdapter } from "@/services/relay/relayAdapter";
+import { createRelay, generateSessionCode, probeRelayAvailability, type RelayAdapter } from "@/services/relay/relayAdapter";
 import type { SignRequestPayload } from "@/services/relay/channelRelay";
 import { useWalletStore } from "@/store/walletStore";
 import { createConnection, SOL_ICON } from "@/services/solanaRpc";
@@ -122,35 +122,7 @@ function TokenIconSmall({ symbol, icon }: { symbol: string; icon?: string }) {
 }
 
 async function canReachRelay(url: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    let settled = false;
-    const settle = (value: boolean) => {
-      if (settled) return;
-      settled = true;
-      resolve(value);
-    };
-
-    try {
-      const ws = new WebSocket(url);
-      const timeout = window.setTimeout(() => {
-        ws.close();
-        settle(false);
-      }, 1500);
-
-      ws.onopen = () => {
-        window.clearTimeout(timeout);
-        ws.close();
-        settle(true);
-      };
-
-      ws.onerror = () => {
-        window.clearTimeout(timeout);
-        settle(false);
-      };
-    } catch {
-      settle(false);
-    }
-  });
+  return probeRelayAvailability(url, 1500);
 }
 
 export function SendView({ balance, onNavigate }: SendViewProps) {

@@ -7,6 +7,7 @@ import { useWalletStore } from "@/store/walletStore";
 import { shortenAddress } from "@/lib/utils";
 import type { NetworkId, WalletView } from "@/types";
 import { NETWORKS } from "@/lib/constants";
+import { probeRelayAvailability, validateRelayUrl } from "@/services/relay/relayAdapter";
 
 interface SettingsViewProps {
   network: NetworkId;
@@ -46,6 +47,8 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
   const [showAccounts, setShowAccounts] = useState(false);
   const [showSecurity, setShowSecurity] = useState(false);
   const [relayDraft, setRelayDraft] = useState("");
+  const [relayStatus, setRelayStatus] = useState<"checking" | "reachable" | "unreachable">("checking");
+  const [relayError, setRelayError] = useState("");
   const {
     accounts,
     activeAccount,
@@ -73,6 +76,29 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
 
   useEffect(() => {
     setRelayDraft(relayUrl);
+  }, [relayUrl]);
+
+  useEffect(() => {
+    const validation = validateRelayUrl(relayUrl);
+    if (!validation.ok) {
+      setRelayStatus("unreachable");
+      setRelayError(validation.error ?? "Invalid relay URL.");
+      return;
+    }
+
+    let cancelled = false;
+    setRelayStatus("checking");
+    setRelayError("");
+
+    void probeRelayAvailability(validation.normalizedUrl).then((available) => {
+      if (cancelled) return;
+      setRelayStatus(available ? "reachable" : "unreachable");
+      setRelayError(available ? "" : "Relay unreachable from this browser right now.");
+    });
+
+    return () => {
+      cancelled = true;
+    };
   }, [relayUrl]);
 
   return (
@@ -225,19 +251,44 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
             Use a <span className="font-mono">wss://</span> endpoint here for the published
             Chrome extension.
           </p>
+          <div className="flex items-center justify-between rounded-md border border-border bg-muted/20 px-3 py-2 text-xs">
+            <span className="text-muted-foreground">Relay health</span>
+            <span
+              className={
+                relayStatus === "reachable"
+                  ? "text-emerald-400"
+                  : relayStatus === "checking"
+                    ? "text-amber-400"
+                    : "text-red-400"
+              }
+            >
+              {relayStatus === "reachable"
+                ? "Reachable"
+                : relayStatus === "checking"
+                  ? "Checking…"
+                  : "Unavailable"}
+            </span>
+          </div>
           <input
             value={relayDraft}
             onChange={(event) => setRelayDraft(event.target.value)}
             placeholder="wss://relay.example.com"
             className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
           />
+          {relayError && (
+            <p className="text-xs text-red-400">{relayError}</p>
+          )}
           <Button
             variant="outline"
             className="w-full"
             onClick={() => {
-              const nextRelayUrl = relayDraft.trim();
-              if (!nextRelayUrl) return;
-              setRelayUrl(nextRelayUrl);
+              const validation = validateRelayUrl(relayDraft);
+              if (!validation.ok) {
+                setRelayError(validation.error ?? "Invalid relay URL.");
+                return;
+              }
+              setRelayError("");
+              setRelayUrl(validation.normalizedUrl);
             }}
           >
             Save relay URL

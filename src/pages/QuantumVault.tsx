@@ -1,15 +1,16 @@
 /**
- * Quantum Vault management page.
+ * Vaulkyrie quantum vault page.
  *
- * Provides UI for WOTS+/XMSS post-quantum authority operations:
- *   - View vault status and authority info
- *   - Open (initialize) a quantum vault
- *   - Split vault (partial withdrawal with WOTS+ signature)
- *   - Close vault (full withdrawal with WOTS+ signature)
- *   - Authority rotation prompt when XMSS leaves near exhaustion
+ * Uses the Blueshift-style Winternitz vault flow onchain:
+ *   - generate a one-time Winternitz key locally
+ *   - open the bound quantum vault PDA onchain
+ *   - fund that PDA like a receive address
+ *   - spend it exactly once via split or close
+ *
+ * This is separate from the multi-use XMSS-backed authority rotation account.
  */
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Shield,
@@ -22,42 +23,53 @@ import {
   Copy,
   Info,
   Atom,
+  ExternalLink,
 } from "lucide-react";
+import { LAMPORTS_PER_SOL, PublicKey, Transaction } from "@solana/web3.js";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import {
-  generateSmallXmssTree,
-  xmssSign,
-  wotsVerify,
-  quantumSplitDigest,
-  quantumCloseDigest,
+  generateWotsKeyPair,
+  wotsSignMessage,
+  wotsVerifyMessage,
+  quantumSplitMessage,
+  quantumCloseMessage,
   bytesToHex,
-  deserializeXmssTree,
-  serializeAuthProof,
-  serializeXmssTree,
-  type XmssTree,
+  deserializeWotsKeyPair,
+  serializeWotsKeyPair,
+  serializeWotsSignature,
 } from "@/services/quantum/wots";
 import type { WalletView } from "@/types";
 import { useWalletStore } from "@/store/walletStore";
+import { withRpcFallback } from "@/services/solanaRpc";
+import {
+  createInitQuantumVaultInstruction,
+  createSplitQuantumVaultInstruction,
+  createCloseQuantumVaultInstruction,
+} from "@/sdk/instructions";
+import { findQuantumVaultPda } from "@/sdk/pda";
+import { signAndSendTransaction } from "@/services/frost/signTransaction";
+import { VaulkyrieClient } from "@/sdk/client";
 
 // ── Vault Status ─────────────────────────────────────────────────────
 
 const VaultStatus = {
   None: "none",
   Active: "active",
-  Exhausted: "exhausted",
 } as const;
 
 type VaultStatusType = (typeof VaultStatus)[keyof typeof VaultStatus];
 
 interface QuantumVaultState {
   status: VaultStatusType;
-  balance: number;
+  balanceLamports: number;
+  vaultAddress: string;
+  publicKeyHashHex: string;
+  hasLocalKey: boolean;
   authorityRootHex: string;
-  nextLeafIndex: number;
-  totalLeaves: number;
-  xmssTree: XmssTree | null;
+  authorityNextLeafIndex: number | null;
+  authorityNextSequence: bigint | null;
 }
 
 interface QuantumVaultProps {
@@ -66,14 +78,24 @@ interface QuantumVaultProps {
 }
 
 export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
-  const { activeAccount, storeXmssTree, getXmssTree, clearXmssTree } = useWalletStore();
+  const {
+    activeAccount,
+    network,
+    getQuantumVaultKey,
+    storeQuantumVaultKey,
+    clearQuantumVaultKey,
+    refreshBalances,
+    refreshTransactions,
+  } = useWalletStore();
   const [vault, setVault] = useState<QuantumVaultState>({
     status: VaultStatus.None,
-    balance: activeAccount?.balance ?? 0,
+    balanceLamports: 0,
+    vaultAddress: "",
+    publicKeyHashHex: "",
+    hasLocalKey: false,
     authorityRootHex: "",
-    nextLeafIndex: 0,
-    totalLeaves: 0,
-    xmssTree: null,
+    authorityNextLeafIndex: null,
+    authorityNextSequence: null,
   });
 
   const [activePanel, setActivePanel] = useState<
@@ -85,65 +107,116 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
   const [splitDestination, setSplitDestination] = useState("");
   const [lastProofHex, setLastProofHex] = useState("");
   const [copied, setCopied] = useState(false);
+  const [copiedAddress, setCopiedAddress] = useState(false);
 
-  const remainingSignatures = vault.totalLeaves - vault.nextLeafIndex;
-  const isNearExhaustion = vault.status === VaultStatus.Active && remainingSignatures <= 3;
-
-  useEffect(() => {
+  const refreshQuantumVault = useCallback(async () => {
     if (!walletAddress) return;
 
-    const serialized = getXmssTree(walletAddress);
-    if (!serialized) {
-      setVault((prev) => ({
-        ...prev,
-        balance: activeAccount?.balance ?? prev.balance,
-      }));
-      return;
+    let hasLocalKey = false;
+    let vaultAddress = "";
+    let publicKeyHashHex = "";
+    let balanceLamports = 0;
+    let status: VaultStatusType = VaultStatus.None;
+
+    const serializedKey = getQuantumVaultKey(walletAddress);
+    if (serializedKey) {
+      try {
+        const keyPair = deserializeWotsKeyPair(serializedKey);
+        hasLocalKey = true;
+        publicKeyHashHex = bytesToHex(keyPair.publicKeyHash);
+        const [vaultPda] = findQuantumVaultPda(keyPair.publicKeyHash);
+        vaultAddress = vaultPda.toBase58();
+
+        await withRpcFallback(network, async (connection) => {
+          const accountInfo = await connection.getAccountInfo(vaultPda);
+          if (accountInfo) {
+            balanceLamports = accountInfo.lamports;
+            status = VaultStatus.Active;
+          }
+        });
+      } catch (error) {
+        console.warn("Failed to restore stored quantum vault key:", error);
+      }
     }
+
+    let authorityRootHex = "";
+    let authorityNextLeafIndex: number | null = null;
+    let authorityNextSequence: bigint | null = null;
 
     try {
-      const tree = deserializeXmssTree(serialized);
-      const totalLeaves = 1 << tree.depth;
-      const exhausted = tree.nextLeafIndex >= totalLeaves;
-
-      setVault({
-        status: exhausted ? VaultStatus.Exhausted : VaultStatus.Active,
-        balance: activeAccount?.balance ?? 0,
-        authorityRootHex: bytesToHex(tree.root),
-        nextLeafIndex: tree.nextLeafIndex,
-        totalLeaves,
-        xmssTree: tree,
+      await withRpcFallback(network, async (connection) => {
+        const client = new VaulkyrieClient(connection);
+        const walletPubkey = new PublicKey(walletAddress);
+        const vaultRegistry = await client.getVaultRegistry(walletPubkey);
+        if (vaultRegistry) {
+          const authority = await client.getQuantumAuthority(vaultRegistry.address);
+          if (authority) {
+            authorityRootHex = bytesToHex(authority.account.currentAuthorityRoot);
+            authorityNextLeafIndex = authority.account.nextLeafIndex;
+            authorityNextSequence = authority.account.nextSequence;
+          }
+        }
       });
-    } catch (err) {
-      console.warn("Failed to restore quantum vault state:", err);
+    } catch (error) {
+      console.warn("Failed to fetch quantum authority state:", error);
     }
-  }, [activeAccount?.balance, getXmssTree, walletAddress]);
+
+    setVault({
+      status,
+      balanceLamports,
+      vaultAddress,
+      publicKeyHashHex,
+      hasLocalKey,
+      authorityRootHex,
+      authorityNextLeafIndex,
+      authorityNextSequence,
+    });
+  }, [getQuantumVaultKey, network, walletAddress]);
+
+  useEffect(() => {
+    void refreshQuantumVault();
+  }, [refreshQuantumVault]);
 
   // ── Open Vault ───────────────────────────────────────────────────
 
   const handleOpenVault = async () => {
+    if (!activeAccount?.publicKey) return;
+
     setIsProcessing(true);
-    setStatusMessage("Generating XMSS tree (8 leaves for demo)...");
+    setStatusMessage("Generating a Winternitz one-time key...");
 
     try {
-      // Generate a small tree for demo (3-depth = 8 leaves)
-      const tree = await generateSmallXmssTree();
+      const keyPair = await generateWotsKeyPair();
+      const payer = new PublicKey(activeAccount.publicKey);
+      const [vaultPda, bump] = findQuantumVaultPda(keyPair.publicKeyHash);
 
-      setStatusMessage("XMSS tree generated! Computing authority root...");
-      await new Promise((r) => setTimeout(r, 300));
+      setStatusMessage("Opening the onchain quantum vault PDA...");
+      const signature = await withRpcFallback(network, async (connection) => {
+        const existing = await connection.getAccountInfo(vaultPda);
+        if (existing) {
+          throw new Error("A quantum vault already exists for this stored Winternitz key.");
+        }
 
-      setVault({
-        status: VaultStatus.Active,
-        balance: activeAccount?.balance ?? 0,
-        authorityRootHex: bytesToHex(tree.root),
-        nextLeafIndex: 0,
-        totalLeaves: 1 << tree.depth,
-        xmssTree: tree,
+        const ix = createInitQuantumVaultInstruction(payer, vaultPda, {
+          hash: keyPair.publicKeyHash,
+          bump,
+        });
+        const tx = new Transaction().add(ix);
+        return signAndSendTransaction(
+          connection,
+          tx,
+          activeAccount.publicKey,
+          (msg) => setStatusMessage(msg),
+        );
       });
-      storeXmssTree(walletAddress, serializeXmssTree(tree));
 
-      setStatusMessage("Quantum vault initialized!");
+      storeQuantumVaultKey(walletAddress, serializeWotsKeyPair(keyPair));
+      setLastProofHex("");
+      setStatusMessage(
+        `Quantum vault opened. Fund ${vaultPda.toBase58()} before using split or close. Tx: ${signature}`,
+      );
       setActivePanel("overview");
+      await Promise.all([refreshQuantumVault(), refreshBalances(), refreshTransactions()]);
     } catch (err) {
       setStatusMessage(`Error: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
@@ -154,67 +227,70 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
   // ── Split Vault ──────────────────────────────────────────────────
 
   const handleSplitVault = async () => {
-    if (!vault.xmssTree) return;
+    if (!activeAccount?.publicKey || !vault.vaultAddress) return;
 
     const amount = parseFloat(splitAmount);
     if (isNaN(amount) || amount <= 0) {
       setStatusMessage("Enter a valid amount");
       return;
     }
-    if (!splitDestination || splitDestination.length < 32) {
-      setStatusMessage("Enter a valid Solana address");
-      return;
-    }
 
     setIsProcessing(true);
-    setStatusMessage("Computing split digest...");
+    setStatusMessage("Building Winternitz split authorization...");
 
     try {
+      const serializedKey = getQuantumVaultKey(walletAddress);
+      if (!serializedKey) {
+        throw new Error("No local Winternitz key found for this quantum vault.");
+      }
+
+      const keyPair = deserializeWotsKeyPair(serializedKey);
       const amountLamports = BigInt(Math.floor(amount * 1e9));
-      const destBytes = new Uint8Array(32);
-      const refundBytes = new Uint8Array(32);
+      const destination = new PublicKey(splitDestination.trim());
+      const refund = new PublicKey(activeAccount.publicKey);
+      const message = quantumSplitMessage(amountLamports, destination.toBytes(), refund.toBytes());
 
-      const digest = await quantumSplitDigest(amountLamports, destBytes, refundBytes);
-      setStatusMessage("Signing with WOTS+ (one-time signature)...");
+      setStatusMessage("Signing split message with the one-time key...");
+      const signature = await wotsSignMessage(message, keyPair.secretKey);
 
-      const { signature, publicKey, leafIndex, authPath } = await xmssSign(
-        vault.xmssTree,
-        digest,
-      );
-
-      // Verify the signature locally before submission
-      setStatusMessage("Verifying signature...");
-      const valid = await wotsVerify(digest, signature, publicKey);
+      setStatusMessage("Verifying local Winternitz signature...");
+      const valid = await wotsVerifyMessage(message, signature, keyPair.publicKey);
 
       if (!valid) {
         setStatusMessage("Signature verification failed!");
-        setIsProcessing(false);
         return;
       }
 
-      const proof = serializeAuthProof(publicKey, signature, leafIndex, authPath);
-      setLastProofHex(bytesToHex(proof).substring(0, 64) + "...");
+      const signatureBytes = serializeWotsSignature(signature);
+      setLastProofHex(bytesToHex(signatureBytes).substring(0, 64) + "...");
 
-      const totalLeaves = 1 << vault.xmssTree.depth;
-      const nextLeafIndex = vault.xmssTree.nextLeafIndex;
-      const nextStatus = nextLeafIndex >= totalLeaves ? VaultStatus.Exhausted : VaultStatus.Active;
+      await withRpcFallback(network, async (connection) => {
+        const ix = createSplitQuantumVaultInstruction(
+          new PublicKey(vault.vaultAddress),
+          destination,
+          refund,
+          {
+            signature: signatureBytes,
+            amount: amountLamports,
+            bump: findQuantumVaultPda(keyPair.publicKeyHash)[1],
+          },
+        );
 
-      setVault((prev) => ({
-        ...prev,
-        status: nextStatus,
-        nextLeafIndex,
-        totalLeaves,
-        xmssTree: vault.xmssTree,
-      }));
-      storeXmssTree(walletAddress, serializeXmssTree(vault.xmssTree));
+        const tx = new Transaction().add(ix);
+        return signAndSendTransaction(
+          connection,
+          tx,
+          activeAccount.publicKey,
+          (msg) => setStatusMessage(msg),
+        );
+      });
 
-      setStatusMessage(
-        `Split signed! Leaf #${leafIndex} consumed. ` +
-          `${Math.max(0, totalLeaves - nextLeafIndex)} signatures remaining.`,
-      );
+      clearQuantumVaultKey(walletAddress);
+      setStatusMessage("Quantum vault split completed and the one-time vault was closed.");
       setSplitAmount("");
       setSplitDestination("");
       setActivePanel("overview");
+      await Promise.all([refreshQuantumVault(), refreshBalances(), refreshTransactions()]);
     } catch (err) {
       setStatusMessage(`Error: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
@@ -225,42 +301,56 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
   // ── Close Vault ──────────────────────────────────────────────────
 
   const handleCloseVault = async () => {
-    if (!vault.xmssTree) return;
+    if (!activeAccount?.publicKey || !vault.vaultAddress) return;
 
     setIsProcessing(true);
-    setStatusMessage("Computing close digest...");
+    setStatusMessage("Building close authorization...");
 
     try {
-      const refundBytes = new Uint8Array(32);
-      const digest = await quantumCloseDigest(refundBytes);
+      const serializedKey = getQuantumVaultKey(walletAddress);
+      if (!serializedKey) {
+        throw new Error("No local Winternitz key found for this quantum vault.");
+      }
 
-      setStatusMessage("Signing vault close with WOTS+...");
-      const { signature, publicKey, leafIndex, authPath } = await xmssSign(
-        vault.xmssTree,
-        digest,
-      );
+      const keyPair = deserializeWotsKeyPair(serializedKey);
+      const refund = new PublicKey(activeAccount.publicKey);
+      const message = quantumCloseMessage(refund.toBytes());
 
-      const valid = await wotsVerify(digest, signature, publicKey);
+      setStatusMessage("Signing vault close with the one-time key...");
+      const signature = await wotsSignMessage(message, keyPair.secretKey);
+
+      const valid = await wotsVerifyMessage(message, signature, keyPair.publicKey);
       if (!valid) {
         setStatusMessage("Close signature verification failed!");
-        setIsProcessing(false);
         return;
       }
 
-      const proof = serializeAuthProof(publicKey, signature, leafIndex, authPath);
-      setLastProofHex(bytesToHex(proof).substring(0, 64) + "...");
+      const signatureBytes = serializeWotsSignature(signature);
+      setLastProofHex(bytesToHex(signatureBytes).substring(0, 64) + "...");
 
-      setVault({
-        status: VaultStatus.None,
-        balance: 0,
-        authorityRootHex: "",
-        nextLeafIndex: 0,
-        totalLeaves: 0,
-        xmssTree: null,
+      await withRpcFallback(network, async (connection) => {
+        const ix = createCloseQuantumVaultInstruction(
+          new PublicKey(vault.vaultAddress),
+          refund,
+          {
+            signature: signatureBytes,
+            bump: findQuantumVaultPda(keyPair.publicKeyHash)[1],
+          },
+        );
+
+        const tx = new Transaction().add(ix);
+        return signAndSendTransaction(
+          connection,
+          tx,
+          activeAccount.publicKey,
+          (msg) => setStatusMessage(msg),
+        );
       });
-      clearXmssTree(walletAddress);
-      setStatusMessage("Quantum vault closed. All funds returned to refund address.");
+
+      clearQuantumVaultKey(walletAddress);
+      setStatusMessage("Quantum vault closed and all funds were returned to your wallet.");
       setActivePanel("overview");
+      await Promise.all([refreshQuantumVault(), refreshBalances(), refreshTransactions()]);
     } catch (err) {
       setStatusMessage(`Error: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
@@ -273,6 +363,19 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };
+
+  const handleCopyVaultAddress = async () => {
+    if (!vault.vaultAddress) return;
+    await navigator.clipboard.writeText(vault.vaultAddress);
+    setCopiedAddress(true);
+    setTimeout(() => setCopiedAddress(false), 1500);
+  };
+
+  const vaultBalanceSol = vault.balanceLamports / LAMPORTS_PER_SOL;
+  const explorerClusterParam = network === "mainnet" ? "" : `?cluster=${network}`;
+  const quantumVaultExplorerUrl = vault.vaultAddress
+    ? `https://explorer.solana.com/address/${vault.vaultAddress}${explorerClusterParam}`
+    : null;
 
   // ── Render ───────────────────────────────────────────────────────
 
@@ -302,13 +405,12 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
               <p className="text-sm font-semibold">
                 {vault.status === VaultStatus.None && "No Quantum Vault"}
                 {vault.status === VaultStatus.Active && "Quantum Vault Active"}
-                {vault.status === VaultStatus.Exhausted && "Authority Exhausted"}
               </p>
               <p className="text-xs text-muted-foreground">
-                {vault.status === VaultStatus.None && "Initialize a post-quantum vault with WOTS+/XMSS authority"}
+                {vault.status === VaultStatus.None &&
+                  "Open a one-time Winternitz vault PDA and fund it like a receive address"}
                 {vault.status === VaultStatus.Active &&
-                  `${remainingSignatures} of ${vault.totalLeaves} signatures remaining`}
-                {vault.status === VaultStatus.Exhausted && "Rotate to a new authority to continue"}
+                  "This vault can be spent exactly once with its bound Winternitz key"}
               </p>
             </div>
             {vault.status === VaultStatus.Active && (
@@ -319,24 +421,6 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
           </div>
         </CardContent>
       </Card>
-
-      {/* Near-exhaustion warning */}
-      {isNearExhaustion && (
-        <motion.div
-          initial={{ opacity: 0, y: -5 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="flex items-start gap-2 p-3 rounded-lg bg-warning/10 border border-warning/30"
-        >
-          <AlertTriangle className="h-4 w-4 text-warning shrink-0 mt-0.5" />
-          <div>
-            <p className="text-xs font-medium text-warning">Authority Nearly Exhausted</p>
-            <p className="text-[10px] text-warning/80 mt-0.5">
-              Only {remainingSignatures} WOTS+ signature{remainingSignatures !== 1 ? "s" : ""} remaining.
-              Rotate your authority to a new XMSS tree before it runs out.
-            </p>
-          </div>
-        </motion.div>
-      )}
 
       <AnimatePresence mode="wait">
         {/* ── No Vault: Open ── */}
@@ -358,27 +442,26 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
               <CardContent className="space-y-2">
                 <p className="text-xs text-muted-foreground leading-relaxed">
                   A quantum vault uses{" "}
-                  <span className="text-foreground font-medium">WOTS+ one-time signatures</span>{" "}
-                  organized in an{" "}
-                  <span className="text-foreground font-medium">XMSS Merkle tree</span>{" "}
-                  to provide post-quantum security for high-value operations.
+                  <span className="text-foreground font-medium">a Blueshift-style Winternitz one-time signature</span>{" "}
+                  to bind a PDA that can hold SOL until you authorize a single split or close.
                 </p>
                 <p className="text-xs text-muted-foreground leading-relaxed">
-                  Each signature consumes one leaf of the tree. When all leaves are
-                  used, the authority must be rotated to a fresh tree.
+                  After opening the vault, fund its PDA like a receive address. The
+                  first successful split or close consumes the one-time key and
+                  closes the vault.
                 </p>
                 <div className="grid grid-cols-3 gap-2 pt-2">
                   <div className="text-center p-2 rounded-lg bg-muted">
-                    <p className="text-lg font-bold text-primary">SHA-256</p>
-                    <p className="text-[10px] text-muted-foreground">Hash function</p>
+                    <p className="text-lg font-bold text-primary">1</p>
+                    <p className="text-[10px] text-muted-foreground">One-time spend</p>
                   </div>
                   <div className="text-center p-2 rounded-lg bg-muted">
                     <p className="text-lg font-bold text-primary">16</p>
-                    <p className="text-[10px] text-muted-foreground">WOTS+ chains</p>
+                    <p className="text-[10px] text-muted-foreground">Winternitz chains</p>
                   </div>
                   <div className="text-center p-2 rounded-lg bg-muted">
-                    <p className="text-lg font-bold text-primary">256</p>
-                    <p className="text-[10px] text-muted-foreground">Max signatures</p>
+                    <p className="text-lg font-bold text-primary">PDA</p>
+                    <p className="text-[10px] text-muted-foreground">Program-owned vault</p>
                   </div>
                 </div>
               </CardContent>
@@ -393,7 +476,7 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
               {isProcessing ? (
                 <>
                   <Loader2 className="h-4 w-4 animate-spin" />
-                  Generating keys...
+                  Opening vault...
                 </>
               ) : (
                 <>
@@ -417,20 +500,20 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
             {/* Authority info */}
             <Card>
               <CardHeader>
-                <CardTitle className="text-sm">Authority Info</CardTitle>
+                <CardTitle className="text-sm">Vault Info</CardTitle>
               </CardHeader>
               <CardContent className="space-y-3">
                 <div>
-                  <p className="text-[10px] text-muted-foreground mb-1">XMSS Root Hash</p>
+                  <p className="text-[10px] text-muted-foreground mb-1">Quantum Vault Address</p>
                   <div className="flex items-center gap-2">
                     <code className="flex-1 text-[10px] font-mono bg-muted rounded px-2 py-1.5 truncate">
-                      {vault.authorityRootHex}
+                      {vault.vaultAddress}
                     </code>
                     <button
-                      onClick={handleCopyRoot}
+                      onClick={handleCopyVaultAddress}
                       className="p-1 rounded hover:bg-accent transition-colors cursor-pointer"
                     >
-                      {copied ? (
+                      {copiedAddress ? (
                         <Check className="h-3 w-3 text-success" />
                       ) : (
                         <Copy className="h-3 w-3 text-muted-foreground" />
@@ -439,44 +522,96 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
                   </div>
                 </div>
 
-                {/* Leaf usage progress */}
                 <div>
                   <div className="flex justify-between mb-1">
-                    <p className="text-[10px] text-muted-foreground">Leaf Usage</p>
-                    <p className="text-[10px] font-mono text-primary">
-                      {vault.nextLeafIndex} / {vault.totalLeaves}
-                    </p>
-                  </div>
-                  <div className="h-2 rounded-full bg-muted overflow-hidden">
-                    <motion.div
-                      className={`h-full rounded-full ${
-                        isNearExhaustion
-                          ? "bg-warning"
-                          : "bg-gradient-to-r from-primary/80 to-primary"
-                      }`}
-                      animate={{
-                        width: `${(vault.nextLeafIndex / vault.totalLeaves) * 100}%`,
-                      }}
-                      transition={{ duration: 0.5 }}
-                    />
+                    <p className="text-[10px] text-muted-foreground">Onchain Balance</p>
+                    <p className="text-[10px] font-mono text-primary">{vaultBalanceSol.toFixed(9)} SOL</p>
                   </div>
                   <p className="text-[10px] text-muted-foreground mt-1">
-                    {remainingSignatures} one-time signature{remainingSignatures !== 1 ? "s" : ""} remaining
+                    Fund this address from any wallet, then execute exactly one split or close.
                   </p>
                 </div>
 
                 <div className="grid grid-cols-2 gap-2">
                   <div className="p-2 rounded-lg bg-muted text-center">
-                    <p className="text-sm font-bold">{vault.xmssTree?.depth ?? 0}</p>
-                    <p className="text-[10px] text-muted-foreground">Tree depth</p>
+                    <p className="text-sm font-bold">{vault.hasLocalKey ? "Loaded" : "Missing"}</p>
+                    <p className="text-[10px] text-muted-foreground">Local Winternitz key</p>
                   </div>
                   <div className="p-2 rounded-lg bg-muted text-center">
-                    <p className="text-sm font-bold">16 × 32B</p>
-                    <p className="text-[10px] text-muted-foreground">WOTS+ key size</p>
+                    <p className="text-sm font-bold">Single-use</p>
+                    <p className="text-[10px] text-muted-foreground">Vault lifecycle</p>
                   </div>
                 </div>
+
+                {quantumVaultExplorerUrl && (
+                  <a
+                    href={quantumVaultExplorerUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs text-blue-400 hover:underline flex items-center gap-1"
+                  >
+                    View vault on Explorer <ExternalLink className="h-3 w-3" />
+                  </a>
+                )}
               </CardContent>
             </Card>
+
+            {vault.publicKeyHashHex && (
+              <Card>
+                <CardContent className="pt-4 pb-4 space-y-2">
+                  <p className="text-[10px] text-muted-foreground">Winternitz Public Key Hash</p>
+                  <code className="text-[10px] font-mono text-muted-foreground break-all">
+                    {vault.publicKeyHashHex}
+                  </code>
+                </CardContent>
+              </Card>
+            )}
+
+            {(vault.authorityRootHex || vault.authorityNextLeafIndex !== null) && (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-sm">Quantum Authority Status</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <p className="text-xs text-muted-foreground">
+                    This separate onchain account tracks the multi-use authority rotation state for
+                    Vaulkyrie admin actions.
+                  </p>
+                  {vault.authorityRootHex && (
+                    <div>
+                      <p className="text-[10px] text-muted-foreground mb-1">Current Authority Root</p>
+                      <div className="flex items-center gap-2">
+                        <code className="flex-1 text-[10px] font-mono bg-muted rounded px-2 py-1.5 truncate">
+                          {vault.authorityRootHex}
+                        </code>
+                        <button
+                          onClick={handleCopyRoot}
+                          className="p-1 rounded hover:bg-accent transition-colors cursor-pointer"
+                        >
+                          {copied ? (
+                            <Check className="h-3 w-3 text-success" />
+                          ) : (
+                            <Copy className="h-3 w-3 text-muted-foreground" />
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="p-2 rounded-lg bg-muted text-center">
+                      <p className="text-sm font-bold">{vault.authorityNextLeafIndex ?? 0}</p>
+                      <p className="text-[10px] text-muted-foreground">Next authority leaf</p>
+                    </div>
+                    <div className="p-2 rounded-lg bg-muted text-center">
+                      <p className="text-sm font-bold">
+                        {vault.authorityNextSequence?.toString() ?? "0"}
+                      </p>
+                      <p className="text-[10px] text-muted-foreground">Rotation sequence</p>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
 
             {/* Last proof */}
             {lastProofHex && (
@@ -496,20 +631,20 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
                 variant="secondary"
                 className="w-full gap-2"
                 onClick={() => setActivePanel("split")}
-                disabled={remainingSignatures === 0}
+                disabled={!vault.hasLocalKey}
               >
                 <ArrowRight className="h-4 w-4" />
-                Split Vault (Partial Withdraw)
+                Split Vault Once
               </Button>
 
               <Button
                 variant="secondary"
                 className="w-full gap-2 text-destructive hover:text-destructive"
                 onClick={() => setActivePanel("close")}
-                disabled={remainingSignatures === 0}
+                disabled={!vault.hasLocalKey}
               >
                 <Lock className="h-4 w-4" />
-                Close Vault (Full Withdraw)
+                Close Vault
               </Button>
             </div>
           </motion.div>
@@ -530,8 +665,8 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
               </CardHeader>
               <CardContent className="space-y-3">
                 <p className="text-xs text-muted-foreground">
-                  Partially withdraw from the quantum vault. This consumes one
-                  WOTS+ leaf for the authorization signature.
+                  Partially withdraw from the onchain quantum vault. This consumes
+                  the one-time Winternitz authorization and closes the vault PDA.
                 </p>
 
                 <div>
@@ -561,7 +696,7 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
 
                 <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
                   <AlertTriangle className="h-3 w-3" />
-                  This will consume leaf #{vault.nextLeafIndex} — irreversible
+                  One-time authorization — the vault PDA is destroyed after the split
                 </div>
               </CardContent>
             </Card>
@@ -609,8 +744,7 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
               <CardContent className="space-y-3">
                 <p className="text-xs text-muted-foreground">
                   This will withdraw <strong>all</strong> funds from the quantum
-                  vault and destroy the on-chain authority account. This action is
-                  irreversible.
+                  vault and destroy the one-time vault PDA. This action is irreversible.
                 </p>
                 <p className="text-xs text-muted-foreground">
                   All remaining funds will be sent to your wallet address:
@@ -620,7 +754,7 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
                 </code>
                 <div className="flex items-center gap-2 text-[10px] text-warning">
                   <AlertTriangle className="h-3 w-3" />
-                  Consumes leaf #{vault.nextLeafIndex} — last chance to verify
+                  This consumes the one-time Winternitz key
                 </div>
               </CardContent>
             </Card>
