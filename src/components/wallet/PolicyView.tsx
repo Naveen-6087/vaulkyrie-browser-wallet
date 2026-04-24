@@ -19,6 +19,7 @@ import {
   createInitPolicyConfigInstruction,
   createOpenPolicyEvaluationInstruction,
   createAbortPolicyEvaluationInstruction,
+  createFinalizePolicyEvaluationInstruction,
   createQueueArciumComputationInstruction,
 } from "@/sdk/policyInstructions";
 import { signAndSendTransaction } from "@/services/frost/signTransaction";
@@ -107,6 +108,7 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
   const {
     activeAccount,
     network,
+    vaultConfigs,
     getPolicyProfiles,
     upsertPolicyProfile,
     deletePolicyProfile,
@@ -125,6 +127,9 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
   const [txSignature, setTxSignature] = useState("");
   const [abortingEval, setAbortingEval] = useState<string | null>(null);
   const [queueingEval, setQueueingEval] = useState<string | null>(null);
+  const [finalizingEval, setFinalizingEval] = useState<string | null>(null);
+  const [finalizeModes, setFinalizeModes] = useState<Record<string, "allow" | "review" | "block">>({});
+  const [finalizeDelaySlots, setFinalizeDelaySlots] = useState<Record<string, string>>({});
 
   const [initVersion, setInitVersion] = useState("1");
 
@@ -451,6 +456,72 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
       setPhase("error");
     } finally {
       setQueueingEval(null);
+    }
+  };
+
+  const handleFinalizeEvaluation = async (
+    evalAddress: PublicKey,
+    evaluation: PolicyEvaluationAccount,
+  ) => {
+    if (!activeAccount?.publicKey) return;
+    const evalKey = evalAddress.toBase58();
+    const mode = finalizeModes[evalKey] ?? "allow";
+    const delaySlots = Number(finalizeDelaySlots[evalKey] ?? "0");
+    if (Number.isNaN(delaySlots) || delaySlots < 0) {
+      setError("Finalize delay must be zero or a positive number.");
+      return;
+    }
+
+    setFinalizingEval(evalKey);
+    setActionMsg("Finalizing policy decision...");
+
+    try {
+      const authority = new PublicKey(activeAccount.publicKey);
+      const configuredThreshold = vaultConfigs[activeAccount.publicKey]?.threshold ?? 1;
+
+      const decisionPayload = {
+        mode,
+        reasonCode: mode === "allow" ? 0 : mode === "review" ? 1 : 2,
+        actionHash: Array.from(evaluation.actionHash),
+        computationOffset: evaluation.computationOffset.toString(),
+      };
+      const resultCommitment = await digestString(JSON.stringify(decisionPayload));
+
+      await withRpcFallback(network, async (connection) => {
+        const currentSlot = await connection.getSlot();
+        const ix = createFinalizePolicyEvaluationInstruction(
+          evalAddress,
+          authority,
+          {
+            requestCommitment: evaluation.requestCommitment,
+            actionHash: evaluation.actionHash,
+            policyVersion: evaluation.policyVersion,
+            threshold: configuredThreshold,
+            nonce: evaluation.requestNonce,
+            receiptExpirySlot: evaluation.expirySlot,
+            delayUntilSlot: BigInt(currentSlot + delaySlots),
+            reasonCode: decisionPayload.reasonCode,
+            computationOffset: evaluation.computationOffset,
+            resultCommitment,
+          },
+        );
+
+        const tx = new Transaction().add(ix);
+
+        return signAndSendTransaction(
+          connection,
+          tx,
+          activeAccount.publicKey,
+          (msg) => setActionMsg(msg),
+        );
+      });
+
+      await fetchPolicyData();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to finalize evaluation");
+      setPhase("error");
+    } finally {
+      setFinalizingEval(null);
     }
   };
 
@@ -1120,9 +1191,59 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
                   </div>
                 )}
                 {ev.account.status === PolicyEvaluationStatus.ComputationQueued && (
-                  <div className="mt-3 rounded-lg border border-blue-400/20 bg-blue-400/5 px-3 py-2 text-[10px] text-muted-foreground">
-                    This request has been queued into the Arcium stage. The remaining finalize/callback
-                    path still depends on the bridge-side private computation flow.
+                  <div className="mt-3 space-y-3">
+                    <div className="rounded-lg border border-blue-400/20 bg-blue-400/5 px-3 py-2 text-[10px] text-muted-foreground">
+                      This request has been queued into the Arcium stage. You can now finalize it from
+                      the wallet with a deterministic prototype decision commitment while the full
+                      private callback consumer is still being wired.
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="text-[10px] text-muted-foreground mb-1 block">Decision mode</label>
+                        <select
+                          value={finalizeModes[ev.address.toBase58()] ?? "allow"}
+                          onChange={(event) =>
+                            setFinalizeModes((prev) => ({
+                              ...prev,
+                              [ev.address.toBase58()]: event.target.value as "allow" | "review" | "block",
+                            }))
+                          }
+                          className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-xs"
+                        >
+                          <option value="allow">Allow</option>
+                          <option value="review">Needs review</option>
+                          <option value="block">Block</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-muted-foreground mb-1 block">Delay slots</label>
+                        <Input
+                          type="number"
+                          min="0"
+                          value={finalizeDelaySlots[ev.address.toBase58()] ?? "0"}
+                          onChange={(event) =>
+                            setFinalizeDelaySlots((prev) => ({
+                              ...prev,
+                              [ev.address.toBase58()]: event.target.value,
+                            }))
+                          }
+                          className="h-8 text-xs"
+                        />
+                      </div>
+                    </div>
+                    <Button
+                      size="sm"
+                      className="w-full"
+                      onClick={() => handleFinalizeEvaluation(ev.address, ev.account)}
+                      disabled={finalizingEval === ev.address.toBase58()}
+                    >
+                      {finalizingEval === ev.address.toBase58() ? (
+                        <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                      ) : (
+                        <Check className="h-3.5 w-3.5 mr-1" />
+                      )}
+                      Finalize decision
+                    </Button>
                   </div>
                 )}
               </CardContent>
@@ -1136,7 +1257,8 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
         <p>
           1. Create a local policy profile. 2. Initialize the on-chain bridge once per vault. 3. Open
           an evaluation from a send flow or manually here. 4. Queue the evaluation into the Arcium
-          computation stage. Final decision callbacks are the next bridge-side feature still to wire.
+          computation stage. 5. Finalize the queued result from the wallet while the bridge-side
+          callback consumer remains the next integration step.
         </p>
       </div>
     </div>
