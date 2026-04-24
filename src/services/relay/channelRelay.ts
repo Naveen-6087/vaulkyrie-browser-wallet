@@ -33,6 +33,8 @@ export const RelayMessageType = {
   /** DKG round 3 result (group key confirmation) */
   DkgRound3Done: "dkg-round3-done",
   /** Signing round 1 commitments */
+  SignRequest: "sign-request",
+  /** Signing round 1 commitments */
   SignRound1: "sign-round1",
   /** Signing round 2 signature share */
   SignRound2: "sign-round2",
@@ -62,6 +64,18 @@ export interface JoinPayload {
   deviceType: "browser" | "mobile" | "desktop";
 }
 
+export interface SignRequestPayload {
+  requestId: string;
+  message: number[];
+  signerIds: number[];
+  amount: number;
+  token: string;
+  recipient: string;
+  initiator: string;
+  network: string;
+  createdAt: number;
+}
+
 // ── Participant state ────────────────────────────────────────────────
 
 export interface RelayParticipant {
@@ -78,6 +92,7 @@ export interface RelayParticipant {
 export interface RelayEvents {
   onParticipantJoined?: (participant: RelayParticipant) => void;
   onParticipantLeft?: (senderId: string) => void;
+  onSignRequest?: (fromId: number, request: SignRequestPayload) => void;
   onDkgRound1?: (fromId: number, pkg: number[]) => void;
   onDkgRound2?: (fromId: number, packages: Record<number, number[]>) => void;
   onDkgRound3Done?: (fromId: number, groupKeyHex: string) => void;
@@ -205,6 +220,10 @@ export class ChannelRelay {
     this.broadcast(RelayMessageType.DkgRound3Done, groupKeyHex);
   }
 
+  broadcastSignRequest(request: SignRequestPayload): void {
+    this.broadcast(RelayMessageType.SignRequest, request);
+  }
+
   broadcastSignRound1(commitments: number[]): void {
     this.broadcast(RelayMessageType.SignRound1, commitments);
   }
@@ -326,6 +345,10 @@ export class ChannelRelay {
 
       case RelayMessageType.DkgRound3Done:
         this.events.onDkgRound3Done?.(msg.participantId, msg.payload as string);
+        break;
+
+      case RelayMessageType.SignRequest:
+        this.events.onSignRequest?.(msg.participantId, msg.payload as SignRequestPayload);
         break;
 
       case RelayMessageType.SignRound1:

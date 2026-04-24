@@ -17,7 +17,6 @@ import {
 import { QRCodeSVG } from "qrcode.react";
 import type { VaultConfig } from "@/components/onboarding/VaultConfigStep";
 import { runLocalDkg } from "@/services/frost/frostService";
-import type { FullDkgResult } from "@/services/frost/types";
 import type { LocalDkgProgress } from "@/services/frost/frostService";
 import {
   createRelay,
@@ -88,7 +87,7 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
   const [dkgError, setDkgError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [relayMode, setRelayMode] = useState<"local" | "remote" | null>(null);
-  const [connectionState, setConnectionState] = useState<ConnectionState>("disconnected");
+  const [, setConnectionState] = useState<ConnectionState>("disconnected");
 
   const relayRef = useRef<RelayAdapter | null>(null);
   const orchestratorRef = useRef<DkgOrchestrator | null>(null);

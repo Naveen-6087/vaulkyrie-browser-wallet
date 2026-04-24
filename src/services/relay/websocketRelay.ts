@@ -11,7 +11,7 @@
  *   - Same RelayEvents callback interface as ChannelRelay
  */
 
-import type { RelayEvents, RelayParticipant, JoinPayload } from "./channelRelay";
+import type { RelayEvents, RelayParticipant, JoinPayload, SignRequestPayload } from "./channelRelay";
 import { RelayMessageType } from "./channelRelay";
 
 export { RelayMessageType };
@@ -61,7 +61,6 @@ export class WebSocketRelay {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private intentionallyClosed = false;
   private pendingMessages: Array<{ type: string; payload: unknown }> = [];
-  private sessionReady = false;
 
   private connectionState: ConnectionState = "disconnected";
   private sessionCode: string | null = null;
@@ -230,6 +229,10 @@ export class WebSocketRelay {
     this.send({ type: RelayMessageType.DkgRound3Done, payload: groupKeyHex });
   }
 
+  broadcastSignRequest(request: SignRequestPayload): void {
+    this.send({ type: RelayMessageType.SignRequest, payload: request });
+  }
+
   broadcastSignRound1(commitments: number[]): void {
     this.send({ type: RelayMessageType.SignRound1, payload: commitments });
   }
@@ -293,7 +296,6 @@ export class WebSocketRelay {
       case "session-created": {
         const sp = msg.payload as { code: string; threshold: number; maxParticipants: number };
         this.sessionCode = sp.code;
-        this.sessionReady = true;
         this.startHeartbeat();
         this.onSessionCreated?.(sp.code);
         return;
@@ -314,7 +316,6 @@ export class WebSocketRelay {
           if (self) self.participantId = jp.participantId;
           this.onParticipantIdAssigned?.(jp.participantId);
         }
-        this.sessionReady = true;
         this.startHeartbeat();
         // Populate participant list from server state
         for (const p of jp.participants) {
@@ -411,6 +412,10 @@ export class WebSocketRelay {
 
       case RelayMessageType.DkgRound3Done:
         this.events.onDkgRound3Done?.(msg.participantId, msg.payload as string);
+        break;
+
+      case RelayMessageType.SignRequest:
+        this.events.onSignRequest?.(msg.participantId, msg.payload as SignRequestPayload);
         break;
 
       case RelayMessageType.SignRound1:

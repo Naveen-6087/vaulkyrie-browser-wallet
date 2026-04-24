@@ -8,7 +8,7 @@
 
 import { ChannelRelay, generateSessionCode, buildQrPayload } from "./channelRelay";
 import { WebSocketRelay, type ConnectionState, type WebSocketRelayOptions } from "./websocketRelay";
-import type { RelayEvents, RelayParticipant } from "./channelRelay";
+import type { RelayEvents, RelayParticipant, SignRequestPayload } from "./channelRelay";
 
 export { generateSessionCode, buildQrPayload };
 export type { RelayEvents, RelayParticipant, ConnectionState };
@@ -39,6 +39,7 @@ export interface RelayAdapter {
   broadcastStartDkg(threshold: number, participants: number): void;
 
   // Signing broadcasting
+  broadcastSignRequest(request: SignRequestPayload): void;
   broadcastSignRound1(commitments: number[]): void;
   broadcastSignRound2(share: number[]): void;
   broadcastSignComplete(signatureHex: string, verified: boolean): void;
@@ -91,6 +92,7 @@ class LocalRelayAdapter implements RelayAdapter {
   broadcastDkgRound3Done(groupKeyHex: string) { this.relay.broadcastDkgRound3Done(groupKeyHex); }
   broadcastStartDkg(threshold: number, participants: number) { this.relay.broadcastStartDkg(threshold, participants); }
 
+  broadcastSignRequest(request: SignRequestPayload) { this.relay.broadcastSignRequest(request); }
   broadcastSignRound1(commitments: number[]) { this.relay.broadcastSignRound1(commitments); }
   broadcastSignRound2(share: number[]) { this.relay.broadcastSignRound2(share); }
   broadcastSignComplete(signatureHex: string, verified: boolean) { this.relay.broadcastSignComplete(signatureHex, verified); }
@@ -127,6 +129,7 @@ class RemoteRelayAdapter implements RelayAdapter {
   broadcastDkgRound3Done(groupKeyHex: string) { this.relay.broadcastDkgRound3Done(groupKeyHex); }
   broadcastStartDkg(threshold: number, participants: number) { this.relay.broadcastStartDkg(threshold, participants); }
 
+  broadcastSignRequest(request: SignRequestPayload) { this.relay.broadcastSignRequest(request); }
   broadcastSignRound1(commitments: number[]) { this.relay.broadcastSignRound1(commitments); }
   broadcastSignRound2(share: number[]) { this.relay.broadcastSignRound2(share); }
   broadcastSignComplete(signatureHex: string, verified: boolean) { this.relay.broadcastSignComplete(signatureHex, verified); }

@@ -46,28 +46,34 @@ function App() {
 
   // Sync view after zustand persist hydration completes
   useEffect(() => {
-    if (hasHydrated) {
+    if (!hasHydrated) return;
+
+    const timer = window.setTimeout(() => {
       if (isOnboarded && passwordHash && storeLocked) {
-        // User has a password and app was locked — show lock screen
         setIsLocked(true);
         setView("lock");
       } else if (isOnboarded && !passwordHash) {
-        // Onboarded but no password yet — show lock screen for setup
         setIsLocked(true);
         setView("lock");
       } else {
         setView(isOnboarded ? "dashboard" : "onboarding");
       }
-    }
-  }, [hasHydrated, isOnboarded]);
+    }, 0);
+
+    return () => window.clearTimeout(timer);
+  }, [hasHydrated, isOnboarded, passwordHash, storeLocked]);
 
   // Sync local lock state when store's isLocked changes (e.g. from Settings → Lock Wallet)
   useEffect(() => {
-    if (storeLocked && !isLocked && hasHydrated && isOnboarded) {
+    if (!(storeLocked && !isLocked && hasHydrated && isOnboarded)) return;
+
+    const timer = window.setTimeout(() => {
       setIsLocked(true);
       setView("lock");
-    }
-  }, [storeLocked]);
+    }, 0);
+
+    return () => window.clearTimeout(timer);
+  }, [hasHydrated, isLocked, isOnboarded, storeLocked]);
 
   // Auto-lock after 5 minutes of inactivity
   useEffect(() => {
@@ -93,7 +99,7 @@ function App() {
       clearTimeout(timeout);
       events.forEach((e) => window.removeEventListener(e, resetTimer));
     };
-  }, [isOnboarded, passwordHash, isLocked]);
+  }, [isOnboarded, passwordHash, isLocked, setStoreLocked]);
 
   // Show splash screen until store has hydrated
   if (!hasHydrated) {

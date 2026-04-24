@@ -41,7 +41,7 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
   const [statusMessage, setStatusMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
   const [progress, setProgress] = useState(0);
-  const [connectionState, setConnectionState] = useState<ConnectionState>("disconnected");
+  const [, setConnectionState] = useState<ConnectionState>("disconnected");
   const [relayMode, setRelayMode] = useState<"local" | "remote" | null>(null);
   const [dkgParams, setDkgParams] = useState<{ threshold: number; participants: number } | null>(null);
   const [participantId, setParticipantId] = useState<number>(0);
@@ -162,70 +162,73 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
     dkgStartedRef.current = true;
     dkgStartTimeRef.current = Date.now();
 
-    setPhase("running");
-    setStatusMessage("DKG ceremony in progress…");
-    setProgress(10);
+    const timer = window.setTimeout(() => {
+      setPhase("running");
+      setStatusMessage("DKG ceremony in progress…");
+      setProgress(10);
 
-    const handleProgress = (p: DkgOrchestratorProgress) => {
-      setProgress(Math.round(p.progress));
-      setStatusMessage(p.message);
-    };
+      const handleProgress = (p: DkgOrchestratorProgress) => {
+        setProgress(Math.round(p.progress));
+        setStatusMessage(p.message);
+      };
 
-    const orchestrator = new DkgOrchestrator({
-      relay: relayRef.current,
-      participantId,
-      threshold: dkgParams.threshold,
-      totalParticipants: dkgParams.participants,
-      onProgress: handleProgress,
-    });
-    orchestratorRef.current = orchestrator;
-
-    // Replay any DKG messages that arrived before orchestrator was ready
-    const buffered = pendingDkgMessages.current.splice(0);
-    for (const msg of buffered) {
-      if (msg.type === "round1") orchestrator.handleDkgRound1(msg.fromId, msg.pkg);
-      else if (msg.type === "round2") orchestrator.handleDkgRound2(msg.fromId, msg.packages);
-      else if (msg.type === "round3") orchestrator.handleDkgRound3Done(msg.fromId, msg.groupKeyHex);
-    }
-
-    orchestrator.run()
-      .then((result) => {
-        const elapsed = Date.now() - dkgStartTimeRef.current;
-        const remaining = Math.max(0, MIN_ANIMATION_MS - elapsed);
-        const finish = () => {
-          setPhase("complete");
-          setProgress(100);
-          setStatusMessage("Ceremony complete — vault created!");
-
-          try {
-            sessionStorage.setItem(
-              "vaulkyrie_dkg_result",
-              JSON.stringify({
-                groupPublicKeyHex: result.groupPublicKeyHex,
-                publicKeyPackage: result.publicKeyPackageJson,
-                keyPackages: { [result.participantId]: result.keyPackageJson },
-                threshold: result.threshold,
-                participants: result.totalParticipants,
-                participantId: result.participantId,
-                isMultiDevice: true,
-                createdAt: Date.now(),
-              }),
-            );
-          } catch { /* sessionStorage may be unavailable */ }
-        };
-
-        if (remaining > 0) {
-          setProgress(95);
-          setStatusMessage("Finalizing key shares…");
-          setTimeout(finish, remaining);
-        } else {
-          finish();
-        }
-      })
-      .catch((err: unknown) => {
-        setPhase("error");
-        setErrorMessage(err instanceof Error ? err.message : String(err));
+      const orchestrator = new DkgOrchestrator({
+        relay: relayRef.current!,
+        participantId,
+        threshold: dkgParams.threshold,
+        totalParticipants: dkgParams.participants,
+        onProgress: handleProgress,
       });
+      orchestratorRef.current = orchestrator;
+
+      const buffered = pendingDkgMessages.current.splice(0);
+      for (const msg of buffered) {
+        if (msg.type === "round1") orchestrator.handleDkgRound1(msg.fromId, msg.pkg);
+        else if (msg.type === "round2") orchestrator.handleDkgRound2(msg.fromId, msg.packages);
+        else if (msg.type === "round3") orchestrator.handleDkgRound3Done(msg.fromId, msg.groupKeyHex);
+      }
+
+      orchestrator.run()
+        .then((result) => {
+          const elapsed = Date.now() - dkgStartTimeRef.current;
+          const remaining = Math.max(0, MIN_ANIMATION_MS - elapsed);
+          const finish = () => {
+            setPhase("complete");
+            setProgress(100);
+            setStatusMessage("Ceremony complete — vault created!");
+
+            try {
+              sessionStorage.setItem(
+                "vaulkyrie_dkg_result",
+                JSON.stringify({
+                  groupPublicKeyHex: result.groupPublicKeyHex,
+                  publicKeyPackage: result.publicKeyPackageJson,
+                  keyPackages: { [result.participantId]: result.keyPackageJson },
+                  threshold: result.threshold,
+                  participants: result.totalParticipants,
+                  participantId: result.participantId,
+                  isMultiDevice: true,
+                  createdAt: Date.now(),
+                }),
+              );
+            } catch { /* sessionStorage may be unavailable */ }
+          };
+
+          if (remaining > 0) {
+            setProgress(95);
+            setStatusMessage("Finalizing key shares…");
+            setTimeout(finish, remaining);
+          } else {
+            finish();
+          }
+        })
+        .catch((err: unknown) => {
+          setPhase("error");
+          setErrorMessage(err instanceof Error ? err.message : String(err));
+        });
+    }, 0);
+
+    return () => window.clearTimeout(timer);
   }, [dkgParams, participantId, phase]);
 
   const handleComplete = () => {

@@ -88,9 +88,6 @@ export class DkgOrchestrator {
     if (this.started) throw new Error("DKG already started");
     this.started = true;
 
-    // Wire up relay event handlers
-    this.attachRelayHandlers();
-
     // If coordinator, broadcast start signal
     if (this.relay.isCoordinator) {
       this.relay.broadcastStartDkg(this.threshold, this.totalParticipants);
@@ -288,27 +285,6 @@ export class DkgOrchestrator {
     return new Promise<void>((resolve) => {
       this.round3Resolve = resolve;
     });
-  }
-
-  // ── Relay event handlers ────────────────────────────────────────
-
-  private attachRelayHandlers(): void {
-    const origR1 = this.relay["events"]?.onDkgRound1;
-    const origR2 = this.relay["events"]?.onDkgRound2;
-    const origR3 = this.relay["events"]?.onDkgRound3Done;
-
-    // We intercept events by replacing the relay's event object
-    // (the relay adapter stores events as a field we can access via the
-    // broadcast handlers — but instead we use the relay's onDkg* events
-    // passed during construction. The caller should wire these through.)
-    //
-    // Since the relay adapter is created with events callbacks, we just
-    // need those callbacks to feed into our collection maps. The caller
-    // must pass our handler methods as the events when creating the relay.
-
-    void origR1;
-    void origR2;
-    void origR3;
   }
 
   /** Call this from the relay's onDkgRound1 event */

@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { ArrowDownUp, Loader2, AlertCircle, ChevronDown, Check, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { useWalletStore } from "@/store/walletStore";
 import { KNOWN_MINTS, SOL_ICON } from "@/services/solanaRpc";
 import type { WalletView, Token } from "@/types";
@@ -148,7 +148,7 @@ function SwapTokenSelector({
 }
 
 export function SwapView({ balance, onNavigate }: SwapViewProps) {
-  const { tokens, activeAccount, network } = useWalletStore();
+  const { tokens, network } = useWalletStore();
   const isDevnet = network !== "mainnet";
 
   const swappable = getSwappableTokens(tokens);
@@ -161,7 +161,7 @@ export function SwapView({ balance, onNavigate }: SwapViewProps) {
   const [quote, setQuote] = useState<JupiterQuote | null>(null);
   const [quoteLoading, setQuoteLoading] = useState(false);
   const [error, setError] = useState("");
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>();
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const parsedInput = parseFloat(inputAmount) || 0;
 

@@ -1,6 +1,6 @@
 import { PublicKey } from "@solana/web3.js";
 import { DISCRIMINATOR, ACCOUNT_SIZE } from "./constants";
-import type { VaultStatus, SessionStatus, OrchestrationStatus, RecoveryStatus } from "./constants";
+import type { VaultStatus, SessionStatus, OrchestrationStatus, RecoveryStatus, PolicyEvaluationStatus } from "./constants";
 import type {
   VaultRegistryAccount,
   PolicyReceiptStateAccount,

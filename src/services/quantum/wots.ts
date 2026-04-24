@@ -246,7 +246,6 @@ export async function generateXmssTree(depth: number = 8): Promise<XmssTree> {
   // Build Merkle tree from leaf hashes
   const root = await computeMerkleRoot(
     keys.map((k) => k.publicKeyHash),
-    depth,
   );
 
   return {
@@ -269,7 +268,6 @@ export async function generateSmallXmssTree(): Promise<XmssTree> {
  */
 async function computeMerkleRoot(
   leaves: Uint8Array[],
-  _depth: number,
 ): Promise<Uint8Array> {
   let level = leaves.slice();
 

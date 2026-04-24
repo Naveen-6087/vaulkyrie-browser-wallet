@@ -122,10 +122,14 @@ wss.on("connection", (ws) => {
           members: new Map(),
         };
 
-        // Coordinator is always participant 1
+        const requestedParticipantId =
+          Number.isInteger(msg.participantId) && msg.participantId > 0
+            ? msg.participantId
+            : 1;
+
         session.members.set(msg.senderId, {
           ws,
-          participantId: 1,
+          participantId: requestedParticipantId,
           deviceName: (sessionPayload?.deviceName as string) ?? "Unknown",
         });
 
@@ -173,8 +177,20 @@ wss.on("connection", (ws) => {
           return;
         }
 
-        // Assign the next available participant ID (coordinator is 1)
-        const assignedParticipantId = session.members.size + 1;
+        const requestedParticipantId =
+          Number.isInteger(msg.participantId) && msg.participantId > 0
+            ? msg.participantId
+            : 0;
+        const usedParticipantIds = new Set(
+          Array.from(session.members.values()).map((member) => member.participantId),
+        );
+        let assignedParticipantId = requestedParticipantId;
+        if (assignedParticipantId <= 0 || usedParticipantIds.has(assignedParticipantId)) {
+          assignedParticipantId = 1;
+          while (usedParticipantIds.has(assignedParticipantId)) {
+            assignedParticipantId += 1;
+          }
+        }
 
         session.members.set(msg.senderId, {
           ws,
