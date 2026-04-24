@@ -47,6 +47,11 @@ interface Contact {
   addedAt: number;
 }
 
+interface SecurityPreferences {
+  autoLockMinutes: 5 | 15 | 30 | 60;
+  lockOnHide: boolean;
+}
+
 interface WalletState {
   // Auth
   isLocked: boolean;
@@ -56,6 +61,10 @@ interface WalletState {
   // Password (PBKDF2 hash + salt, hex-encoded)
   passwordHash: string | null;
   passwordSalt: string | null;
+  failedUnlockAttempts: number;
+  lastUnlockFailureAt: number | null;
+  unlockBlockedUntil: number | null;
+  securityPreferences: SecurityPreferences;
 
   // Active account
   activeAccount: WalletAccount | null;
@@ -119,6 +128,9 @@ interface WalletState {
   // Password management
   setPasswordHash: (hash: string, salt: string) => void;
   hasPassword: () => boolean;
+  registerUnlockFailure: () => { attempts: number; blockedUntil: number | null };
+  resetUnlockFailures: () => void;
+  updateSecurityPreferences: (preferences: Partial<SecurityPreferences>) => void;
 
   // DKG key management
   storeDkgResult: (publicKey: string, result: StoredDkgResult) => void;
@@ -156,6 +168,13 @@ export const useWalletStore = create<WalletState>()(
       hasHydrated: false,
       passwordHash: null,
       passwordSalt: null,
+      failedUnlockAttempts: 0,
+      lastUnlockFailureAt: null,
+      unlockBlockedUntil: null,
+      securityPreferences: {
+        autoLockMinutes: 5,
+        lockOnHide: true,
+      },
       activeAccount: null,
       accounts: [],
       dkgResults: {},
@@ -247,6 +266,35 @@ export const useWalletStore = create<WalletState>()(
       hasPassword: () => {
         return get().passwordHash !== null;
       },
+      registerUnlockFailure: () => {
+        const now = Date.now();
+        const state = get();
+        const isRecent = state.lastUnlockFailureAt !== null && now - state.lastUnlockFailureAt < 10 * 60 * 1000;
+        const attempts = (isRecent ? state.failedUnlockAttempts : 0) + 1;
+        const cooldownMs = attempts >= 5 ? 5 * 60 * 1000 : attempts === 4 ? 60 * 1000 : attempts === 3 ? 30 * 1000 : 0;
+        const blockedUntil = cooldownMs > 0 ? now + cooldownMs : null;
+
+        set({
+          failedUnlockAttempts: attempts,
+          lastUnlockFailureAt: now,
+          unlockBlockedUntil: blockedUntil,
+        });
+
+        return { attempts, blockedUntil };
+      },
+      resetUnlockFailures: () =>
+        set({
+          failedUnlockAttempts: 0,
+          lastUnlockFailureAt: null,
+          unlockBlockedUntil: null,
+        }),
+      updateSecurityPreferences: (preferences) =>
+        set((state) => ({
+          securityPreferences: {
+            ...state.securityPreferences,
+            ...preferences,
+          },
+        })),
 
       // Address book
       addContact: (contact) =>
@@ -417,6 +465,10 @@ export const useWalletStore = create<WalletState>()(
         vaultConfigs: state.vaultConfigs,
         passwordHash: state.passwordHash,
         passwordSalt: state.passwordSalt,
+        failedUnlockAttempts: state.failedUnlockAttempts,
+        lastUnlockFailureAt: state.lastUnlockFailureAt,
+        unlockBlockedUntil: state.unlockBlockedUntil,
+        securityPreferences: state.securityPreferences,
         contacts: state.contacts,
         xmssTrees: state.xmssTrees,
         policyProfiles: state.policyProfiles,

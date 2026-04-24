@@ -31,6 +31,7 @@ function App() {
     network,
     passwordHash,
     isLocked: storeLocked,
+    securityPreferences,
     setOnboarded,
     setActiveAccount,
     addAccount,
@@ -75,12 +76,12 @@ function App() {
     return () => window.clearTimeout(timer);
   }, [hasHydrated, isLocked, isOnboarded, storeLocked]);
 
-  // Auto-lock after 5 minutes of inactivity
+  // Auto-lock after the configured inactivity window
   useEffect(() => {
     if (!isOnboarded || !passwordHash || isLocked) return;
 
     let timeout: ReturnType<typeof setTimeout>;
-    const AUTO_LOCK_MS = 5 * 60 * 1000;
+    const autoLockMs = securityPreferences.autoLockMinutes * 60 * 1000;
 
     const resetTimer = () => {
       clearTimeout(timeout);
@@ -88,7 +89,7 @@ function App() {
         setIsLocked(true);
         setStoreLocked(true);
         setView("lock");
-      }, AUTO_LOCK_MS);
+      }, autoLockMs);
     };
 
     const events = ["mousedown", "keydown", "touchstart", "scroll"];
@@ -99,7 +100,21 @@ function App() {
       clearTimeout(timeout);
       events.forEach((e) => window.removeEventListener(e, resetTimer));
     };
-  }, [isOnboarded, passwordHash, isLocked, setStoreLocked]);
+  }, [isOnboarded, passwordHash, isLocked, securityPreferences.autoLockMinutes, setStoreLocked]);
+
+  useEffect(() => {
+    if (!isOnboarded || !passwordHash || isLocked || !securityPreferences.lockOnHide) return;
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== "hidden") return;
+      setIsLocked(true);
+      setStoreLocked(true);
+      setView("lock");
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
+  }, [isOnboarded, passwordHash, isLocked, securityPreferences.lockOnHide, setStoreLocked]);
 
   // Show splash screen until store has hydrated
   if (!hasHydrated) {

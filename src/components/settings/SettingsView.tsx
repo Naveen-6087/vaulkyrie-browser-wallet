@@ -1,5 +1,5 @@
 import { Shield, ChevronRight, Globe, Key, Bell, Info, Wallet, Trash2, Users, Lock } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -44,7 +44,29 @@ function SettingRow({ icon: Icon, label, value, badge, onClick }: SettingRowProp
 
 export function SettingsView({ network, onNavigate }: SettingsViewProps) {
   const [showAccounts, setShowAccounts] = useState(false);
-  const { accounts, activeAccount, vaultConfigs, switchVault, removeAccount, setLocked, passwordHash } = useWalletStore();
+  const [showSecurity, setShowSecurity] = useState(false);
+  const {
+    accounts,
+    activeAccount,
+    vaultConfigs,
+    switchVault,
+    removeAccount,
+    setLocked,
+    passwordHash,
+    securityPreferences,
+    unlockBlockedUntil,
+    updateSecurityPreferences,
+  } = useWalletStore();
+
+  const timeoutOptions: Array<5 | 15 | 30 | 60> = [5, 15, 30, 60];
+  const [currentTime, setCurrentTime] = useState(() => Date.now());
+  const activeCooldown = unlockBlockedUntil !== null && unlockBlockedUntil > currentTime;
+
+  useEffect(() => {
+    if (!activeCooldown) return;
+    const interval = window.setInterval(() => setCurrentTime(Date.now()), 1000);
+    return () => window.clearInterval(interval);
+  }, [activeCooldown]);
 
   return (
     <div className="flex flex-col gap-4 p-4 flex-1">
@@ -76,8 +98,9 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
         <SettingRow
           icon={Shield}
           label="Security"
-          value="Threshold signing · PQ authority"
+          value={`${securityPreferences.autoLockMinutes}m auto-lock · ${securityPreferences.lockOnHide ? "locks on hide" : "stays open in background"}`}
           badge="Active"
+          onClick={() => setShowSecurity(!showSecurity)}
         />
         <SettingRow
           icon={Shield}
@@ -111,6 +134,66 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
           value="v0.1.0 · Solana threshold wallet"
         />
       </Card>
+
+      {showSecurity && (
+        <Card className="overflow-hidden">
+          <div className="border-b border-border px-4 py-3">
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+              Session protection
+            </p>
+          </div>
+          <div className="space-y-4 p-4">
+            <div className="space-y-2">
+              <p className="text-sm font-medium">Auto-lock timeout</p>
+              <div className="grid grid-cols-4 gap-2">
+                {timeoutOptions.map((minutes) => {
+                  const isActive = securityPreferences.autoLockMinutes === minutes;
+                  return (
+                    <Button
+                      key={minutes}
+                      type="button"
+                      size="sm"
+                      variant={isActive ? "default" : "outline"}
+                      aria-pressed={isActive}
+                      onClick={() => updateSecurityPreferences({ autoLockMinutes: minutes })}
+                    >
+                      {minutes}m
+                    </Button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between gap-3 rounded-xl border border-border bg-muted/20 px-3 py-3">
+              <div>
+                <p className="text-sm font-medium">Lock when hidden</p>
+                <p className="text-xs text-muted-foreground">
+                  Locks the wallet when the app loses visibility.
+                </p>
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                variant={securityPreferences.lockOnHide ? "default" : "outline"}
+                aria-pressed={securityPreferences.lockOnHide}
+                onClick={() => updateSecurityPreferences({ lockOnHide: !securityPreferences.lockOnHide })}
+              >
+                {securityPreferences.lockOnHide ? "On" : "Off"}
+              </Button>
+            </div>
+
+            <div className="rounded-xl border border-border bg-card/60 px-3 py-3">
+              <p className="text-sm font-medium">Unlock backoff</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                After repeated failed unlock attempts, Vaulkyrie adds a cooldown before the next try.
+              </p>
+              <p className="mt-2 text-[11px] text-muted-foreground">
+                Status: {activeCooldown ? "Cooldown active" : "No active cooldown"}
+              </p>
+            </div>
+          </div>
+        </Card>
+      )}
 
       {/* Expandable vault list */}
       {showAccounts && (

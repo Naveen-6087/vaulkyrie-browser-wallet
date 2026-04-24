@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { Lock, Eye, EyeOff, Loader2 } from "lucide-react";
 import { hashPassword, verifyPassword } from "@/lib/crypto";
@@ -15,17 +15,37 @@ export function LockScreen({ onUnlock }: LockScreenProps) {
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [now, setNow] = useState(Date.now());
 
-  const { passwordHash, passwordSalt, setPasswordHash } = useWalletStore();
+  const {
+    passwordHash,
+    passwordSalt,
+    setPasswordHash,
+    registerUnlockFailure,
+    resetUnlockFailures,
+    unlockBlockedUntil,
+  } = useWalletStore();
   const isSetup = !passwordHash;
+  const remainingLockMs = unlockBlockedUntil && unlockBlockedUntil > now ? unlockBlockedUntil - now : 0;
+  const isBlocked = remainingLockMs > 0;
+
+  useEffect(() => {
+    if (!isBlocked) return;
+    const interval = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(interval);
+  }, [isBlocked]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (loading) return;
+    if (loading || isBlocked) return;
 
     if (isSetup) {
-      if (password.length < 6) {
-        setError("Password must be at least 6 characters");
+      if (password.length < 10) {
+        setError("Password must be at least 10 characters");
+        return;
+      }
+      if (!/[A-Za-z]/.test(password) || !/\d/.test(password)) {
+        setError("Use at least one letter and one number");
         return;
       }
       if (password !== confirmPassword) {
@@ -51,9 +71,16 @@ export function LockScreen({ onUnlock }: LockScreenProps) {
       try {
         const valid = await verifyPassword(password, passwordHash!, passwordSalt!);
         if (valid) {
+          resetUnlockFailures();
           onUnlock();
         } else {
-          setError("Incorrect password");
+          const { blockedUntil } = registerUnlockFailure();
+          if (blockedUntil && blockedUntil > Date.now()) {
+            const waitSeconds = Math.ceil((blockedUntil - Date.now()) / 1000);
+            setError(`Too many attempts. Try again in ${waitSeconds}s`);
+          } else {
+            setError("Incorrect password");
+          }
         }
       } catch {
         setError("Verification failed");
@@ -103,13 +130,18 @@ export function LockScreen({ onUnlock }: LockScreenProps) {
         onSubmit={handleSubmit}
         className="w-full max-w-[280px]"
       >
+        <label htmlFor="wallet-password" className="sr-only">
+          {isSetup ? "Create password" : "Wallet password"}
+        </label>
         <div className="relative mb-3">
           <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <input
+            id="wallet-password"
             type={showPassword ? "text" : "password"}
             value={password}
             onChange={(e) => { setPassword(e.target.value); setError(""); }}
-            placeholder={isSetup ? "New password (min 6 chars)" : "Password"}
+            placeholder={isSetup ? "New password (min 10 chars)" : "Password"}
+            autoComplete={isSetup ? "new-password" : "current-password"}
             autoFocus
             className={`w-full pl-10 pr-10 py-3 rounded-xl bg-card border text-sm
                        focus:outline-none focus:ring-2 transition-all
@@ -128,20 +160,27 @@ export function LockScreen({ onUnlock }: LockScreenProps) {
           </button>
         </div>
 
-        {isSetup && (
-          <div className="relative mb-3">
-            <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-            <input
-              type={showPassword ? "text" : "password"}
-              value={confirmPassword}
-              onChange={(e) => { setConfirmPassword(e.target.value); setError(""); }}
-              placeholder="Confirm password"
-              className="w-full pl-10 pr-4 py-3 rounded-xl bg-card border text-sm
-                         focus:outline-none focus:ring-2 transition-all
-                         placeholder:text-muted-foreground/50
-                         border-border focus:ring-primary/40 focus:border-primary/60"
-            />
-          </div>
+          {isSetup && (
+          <>
+            <label htmlFor="wallet-password-confirm" className="sr-only">
+              Confirm password
+            </label>
+            <div className="relative mb-3">
+              <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <input
+                id="wallet-password-confirm"
+                type={showPassword ? "text" : "password"}
+                value={confirmPassword}
+                onChange={(e) => { setConfirmPassword(e.target.value); setError(""); }}
+                placeholder="Confirm password"
+                autoComplete="new-password"
+                className="w-full pl-10 pr-4 py-3 rounded-xl bg-card border text-sm
+                          focus:outline-none focus:ring-2 transition-all
+                          placeholder:text-muted-foreground/50
+                          border-border focus:ring-primary/40 focus:border-primary/60"
+              />
+            </div>
+          </>
         )}
 
         {error && (
@@ -154,11 +193,21 @@ export function LockScreen({ onUnlock }: LockScreenProps) {
           </motion.p>
         )}
 
+        {isBlocked && (
+          <motion.p
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="text-xs text-muted-foreground text-center mb-3"
+          >
+            Unlock disabled for {Math.max(1, Math.ceil(remainingLockMs / 1000))}s after repeated failures.
+          </motion.p>
+        )}
+
         <motion.button
           whileHover={{ scale: 1.02 }}
           whileTap={{ scale: 0.98 }}
           type="submit"
-          disabled={loading}
+          disabled={loading || isBlocked}
           className="w-full py-3 rounded-xl font-semibold text-sm cursor-pointer
                      bg-primary text-primary-foreground disabled:opacity-50
                      shadow-lg shadow-primary/20 hover:shadow-primary/35 transition-shadow
