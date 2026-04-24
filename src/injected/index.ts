@@ -11,6 +11,7 @@ interface ProviderState {
   connected: boolean;
   publicKey: string | null;
   network: string;
+  isLocked?: boolean;
 }
 
 interface ProviderResponse<T = unknown> {
@@ -87,6 +88,7 @@ class VaulkyrieProvider {
       connected: false,
       publicKey: null,
       network: this.network,
+      isLocked: false,
     });
     this.emit("disconnect");
     this.emit("accountChanged", null);
@@ -119,9 +121,11 @@ class VaulkyrieProvider {
 
   private applyState(state: ProviderState): void {
     const previousPublicKey = this.publicKey?.toBase58() ?? null;
+    const nextIsLocked = Boolean(state.isLocked);
 
-    this.isConnected = Boolean(state.connected && state.publicKey);
-    this.publicKey = state.publicKey ? new InjectedPublicKey(state.publicKey) : null;
+    this.isConnected = Boolean(state.connected && state.publicKey && !nextIsLocked);
+    this.publicKey =
+      state.publicKey && !nextIsLocked ? new InjectedPublicKey(state.publicKey) : null;
     this.network = state.network ?? this.network;
 
     const nextPublicKey = this.publicKey?.toBase58() ?? null;

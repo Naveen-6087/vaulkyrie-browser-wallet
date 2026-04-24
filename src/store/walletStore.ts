@@ -469,6 +469,7 @@ export const useWalletStore = create<WalletState>()(
       storage: walletPersistStorage,
       partialize: (state) => ({
         isOnboarded: state.isOnboarded,
+        isLocked: state.isLocked,
         accounts: state.accounts,
         activeAccount: state.activeAccount,
         network: state.network,

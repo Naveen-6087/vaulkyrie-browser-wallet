@@ -22,6 +22,9 @@ async function handleRpcRequest(message: ExtensionRpcRequest) {
     case "getState":
       return providerState;
     case "connect":
+      if (providerState.isLocked) {
+        throw new Error("Vaulkyrie is locked. Unlock the wallet before connecting.");
+      }
       if (!providerState.publicKey) {
         throw new Error("No active Vaulkyrie account found. Open the wallet and create or import one first.");
       }
@@ -55,6 +58,9 @@ async function handleRpcRequest(message: ExtensionRpcRequest) {
       };
     }
     case "signTransaction":
+      if (providerState.isLocked) {
+        throw new Error("Vaulkyrie is locked. Unlock the wallet before signing.");
+      }
       throw new Error("Extension transaction signing is not implemented yet.");
     default:
       throw new Error(`Unsupported extension RPC method: ${message.method}`);

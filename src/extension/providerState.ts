@@ -12,6 +12,7 @@ interface PersistedAccount {
 
 interface PersistedWalletState {
   isOnboarded?: boolean;
+  isLocked?: boolean;
   activeAccount?: PersistedAccount | null;
   accounts?: PersistedAccount[];
   network?: NetworkId;
@@ -24,6 +25,7 @@ export interface ExtensionProviderState {
   accounts: string[];
   network: NetworkId;
   isOnboarded: boolean;
+  isLocked: boolean;
 }
 
 export async function readExtensionProviderState(): Promise<ExtensionProviderState> {
@@ -38,5 +40,6 @@ export async function readExtensionProviderState(): Promise<ExtensionProviderSta
     accounts: (state?.accounts ?? []).map((account) => account.publicKey),
     network: state?.network ?? DEFAULT_NETWORK,
     isOnboarded: Boolean(state?.isOnboarded),
+    isLocked: Boolean(state?.isLocked),
   };
 }
