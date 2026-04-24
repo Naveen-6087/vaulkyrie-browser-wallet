@@ -20,6 +20,7 @@ import {
   fetchTokenPrices,
   withRpcFallback,
 } from "../services/solanaRpc";
+import { walletPersistStorage } from "../lib/walletPersistStorage";
 
 // Per-vault DKG key material stored in localStorage
 interface StoredDkgResult {
@@ -465,6 +466,7 @@ export const useWalletStore = create<WalletState>()(
     }),
     {
       name: "vaulkyrie-wallet-storage",
+      storage: walletPersistStorage,
       partialize: (state) => ({
         isOnboarded: state.isOnboarded,
         accounts: state.accounts,

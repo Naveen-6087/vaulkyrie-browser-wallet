@@ -1,18 +1,86 @@
-// Vaulkyrie background service worker
-// Handles persistent state, network requests, and message passing
+import { PublicKey } from "@solana/web3.js";
+import {
+  VAULKYRIE_EXTENSION_RPC,
+  type ExtensionRpcRequest,
+  type ExtensionRpcResponse,
+} from "@/extension/messages";
+import { readExtensionProviderState } from "@/extension/providerState";
+import {
+  fetchSolBalance,
+  fetchTransactionHistory,
+  withRpcFallback,
+} from "@/services/solanaRpc";
 
 chrome.runtime.onInstalled.addListener(() => {
   console.log("[Vaulkyrie] Extension installed");
 });
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message.type === "GET_BALANCE") {
-    // TODO: Fetch balance from Solana RPC
-    sendResponse({ balance: 0 });
+async function handleRpcRequest(message: ExtensionRpcRequest) {
+  const providerState = await readExtensionProviderState();
+
+  switch (message.method) {
+    case "getState":
+      return providerState;
+    case "connect":
+      if (!providerState.publicKey) {
+        throw new Error("No active Vaulkyrie account found. Open the wallet and create or import one first.");
+      }
+      return providerState;
+    case "disconnect":
+      return { disconnected: true };
+    case "getBalance": {
+      if (!providerState.publicKey) {
+        throw new Error("No active Vaulkyrie account found.");
+      }
+
+      const lamports = await withRpcFallback(providerState.network, (connection) =>
+        fetchSolBalance(connection, new PublicKey(providerState.publicKey!)),
+      );
+      return {
+        publicKey: providerState.publicKey,
+        lamports,
+      };
+    }
+    case "getTransactions": {
+      if (!providerState.publicKey) {
+        throw new Error("No active Vaulkyrie account found.");
+      }
+
+      const transactions = await withRpcFallback(providerState.network, (connection) =>
+        fetchTransactionHistory(connection, new PublicKey(providerState.publicKey!), 20),
+      );
+      return {
+        publicKey: providerState.publicKey,
+        transactions,
+      };
+    }
+    case "signTransaction":
+      throw new Error("Extension transaction signing is not implemented yet.");
+    default:
+      throw new Error(`Unsupported extension RPC method: ${message.method}`);
   }
-  if (message.type === "SIGN_TRANSACTION") {
-    // TODO: Threshold signing flow
-    sendResponse({ error: "Not implemented" });
+}
+
+chrome.runtime.onMessage.addListener((message: ExtensionRpcRequest, _sender, sendResponse) => {
+  if (message?.type !== VAULKYRIE_EXTENSION_RPC) {
+    return false;
   }
-  return true; // async response
+
+  void handleRpcRequest(message)
+    .then((result) => {
+      const response: ExtensionRpcResponse = {
+        id: message.id,
+        result,
+      };
+      sendResponse(response);
+    })
+    .catch((error) => {
+      const response: ExtensionRpcResponse = {
+        id: message.id,
+        error: error instanceof Error ? error.message : String(error),
+      };
+      sendResponse(response);
+    });
+
+  return true;
 });

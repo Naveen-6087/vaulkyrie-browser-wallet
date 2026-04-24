@@ -1,11 +1,14 @@
 import { defineConfig } from "vite";
+import { crx } from "@crxjs/vite-plugin";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import wasm from "vite-plugin-wasm";
 import { resolve } from "path";
+import manifest from "./manifest.config";
 
 export default defineConfig({
   plugins: [
+    crx({ manifest }),
     react(),
     tailwindcss(),
     wasm(),
@@ -24,15 +27,5 @@ export default defineConfig({
   build: {
     outDir: "dist",
     target: "esnext",
-    rollupOptions: {
-      input: {
-        popup: resolve(__dirname, "index.html"),
-      },
-      output: {
-        entryFileNames: "assets/[name]-[hash].js",
-        chunkFileNames: "assets/[name]-[hash].js",
-        assetFileNames: "assets/[name]-[hash].[ext]",
-      },
-    },
   },
 });

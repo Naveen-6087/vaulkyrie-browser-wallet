@@ -1,0 +1,44 @@
+import { defineManifest } from "@crxjs/vite-plugin";
+
+export default defineManifest({
+  manifest_version: 3,
+  name: "Vaulkyrie Wallet",
+  description: "Solana threshold wallet with private policy engine and post-quantum security",
+  version: "0.1.0",
+  icons: {
+    "16": "favicon.svg",
+    "48": "favicon.svg",
+    "128": "favicon.svg",
+  },
+  action: {
+    default_popup: "index.html",
+    default_icon: {
+      "16": "favicon.svg",
+      "48": "favicon.svg",
+    },
+    default_title: "Vaulkyrie Wallet",
+  },
+  background: {
+    service_worker: "src/background/index.ts",
+  },
+  content_scripts: [
+    {
+      matches: ["<all_urls>"],
+      js: ["src/content/index.ts"],
+      run_at: "document_start",
+    },
+  ],
+  web_accessible_resources: [
+    {
+      resources: ["src/injected/index.ts"],
+      matches: ["<all_urls>"],
+    },
+  ],
+  permissions: ["storage", "activeTab", "notifications"],
+  host_permissions: [
+    "https://api.mainnet-beta.solana.com/*",
+    "https://api.devnet.solana.com/*",
+    "https://api.testnet.solana.com/*",
+    "https://rpc.ankr.com/*",
+  ],
+});
