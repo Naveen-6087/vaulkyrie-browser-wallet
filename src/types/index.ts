@@ -59,6 +59,15 @@ export interface PolicyProfile {
   updatedAt: number;
 }
 
+export interface PendingPolicyRequest {
+  profileId: string;
+  actionType: "send" | "admin";
+  recipient: string;
+  amount: number;
+  tokenSymbol: string;
+  createdAt: number;
+}
+
 export type WalletView =
   | "dashboard"
   | "send"

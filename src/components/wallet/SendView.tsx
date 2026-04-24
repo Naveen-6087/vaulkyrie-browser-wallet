@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { ArrowUpRight, AlertCircle, Loader2, Check, ExternalLink, Users, ChevronDown, Radio } from "lucide-react";
 import { PublicKey, SystemProgram, Transaction, LAMPORTS_PER_SOL } from "@solana/web3.js";
 import { Button } from "@/components/ui/button";
@@ -165,8 +165,9 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
   const [joinSessionCode, setJoinSessionCode] = useState("");
   const [pendingSignRequest, setPendingSignRequest] = useState<SignRequestPayload | null>(null);
   const [selectedToken, setSelectedToken] = useState("SOL");
+  const [selectedPolicyProfileId, setSelectedPolicyProfileId] = useState("");
   const [showContacts, setShowContacts] = useState(false);
-  const { activeAccount, network, tokens, contacts } = useWalletStore();
+  const { activeAccount, network, tokens, contacts, getPolicyProfiles, setPendingPolicyRequest } = useWalletStore();
   const relayRef = useRef<RelayAdapter | null>(null);
   const orchestratorRef = useRef<SigningOrchestrator | null>(null);
   const pendingSigningMessagesRef = useRef<BufferedSigningMessage[]>([]);
@@ -179,6 +180,37 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
   const parsedAmount = parseFloat(amount) || 0;
   const isValid =
     recipient.length >= 32 && parsedAmount > 0 && parsedAmount <= tokenBalance;
+  const savedPolicyProfiles = useMemo(
+    () => (activeAccount?.publicKey
+      ? getPolicyProfiles(activeAccount.publicKey).filter((profile) => profile.actionType === "send")
+      : []),
+    [activeAccount?.publicKey, getPolicyProfiles],
+  );
+  const selectedPolicyProfile = savedPolicyProfiles.find((profile) => profile.id === selectedPolicyProfileId) ?? null;
+  const policyMismatch = useMemo(() => {
+    if (!selectedPolicyProfile) return null;
+    if (selectedPolicyProfile.tokenSymbol !== selectedToken) {
+      return `Policy ${selectedPolicyProfile.name} only covers ${selectedPolicyProfile.tokenSymbol} transfers.`;
+    }
+    if (
+      selectedPolicyProfile.maxAmount !== null &&
+      parsedAmount > selectedPolicyProfile.maxAmount
+    ) {
+      return `This transfer exceeds the ${selectedPolicyProfile.maxAmount} ${selectedPolicyProfile.tokenSymbol} limit in ${selectedPolicyProfile.name}.`;
+    }
+    if (
+      selectedPolicyProfile.allowedRecipients.length > 0 &&
+      recipient.trim().length > 0 &&
+      !selectedPolicyProfile.allowedRecipients.some(
+        (allowed) => allowed.toLowerCase() === recipient.trim().toLowerCase(),
+      )
+    ) {
+      return `Recipient is not in the allowlist for ${selectedPolicyProfile.name}.`;
+    }
+    return null;
+  }, [selectedPolicyProfile, selectedToken, parsedAmount, recipient]);
+  const needsPolicyReview = selectedPolicyProfile?.approvalMode === "review" && !policyMismatch;
+  const blockedByPolicy = selectedPolicyProfile?.approvalMode === "block" && !policyMismatch;
 
   const matchingContacts = contacts.filter(
     (c) =>
@@ -308,6 +340,10 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
       new PublicKey(recipient);
     } catch {
       setError("Invalid Solana address");
+      return;
+    }
+    if (policyMismatch) {
+      setError(policyMismatch);
       return;
     }
     setPhase("review");
@@ -694,6 +730,27 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
     }
   }, [cleanupRelayState, loadDkgState, pendingSignRequest, runSigningOrchestrator]);
 
+  const handleOpenPolicyEvaluation = useCallback(() => {
+    if (!selectedPolicyProfile) return;
+
+    setPendingPolicyRequest({
+      profileId: selectedPolicyProfile.id,
+      actionType: "send",
+      recipient: recipient.trim(),
+      amount: parsedAmount,
+      tokenSymbol: selectedToken,
+      createdAt: Date.now(),
+    });
+    onNavigate("policy");
+  }, [onNavigate, parsedAmount, recipient, selectedPolicyProfile, selectedToken, setPendingPolicyRequest]);
+
+  useEffect(() => {
+    if (!selectedPolicyProfileId) return;
+    if (!savedPolicyProfiles.some((profile) => profile.id === selectedPolicyProfileId)) {
+      setSelectedPolicyProfileId("");
+    }
+  }, [savedPolicyProfiles, selectedPolicyProfileId]);
+
   const explorerUrl = txSignature
     ? `https://explorer.solana.com/tx/${txSignature}?cluster=${network}`
     : "";
@@ -913,11 +970,50 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
           Signing via FROST {useWalletStore.getState().vaultState?.threshold ?? 2}-of-{useWalletStore.getState().vaultState?.participants ?? 3} threshold ceremony
         </p>
 
-        <div className="mt-auto">
-          <Button className="w-full gap-2" size="lg" onClick={handleSign}>
-            <ArrowUpRight className="h-4 w-4" />
-            Confirm & Sign
-          </Button>
+        {selectedPolicyProfile && (
+          <Card>
+            <CardContent className="pt-4 space-y-2 text-xs">
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Policy profile</span>
+                <span className="font-medium">{selectedPolicyProfile.name}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Decision mode</span>
+                <span className="font-medium capitalize">{selectedPolicyProfile.approvalMode}</span>
+              </div>
+              {selectedPolicyProfile.notes && (
+                <p className="text-[10px] text-muted-foreground">{selectedPolicyProfile.notes}</p>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
+        <div className="mt-auto space-y-2">
+          {blockedByPolicy ? (
+            <>
+              <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-3 text-xs text-destructive">
+                This transfer is blocked by the selected policy profile.
+              </div>
+              <Button className="w-full" variant="secondary" onClick={() => setPhase("form")}>
+                Choose another policy
+              </Button>
+            </>
+          ) : needsPolicyReview ? (
+            <>
+              <div className="rounded-xl border border-primary/20 bg-primary/5 px-3 py-3 text-xs text-muted-foreground">
+                This transfer matches a review-only policy. Open the Policy Engine to create an evaluation before signing.
+              </div>
+              <Button className="w-full gap-2" size="lg" onClick={handleOpenPolicyEvaluation}>
+                <ArrowUpRight className="h-4 w-4" />
+                Open Policy Evaluation
+              </Button>
+            </>
+          ) : (
+            <Button className="w-full gap-2" size="lg" onClick={handleSign}>
+              <ArrowUpRight className="h-4 w-4" />
+              Confirm & Sign
+            </Button>
+          )}
         </div>
       </div>
     );
@@ -1054,6 +1150,56 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
               <p className="text-xs text-muted-foreground mt-2">
                 Available: {tokenBalance.toFixed(4)} {selectedToken}
               </p>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-sm">Policy profile</CardTitle>
+                <button
+                  onClick={() => onNavigate("policy")}
+                  className="text-xs text-primary hover:text-primary/80 font-medium cursor-pointer"
+                >
+                  Manage
+                </button>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <select
+                value={selectedPolicyProfileId}
+                onChange={(event) => {
+                  setSelectedPolicyProfileId(event.target.value);
+                  setError("");
+                }}
+                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+              >
+                <option value="">No policy profile</option>
+                {savedPolicyProfiles.map((profile) => (
+                  <option key={profile.id} value={profile.id}>
+                    {profile.name}
+                  </option>
+                ))}
+              </select>
+              {selectedPolicyProfile ? (
+                <div className="rounded-xl border border-border bg-background/60 px-3 py-3 text-[11px] text-muted-foreground space-y-1">
+                  <p className="font-medium text-foreground">{selectedPolicyProfile.name}</p>
+                  <p>
+                    {selectedPolicyProfile.approvalMode === "allow"
+                      ? "Can sign directly"
+                      : selectedPolicyProfile.approvalMode === "review"
+                        ? "Requires policy evaluation"
+                        : "Blocked by policy"}
+                  </p>
+                  <p>
+                    Token: {selectedPolicyProfile.tokenSymbol} · Max: {selectedPolicyProfile.maxAmount ?? "No cap"} · Recipients: {selectedPolicyProfile.allowedRecipients.length || "Any"}
+                  </p>
+                </div>
+              ) : (
+                <p className="text-[11px] text-muted-foreground">
+                  Choose a saved send policy if you want this transfer to follow a reusable rule.
+                </p>
+              )}
             </CardContent>
           </Card>
         </>

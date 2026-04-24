@@ -22,7 +22,7 @@ import {
 } from "@/sdk/policyInstructions";
 import { signAndSendTransaction } from "@/services/frost/signTransaction";
 import { NETWORKS } from "@/lib/constants";
-import type { WalletView, PolicyProfile } from "@/types";
+import type { WalletView, PolicyProfile, PendingPolicyRequest } from "@/types";
 import type { PolicyConfigAccount, PolicyEvaluationAccount } from "@/sdk/types";
 
 interface PolicyViewProps {
@@ -108,6 +108,8 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
     getPolicyProfiles,
     upsertPolicyProfile,
     deletePolicyProfile,
+    pendingPolicyRequest,
+    setPendingPolicyRequest,
   } = useWalletStore();
   const [config, setConfig] = useState<PolicyConfigAccount | null>(null);
   const [evaluations, setEvaluations] = useState<
@@ -144,6 +146,14 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
   );
   const selectedProfile = savedProfiles.find((profile) => profile.id === selectedProfileId) ?? null;
 
+  const seedEvaluationDraft = useCallback((request: PendingPolicyRequest) => {
+    setSelectedProfileId(request.profileId);
+    setEvalActionType(request.actionType);
+    setEvalRecipient(request.recipient);
+    setEvalAmount(request.amount.toString());
+    setEvalToken(request.tokenSymbol);
+  }, []);
+
   useEffect(() => {
     if (!savedProfiles.length) {
       if (selectedProfileId) setSelectedProfileId("");
@@ -153,6 +163,11 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
       setSelectedProfileId(savedProfiles[0].id);
     }
   }, [savedProfiles, selectedProfileId]);
+
+  useEffect(() => {
+    if (!pendingPolicyRequest) return;
+    seedEvaluationDraft(pendingPolicyRequest);
+  }, [pendingPolicyRequest, seedEvaluationDraft]);
 
   const getConnection = useCallback(() => {
     const rpcUrl = NETWORKS[network]?.rpcUrl;
@@ -292,7 +307,7 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
     }
   };
 
-  const handleOpenEvaluation = async () => {
+  const handleOpenEvaluation = useCallback(async () => {
     if (!activeAccount?.publicKey || !config) return;
     setPhase("submitting");
     setActionMsg("Building evaluation request...");
@@ -362,6 +377,7 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
         (msg) => setActionMsg(msg),
       );
 
+      setPendingPolicyRequest(null);
       setTxSignature(sig);
       setPhase("success");
       fetchPolicyData();
@@ -369,7 +385,7 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
       setError(e instanceof Error ? e.message : "Failed to open evaluation");
       setPhase("error");
     }
-  };
+  }, [activeAccount?.publicKey, config, evalActionType, evalAmount, evalExpirySlots, evalRecipient, evalToken, fetchPolicyData, getConnection, selectedProfile, setPendingPolicyRequest]);
 
   const handleAbortEvaluation = async (evalAddress: PublicKey) => {
     if (!activeAccount?.publicKey) return;
@@ -641,6 +657,15 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
 
         <Card>
           <CardContent className="pt-4 space-y-4">
+            {pendingPolicyRequest && (
+              <div className="rounded-xl border border-primary/20 bg-primary/5 px-3 py-3 text-[11px] text-muted-foreground space-y-1">
+                <p className="font-medium text-foreground">Prefilled from send flow</p>
+                <p>
+                  {pendingPolicyRequest.amount} {pendingPolicyRequest.tokenSymbol} to {pendingPolicyRequest.recipient}
+                </p>
+              </div>
+            )}
+
             <div>
               <label className="text-xs text-muted-foreground mb-1 block">Policy profile</label>
               <select
@@ -826,6 +851,49 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
           )}
         </CardContent>
       </Card>
+
+      {pendingPolicyRequest && (
+        <Card className="border-primary/20 bg-primary/5">
+          <CardContent className="pt-4 pb-3 space-y-3">
+            <div className="flex items-center gap-2">
+              <ShieldAlert className="h-4 w-4 text-primary" />
+              <span className="text-sm font-medium">Pending transfer review</span>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              A send flow handed off {pendingPolicyRequest.amount} {pendingPolicyRequest.tokenSymbol} to {pendingPolicyRequest.recipient} for policy evaluation.
+            </p>
+            <div className="flex gap-2">
+              {config ? (
+                <Button
+                  size="sm"
+                  className="flex-1"
+                  onClick={() => {
+                    seedEvaluationDraft(pendingPolicyRequest);
+                    setPhase("open-eval");
+                  }}
+                >
+                  Open Draft
+                </Button>
+              ) : (
+                <Button
+                  size="sm"
+                  className="flex-1"
+                  onClick={() => setPhase("init-config")}
+                >
+                  Initialize Bridge
+                </Button>
+              )}
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setPendingPolicyRequest(null)}
+              >
+                Dismiss
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardContent className="pt-4 pb-3">

@@ -1,7 +1,15 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { PublicKey } from "@solana/web3.js";
-import type { WalletAccount, Token, Transaction, VaultState, WalletView, PolicyProfile } from "../types";
+import type {
+  WalletAccount,
+  Token,
+  Transaction,
+  VaultState,
+  WalletView,
+  PolicyProfile,
+  PendingPolicyRequest,
+} from "../types";
 import { DEFAULT_NETWORK, type NetworkId } from "../lib/constants";
 import {
   createConnection,
@@ -66,6 +74,9 @@ interface WalletState {
   // Local policy profiles stored per vault
   policyProfiles: Record<string, PolicyProfile[]>;
 
+  // In-memory handoff from SendView to PolicyView
+  pendingPolicyRequest: PendingPolicyRequest | null;
+
   // Tokens & transactions (real data from RPC)
   tokens: Token[];
   transactions: Transaction[];
@@ -123,6 +134,7 @@ interface WalletState {
   upsertPolicyProfile: (publicKey: string, profile: PolicyProfile) => void;
   deletePolicyProfile: (publicKey: string, profileId: string) => void;
   getPolicyProfiles: (publicKey: string) => PolicyProfile[];
+  setPendingPolicyRequest: (request: PendingPolicyRequest | null) => void;
 
   // Async actions — real Solana RPC calls
   refreshBalances: () => Promise<void>;
@@ -146,6 +158,7 @@ export const useWalletStore = create<WalletState>()(
       contacts: [],
       xmssTrees: {},
       policyProfiles: {},
+      pendingPolicyRequest: null,
       tokens: [],
       transactions: [],
       vaultState: null,
@@ -268,6 +281,7 @@ export const useWalletStore = create<WalletState>()(
           },
         })),
       getPolicyProfiles: (publicKey) => get().policyProfiles[publicKey] ?? [],
+      setPendingPolicyRequest: (pendingPolicyRequest) => set({ pendingPolicyRequest }),
 
       refreshBalances: async () => {
         const { activeAccount, network } = get();
