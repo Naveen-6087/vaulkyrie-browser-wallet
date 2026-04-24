@@ -139,6 +139,23 @@ export async function fetchTransactionHistory(
   return transactions;
 }
 
+function resolveTokenMetadata(
+  tx: ParsedTransactionWithMeta,
+  walletStr: string,
+): { symbol: string; decimals: number } {
+  const balances = [
+    ...(tx.meta?.postTokenBalances ?? []),
+    ...(tx.meta?.preTokenBalances ?? []),
+  ];
+  const matchingBalance = balances.find((balance) => balance.owner === walletStr) ?? balances[0];
+  const known = matchingBalance?.mint ? KNOWN_MINTS[matchingBalance.mint] : undefined;
+
+  return {
+    symbol: known?.symbol ?? matchingBalance?.mint?.slice(0, 6) ?? "SPL",
+    decimals: matchingBalance?.uiTokenAmount?.decimals ?? known?.decimals ?? 0,
+  };
+}
+
 function parseTransaction(
   tx: ParsedTransactionWithMeta | null,
   wallet: PublicKey,
@@ -194,7 +211,7 @@ function parseTransaction(
     }
   }
 
-  if (amount <= 0 || !token) return null;
+  if (!Number.isFinite(amount) || amount <= 0 || !token) return null;
 
   return {
     signature: sig.signature,
@@ -203,7 +220,7 @@ function parseTransaction(
     token,
     to,
     from,
-    timestamp: (sig.blockTime ?? 0) * 1000,
+    timestamp: (sig.blockTime ?? Math.floor(Date.now() / 1000)) * 1000,
     status:
       sig.confirmationStatus === "finalized" ||
       sig.confirmationStatus === "confirmed"
@@ -240,19 +257,7 @@ function parseSplTokenTransfer(
     // Determine if we sent or received
     const isSender = authority === walletStr || source === walletStr;
 
-    // Find token mint and decimals from pre/post token balances
-    let tokenSymbol = "SPL";
-    let tokenDecimals = 0;
-    if (tx.meta?.preTokenBalances) {
-      for (const tb of tx.meta.preTokenBalances) {
-        if (tb.owner === walletStr || tb.mint) {
-          const known = tb.mint ? KNOWN_MINTS[tb.mint] : undefined;
-          tokenSymbol = known?.symbol ?? tb.mint?.slice(0, 6) ?? "SPL";
-          tokenDecimals = tb.uiTokenAmount?.decimals ?? known?.decimals ?? 0;
-          break;
-        }
-      }
-    }
+    const { symbol: tokenSymbol, decimals: tokenDecimals } = resolveTokenMetadata(tx, walletStr);
 
     let transferAmount = 0;
     if (parsed.parsed.type === "transferChecked") {
@@ -263,6 +268,8 @@ function parseSplTokenTransfer(
       const rawAmount = Number(info.amount ?? 0);
       transferAmount = tokenDecimals > 0 ? rawAmount / 10 ** tokenDecimals : rawAmount;
     }
+
+    if (!Number.isFinite(transferAmount) || transferAmount <= 0) continue;
 
     return {
       type: isSender ? "send" : "receive",
@@ -290,19 +297,7 @@ function parseSplTokenTransfer(
 
         const isSender = authority === walletStr || source === walletStr;
 
-        // Find token decimals from pre/post token balances
-        let innerTokenSymbol = "SPL";
-        let innerTokenDecimals = 0;
-        if (tx.meta?.preTokenBalances) {
-          for (const tb of tx.meta.preTokenBalances) {
-            if (tb.owner === walletStr || tb.mint) {
-              const known = tb.mint ? KNOWN_MINTS[tb.mint] : undefined;
-              innerTokenSymbol = known?.symbol ?? tb.mint?.slice(0, 6) ?? "SPL";
-              innerTokenDecimals = tb.uiTokenAmount?.decimals ?? known?.decimals ?? 0;
-              break;
-            }
-          }
-        }
+        const { symbol: innerTokenSymbol, decimals: innerTokenDecimals } = resolveTokenMetadata(tx, walletStr);
 
         let transferAmount = 0;
         if (parsed.parsed.type === "transferChecked") {
@@ -312,6 +307,8 @@ function parseSplTokenTransfer(
           const rawAmount = Number(info.amount ?? 0);
           transferAmount = innerTokenDecimals > 0 ? rawAmount / 10 ** innerTokenDecimals : rawAmount;
         }
+
+        if (!Number.isFinite(transferAmount) || transferAmount <= 0) continue;
 
         return {
           type: isSender ? "send" : "receive",

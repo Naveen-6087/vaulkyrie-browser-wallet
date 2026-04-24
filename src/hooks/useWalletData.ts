@@ -25,20 +25,32 @@ export function useWalletData() {
   } = useWalletStore();
 
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastRefreshContextRef = useRef<{ key: string; at: number } | null>(null);
+  const activePublicKey = activeAccount?.publicKey;
 
   // Fetch on mount and when account/network changes
   useEffect(() => {
-    if (!activeAccount) return;
+    if (!activePublicKey) {
+      lastRefreshContextRef.current = null;
+      return;
+    }
 
+    const key = `${network}:${activePublicKey}`;
     const now = Date.now();
-    if (lastFetchedAt && now - lastFetchedAt < MIN_FETCH_INTERVAL_MS) return;
+    if (
+      lastRefreshContextRef.current?.key === key &&
+      now - lastRefreshContextRef.current.at < MIN_FETCH_INTERVAL_MS
+    ) {
+      return;
+    }
 
+    lastRefreshContextRef.current = { key, at: now };
     refreshAll();
-  }, [activeAccount?.publicKey, network]);
+  }, [activePublicKey, network, refreshAll]);
 
   // Poll every 30s for balance updates
   useEffect(() => {
-    if (!activeAccount) {
+    if (!activePublicKey) {
       if (intervalRef.current) {
         clearInterval(intervalRef.current);
         intervalRef.current = null;
@@ -56,7 +68,7 @@ export function useWalletData() {
         intervalRef.current = null;
       }
     };
-  }, [activeAccount?.publicKey]);
+  }, [activePublicKey, network, refreshBalances]);
 
   return {
     tokens,

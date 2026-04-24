@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { formatUsd } from "@/lib/utils";
+import { formatTokenAmount, formatUsd } from "@/lib/utils";
 import { Card } from "@/components/ui/card";
 import type { Token } from "@/types";
 
@@ -51,7 +51,7 @@ export function TokenList({ tokens }: TokenListProps) {
         Tokens
       </h3>
       {tokens.map((token) => {
-        const change = token.change24h ?? 0;
+        const change = Number.isFinite(token.change24h) ? token.change24h ?? 0 : 0;
         const isPositive = change >= 0;
         return (
           <button
@@ -65,9 +65,7 @@ export function TokenList({ tokens }: TokenListProps) {
             </div>
             <div className="text-right">
               <p className="text-sm font-medium font-mono">
-                {(token.balance ?? 0).toLocaleString("en-US", {
-                  maximumFractionDigits: 4,
-                })}
+                {formatTokenAmount(token.balance ?? 0)}
               </p>
               <div className="flex items-center gap-1.5 justify-end">
                 <span className="text-xs text-muted-foreground">

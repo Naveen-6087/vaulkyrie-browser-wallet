@@ -1,6 +1,6 @@
 import { ArrowUpRight, ArrowDownLeft, Repeat, ImageIcon, ExternalLink } from "lucide-react";
 import type { Transaction } from "@/types";
-import { shortenAddress, formatSol } from "@/lib/utils";
+import { shortenAddress, formatSol, formatTokenAmount } from "@/lib/utils";
 import { useWalletStore } from "@/store/walletStore";
 
 interface ActivityListProps {
@@ -15,6 +15,7 @@ const typeConfig = {
 } as const;
 
 function timeAgo(timestamp: number): string {
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return "pending";
   const seconds = Math.floor((Date.now() - timestamp) / 1000);
   if (seconds < 60) return "just now";
   const minutes = Math.floor(seconds / 60);
@@ -54,6 +55,7 @@ export function ActivityList({ transactions }: ActivityListProps) {
         const Icon = config.icon;
         const isSend = tx.type === "send";
         const explorerUrl = `${explorerBase}/${tx.signature}?cluster=${network}`;
+        const amount = Number.isFinite(tx.amount) ? tx.amount : 0;
 
         return (
           <a
@@ -84,7 +86,7 @@ export function ActivityList({ transactions }: ActivityListProps) {
                 className={`text-sm font-medium font-mono ${isSend ? "text-destructive" : "text-success"}`}
               >
                 {isSend ? "−" : "+"}
-                {tx.token === "SOL" || !tx.token ? formatSol(tx.amount ?? 0) : (tx.amount ?? 0)} {tx.token ?? "SOL"}
+                {tx.token === "SOL" || !tx.token ? formatSol(amount) : formatTokenAmount(amount, 6)} {tx.token ?? "SOL"}
               </p>
               <p className="text-[10px] text-muted-foreground">
                 {timeAgo(tx.timestamp)}

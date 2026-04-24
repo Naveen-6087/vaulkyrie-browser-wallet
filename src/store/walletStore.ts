@@ -179,6 +179,8 @@ export const useWalletStore = create<WalletState>()(
         if (target) {
           set({
             activeAccount: target,
+            error: null,
+            isLoading: false,
             tokens: [],
             transactions: [],
             vaultState: null,
@@ -189,7 +191,15 @@ export const useWalletStore = create<WalletState>()(
       setTokens: (tokens) => set({ tokens }),
       setTransactions: (transactions) => set({ transactions }),
       setVaultState: (vaultState) => set({ vaultState }),
-      setNetwork: (network) => set({ network, tokens: [], transactions: [], vaultState: null, lastFetchedAt: null }),
+      setNetwork: (network) => set({
+        network,
+        error: null,
+        isLoading: false,
+        tokens: [],
+        transactions: [],
+        vaultState: null,
+        lastFetchedAt: null,
+      }),
       setCurrentView: (currentView) => set({ currentView }),
       clearError: () => set({ error: null }),
 
