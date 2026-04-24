@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { PublicKey } from "@solana/web3.js";
-import type { WalletAccount, Token, Transaction, VaultState, WalletView } from "../types";
+import type { WalletAccount, Token, Transaction, VaultState, WalletView, PolicyProfile } from "../types";
 import { DEFAULT_NETWORK, type NetworkId } from "../lib/constants";
 import {
   createConnection,
@@ -63,6 +63,9 @@ interface WalletState {
   // XMSS tree state (serialized per vault, keyed by publicKey)
   xmssTrees: Record<string, string>;
 
+  // Local policy profiles stored per vault
+  policyProfiles: Record<string, PolicyProfile[]>;
+
   // Tokens & transactions (real data from RPC)
   tokens: Token[];
   transactions: Transaction[];
@@ -116,6 +119,11 @@ interface WalletState {
   storeXmssTree: (publicKey: string, serialized: string) => void;
   getXmssTree: (publicKey: string) => string | null;
 
+  // Policy profile persistence
+  upsertPolicyProfile: (publicKey: string, profile: PolicyProfile) => void;
+  deletePolicyProfile: (publicKey: string, profileId: string) => void;
+  getPolicyProfiles: (publicKey: string) => PolicyProfile[];
+
   // Async actions — real Solana RPC calls
   refreshBalances: () => Promise<void>;
   refreshTransactions: () => Promise<void>;
@@ -137,6 +145,7 @@ export const useWalletStore = create<WalletState>()(
       vaultConfigs: {},
       contacts: [],
       xmssTrees: {},
+      policyProfiles: {},
       tokens: [],
       transactions: [],
       vaultState: null,
@@ -227,6 +236,28 @@ export const useWalletStore = create<WalletState>()(
           xmssTrees: { ...state.xmssTrees, [publicKey]: serialized },
         })),
       getXmssTree: (publicKey) => get().xmssTrees[publicKey] ?? null,
+
+      upsertPolicyProfile: (publicKey, profile) =>
+        set((state) => {
+          const existing = state.policyProfiles[publicKey] ?? [];
+          const next = existing.some((item) => item.id === profile.id)
+            ? existing.map((item) => (item.id === profile.id ? profile : item))
+            : [profile, ...existing];
+          return {
+            policyProfiles: {
+              ...state.policyProfiles,
+              [publicKey]: next,
+            },
+          };
+        }),
+      deletePolicyProfile: (publicKey, profileId) =>
+        set((state) => ({
+          policyProfiles: {
+            ...state.policyProfiles,
+            [publicKey]: (state.policyProfiles[publicKey] ?? []).filter((item) => item.id !== profileId),
+          },
+        })),
+      getPolicyProfiles: (publicKey) => get().policyProfiles[publicKey] ?? [],
 
       refreshBalances: async () => {
         const { activeAccount, network } = get();
@@ -340,6 +371,7 @@ export const useWalletStore = create<WalletState>()(
         passwordSalt: state.passwordSalt,
         contacts: state.contacts,
         xmssTrees: state.xmssTrees,
+        policyProfiles: state.policyProfiles,
       }),
       onRehydrateStorage: (state) => {
         return () => {

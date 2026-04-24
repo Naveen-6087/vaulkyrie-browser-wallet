@@ -46,6 +46,19 @@ export interface VaultState {
   pendingSessions: number;
 }
 
+export interface PolicyProfile {
+  id: string;
+  name: string;
+  actionType: "send" | "admin";
+  approvalMode: "allow" | "review" | "block";
+  tokenSymbol: string;
+  maxAmount: number | null;
+  allowedRecipients: string[];
+  notes: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export type WalletView =
   | "dashboard"
   | "send"

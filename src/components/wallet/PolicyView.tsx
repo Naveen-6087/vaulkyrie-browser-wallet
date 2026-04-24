@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { PublicKey, Connection, Transaction, SystemProgram } from "@solana/web3.js";
 import {
   Shield, ShieldCheck, ShieldAlert, ShieldX,
@@ -22,14 +22,21 @@ import {
 } from "@/sdk/policyInstructions";
 import { signAndSendTransaction } from "@/services/frost/signTransaction";
 import { NETWORKS } from "@/lib/constants";
-import type { WalletView } from "@/types";
+import type { WalletView, PolicyProfile } from "@/types";
 import type { PolicyConfigAccount, PolicyEvaluationAccount } from "@/sdk/types";
 
 interface PolicyViewProps {
   onNavigate: (view: WalletView) => void;
 }
 
-type PolicyPhase = "dashboard" | "init-config" | "open-eval" | "submitting" | "success" | "error";
+type PolicyPhase =
+  | "dashboard"
+  | "init-config"
+  | "create-profile"
+  | "open-eval"
+  | "submitting"
+  | "success"
+  | "error";
 
 function statusIcon(status: PolicyEvaluationStatus) {
   switch (status) {
@@ -68,14 +75,40 @@ function shortenHash(hash: Uint8Array): string {
   return `${hex}…`;
 }
 
-function randomBytes(len: number): Uint8Array {
-  const buf = new Uint8Array(len);
-  crypto.getRandomValues(buf);
-  return buf;
+async function digestString(value: string): Promise<Uint8Array> {
+  const encoded = new TextEncoder().encode(value);
+  const digest = await crypto.subtle.digest("SHA-256", encoded);
+  return new Uint8Array(digest);
+}
+
+function formatApprovalMode(mode: PolicyProfile["approvalMode"]): string {
+  switch (mode) {
+    case "allow":
+      return "Auto-allow";
+    case "review":
+      return "Manual review";
+    case "block":
+      return "Block";
+    default:
+      return mode;
+  }
+}
+
+function normalizeRecipients(input: string): string[] {
+  return input
+    .split(/[\n,]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 export function PolicyView({ onNavigate }: PolicyViewProps) {
-  const { activeAccount, network } = useWalletStore();
+  const {
+    activeAccount,
+    network,
+    getPolicyProfiles,
+    upsertPolicyProfile,
+    deletePolicyProfile,
+  } = useWalletStore();
   const [config, setConfig] = useState<PolicyConfigAccount | null>(null);
   const [evaluations, setEvaluations] = useState<
     { address: PublicKey; account: PolicyEvaluationAccount }[]
@@ -83,17 +116,43 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  // UI state
   const [phase, setPhase] = useState<PolicyPhase>("dashboard");
   const [actionMsg, setActionMsg] = useState("");
   const [txSignature, setTxSignature] = useState("");
   const [abortingEval, setAbortingEval] = useState<string | null>(null);
 
-  // Init config form
   const [initVersion, setInitVersion] = useState("1");
 
-  // Open evaluation form
+  const [profileName, setProfileName] = useState("");
+  const [profileActionType, setProfileActionType] = useState<PolicyProfile["actionType"]>("send");
+  const [profileApprovalMode, setProfileApprovalMode] = useState<PolicyProfile["approvalMode"]>("review");
+  const [profileTokenSymbol, setProfileTokenSymbol] = useState("SOL");
+  const [profileMaxAmount, setProfileMaxAmount] = useState("");
+  const [profileRecipients, setProfileRecipients] = useState("");
+  const [profileNotes, setProfileNotes] = useState("");
+
   const [evalExpirySlots, setEvalExpirySlots] = useState("200");
+  const [evalActionType, setEvalActionType] = useState<PolicyProfile["actionType"]>("send");
+  const [evalRecipient, setEvalRecipient] = useState("");
+  const [evalAmount, setEvalAmount] = useState("");
+  const [evalToken, setEvalToken] = useState("SOL");
+  const [selectedProfileId, setSelectedProfileId] = useState("");
+
+  const savedProfiles = useMemo(
+    () => (activeAccount?.publicKey ? getPolicyProfiles(activeAccount.publicKey) : []),
+    [activeAccount?.publicKey, getPolicyProfiles],
+  );
+  const selectedProfile = savedProfiles.find((profile) => profile.id === selectedProfileId) ?? null;
+
+  useEffect(() => {
+    if (!savedProfiles.length) {
+      if (selectedProfileId) setSelectedProfileId("");
+      return;
+    }
+    if (!selectedProfileId || !savedProfiles.some((profile) => profile.id === selectedProfileId)) {
+      setSelectedProfileId(savedProfiles[0].id);
+    }
+  }, [savedProfiles, selectedProfileId]);
 
   const getConnection = useCallback(() => {
     const rpcUrl = NETWORKS[network]?.rpcUrl;
@@ -102,7 +161,10 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
   }, [network]);
 
   const fetchPolicyData = useCallback(async () => {
-    if (!activeAccount?.publicKey) return;
+    if (!activeAccount?.publicKey) {
+      setLoading(false);
+      return;
+    }
 
     setLoading(true);
     setError("");
@@ -126,13 +188,60 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
     } finally {
       setLoading(false);
     }
-  }, [activeAccount?.publicKey, network, getConnection]);
+  }, [activeAccount?.publicKey, getConnection]);
 
   useEffect(() => {
     fetchPolicyData();
   }, [fetchPolicyData]);
 
-  // ── Initialize Policy Config ────────────────────────────────────────
+  const resetProfileForm = useCallback(() => {
+    setProfileName("");
+    setProfileActionType("send");
+    setProfileApprovalMode("review");
+    setProfileTokenSymbol("SOL");
+    setProfileMaxAmount("");
+    setProfileRecipients("");
+    setProfileNotes("");
+  }, []);
+
+  const handleSaveProfile = () => {
+    if (!activeAccount?.publicKey) return;
+    const trimmedName = profileName.trim();
+    if (!trimmedName) {
+      setError("Give this policy a name first.");
+      setPhase("error");
+      return;
+    }
+
+    const now = Date.now();
+    const maxAmountValue = profileMaxAmount.trim() ? Number(profileMaxAmount) : null;
+    if (maxAmountValue !== null && Number.isNaN(maxAmountValue)) {
+      setError("Max amount must be a valid number.");
+      setPhase("error");
+      return;
+    }
+
+    upsertPolicyProfile(activeAccount.publicKey, {
+      id: crypto.randomUUID(),
+      name: trimmedName,
+      actionType: profileActionType,
+      approvalMode: profileApprovalMode,
+      tokenSymbol: profileTokenSymbol.trim().toUpperCase() || "SOL",
+      maxAmount: maxAmountValue,
+      allowedRecipients: normalizeRecipients(profileRecipients),
+      notes: profileNotes.trim(),
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    resetProfileForm();
+    setPhase("dashboard");
+  };
+
+  const handleDeleteProfile = (profileId: string) => {
+    if (!activeAccount?.publicKey) return;
+    deletePolicyProfile(activeAccount.publicKey, profileId);
+  };
 
   const handleInitConfig = async () => {
     if (!activeAccount?.publicKey) return;
@@ -154,7 +263,6 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
         bump,
       });
 
-      // Include rent funding for the config account
       const rentLamports = await connection.getMinimumBalanceForRentExemption(
         ACCOUNT_SIZE.PolicyConfigState,
       );
@@ -184,8 +292,6 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
     }
   };
 
-  // ── Open Policy Evaluation ──────────────────────────────────────────
-
   const handleOpenEvaluation = async () => {
     if (!activeAccount?.publicKey || !config) return;
     setPhase("submitting");
@@ -193,16 +299,31 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
 
     try {
       const authority = new PublicKey(activeAccount.publicKey);
-      const [configPda] = findPolicyConfigPda(authority);
-      const connection = getConnection();
+      if (evalActionType === "send" && evalRecipient.trim()) {
+        new PublicKey(evalRecipient.trim());
+      }
 
-      // Generate random action hash and encrypted input commitment
-      const actionHash = randomBytes(32);
-      const encryptedInput = randomBytes(32);
+      const connection = getConnection();
+      const [configPda] = findPolicyConfigPda(authority);
       const nonce = config.nextRequestNonce;
       const currentSlot = await connection.getSlot();
       const expirySlot = BigInt(currentSlot) + BigInt(evalExpirySlots || "200");
 
+      const actionPayload = {
+        profileId: selectedProfile?.id ?? null,
+        profileName: selectedProfile?.name ?? null,
+        actionType: evalActionType,
+        recipient: evalRecipient.trim(),
+        amount: Number(evalAmount || "0"),
+        token: evalToken.trim().toUpperCase() || "SOL",
+        notes: selectedProfile?.notes ?? "",
+      };
+      const actionHash = await digestString(JSON.stringify(actionPayload));
+      const encryptedInput = await digestString(JSON.stringify({
+        policyProfile: selectedProfile,
+        actionPayload,
+        mode: "wallet-prototype-commitment",
+      }));
       const [evalPda] = findPolicyEvaluationPda(configPda, actionHash);
 
       setActionMsg("Building open_policy_evaluation transaction...");
@@ -221,7 +342,6 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
         },
       );
 
-      // Fund the evaluation account
       const rentLamports = await connection.getMinimumBalanceForRentExemption(
         ACCOUNT_SIZE.PolicyEvaluationState,
       );
@@ -251,8 +371,6 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
     }
   };
 
-  // ── Abort Evaluation ────────────────────────────────────────────────
-
   const handleAbortEvaluation = async (evalAddress: PublicKey) => {
     if (!activeAccount?.publicKey) return;
     setAbortingEval(evalAddress.toBase58());
@@ -264,7 +382,7 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
       const ix = createAbortPolicyEvaluationInstruction(
         evalAddress,
         authority,
-        1, // reason code: manual abort
+        1,
       );
 
       const tx = new Transaction().add(ix);
@@ -282,8 +400,6 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
       setAbortingEval(null);
     }
   };
-
-  // ── Success / Error overlay ─────────────────────────────────────────
 
   if (phase === "success") {
     const explorerBase = NETWORKS[network]?.explorerUrl ?? "https://explorer.solana.com";
@@ -319,7 +435,7 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
         <div className="w-16 h-16 rounded-full bg-red-500/10 flex items-center justify-center">
           <AlertCircle className="h-8 w-8 text-red-400" />
         </div>
-        <h3 className="text-lg font-semibold">Transaction Failed</h3>
+        <h3 className="text-lg font-semibold">Action Failed</h3>
         <p className="text-sm text-muted-foreground text-center max-w-[280px]">{error}</p>
         <Button
           onClick={() => { setPhase("dashboard"); setError(""); }}
@@ -336,12 +452,120 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
     return (
       <div className="flex flex-col items-center justify-center gap-4 p-6 flex-1">
         <Loader2 className="h-10 w-10 text-primary animate-spin" />
-        <p className="text-sm text-muted-foreground">{actionMsg}</p>
+        <p className="text-sm text-muted-foreground text-center max-w-[260px]">{actionMsg}</p>
       </div>
     );
   }
 
-  // ── Init Config Form ────────────────────────────────────────────────
+  if (phase === "create-profile") {
+    return (
+      <div className="flex flex-col gap-4 p-4 flex-1">
+        <div className="flex items-center gap-2 mb-2">
+          <button
+            onClick={() => setPhase("dashboard")}
+            className="text-muted-foreground hover:text-foreground transition-colors text-sm cursor-pointer"
+          >
+            ← Back
+          </button>
+          <h2 className="text-lg font-semibold flex-1 text-center mr-8">Create Policy Profile</h2>
+        </div>
+
+        <Card>
+          <CardContent className="pt-4 space-y-4">
+            <div>
+              <label className="text-xs text-muted-foreground mb-1 block">Policy name</label>
+              <Input
+                value={profileName}
+                onChange={(event) => setProfileName(event.target.value)}
+                placeholder="Daily transfers under 1 SOL"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs text-muted-foreground mb-1 block">Action type</label>
+                <select
+                  value={profileActionType}
+                  onChange={(event) => setProfileActionType(event.target.value as PolicyProfile["actionType"])}
+                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+                >
+                  <option value="send">Send</option>
+                  <option value="admin">Admin</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-xs text-muted-foreground mb-1 block">Decision</label>
+                <select
+                  value={profileApprovalMode}
+                  onChange={(event) => setProfileApprovalMode(event.target.value as PolicyProfile["approvalMode"])}
+                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+                >
+                  <option value="allow">Auto-allow</option>
+                  <option value="review">Manual review</option>
+                  <option value="block">Block</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs text-muted-foreground mb-1 block">Token</label>
+                <Input
+                  value={profileTokenSymbol}
+                  onChange={(event) => setProfileTokenSymbol(event.target.value.toUpperCase())}
+                  placeholder="SOL"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-muted-foreground mb-1 block">Max amount</label>
+                <Input
+                  type="number"
+                  value={profileMaxAmount}
+                  onChange={(event) => setProfileMaxAmount(event.target.value)}
+                  placeholder="1.0"
+                  min="0"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="text-xs text-muted-foreground mb-1 block">Allowed recipients</label>
+              <textarea
+                value={profileRecipients}
+                onChange={(event) => setProfileRecipients(event.target.value)}
+                placeholder="One address per line or comma-separated"
+                className="min-h-24 w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+              />
+            </div>
+
+            <div>
+              <label className="text-xs text-muted-foreground mb-1 block">Notes</label>
+              <textarea
+                value={profileNotes}
+                onChange={(event) => setProfileNotes(event.target.value)}
+                placeholder="Describe why this rule exists or what it protects."
+                className="min-h-20 w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+              />
+            </div>
+
+            <Button onClick={handleSaveProfile} className="w-full">
+              <Shield className="h-4 w-4 mr-2" />
+              Save policy profile
+            </Button>
+          </CardContent>
+        </Card>
+
+        <div className="bg-primary/5 rounded-xl px-4 py-3 text-[10px] text-muted-foreground">
+          <p className="font-medium text-foreground/70 mb-1">What this saves</p>
+          <p>
+            Policy profiles live inside the wallet and capture the rule you want reviewers or the
+            private Arcium flow to evaluate later. They make the dashboard usable now, even before
+            every encrypted MXE path is fully wired into each transaction flow.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   if (phase === "init-config") {
     return (
@@ -353,17 +577,17 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
           >
             ← Back
           </button>
-          <h2 className="text-lg font-semibold flex-1 text-center mr-8">Initialize Policy</h2>
+          <h2 className="text-lg font-semibold flex-1 text-center mr-8">Initialize Policy Bridge</h2>
         </div>
 
         <Card>
           <CardContent className="pt-4 space-y-4">
             <div>
-              <label className="text-xs text-muted-foreground mb-1 block">Policy Version</label>
+              <label className="text-xs text-muted-foreground mb-1 block">Policy version</label>
               <Input
                 type="number"
                 value={initVersion}
-                onChange={(e) => setInitVersion(e.target.value)}
+                onChange={(event) => setInitVersion(event.target.value)}
                 placeholder="1"
                 min="1"
               />
@@ -371,11 +595,11 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
 
             <div className="space-y-2 text-[10px] text-muted-foreground">
               <div className="flex justify-between">
-                <span>Core Program</span>
+                <span>Core program</span>
                 <span className="font-mono">{VAULKYRIE_CORE_PROGRAM_ID.toBase58().slice(0, 16)}…</span>
               </div>
               <div className="flex justify-between">
-                <span>MXE Program</span>
+                <span>MXE program</span>
                 <span className="font-mono">{VAULKYRIE_POLICY_MXE_PROGRAM_ID.toBase58().slice(0, 16)}…</span>
               </div>
               <div className="flex justify-between">
@@ -386,24 +610,21 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
 
             <Button onClick={handleInitConfig} className="w-full">
               <Shield className="h-4 w-4 mr-2" />
-              Initialize Policy Config
+              Initialize on-chain bridge
             </Button>
           </CardContent>
         </Card>
 
         <div className="bg-primary/5 rounded-xl px-4 py-3 text-[10px] text-muted-foreground">
-          <p className="font-medium text-foreground/70 mb-1">What is this?</p>
+          <p className="font-medium text-foreground/70 mb-1">Advanced / devnet</p>
           <p>
-            Initializes the on-chain policy configuration PDA for your vault. This stores
-            program references and tracks the policy version and nonce counter.
-            Required before creating any policy evaluations.
+            This initializes the raw policy bridge account used by the Arcium MXE program. It is the
+            low-level on-chain setup step, separate from the human-readable policy profiles above.
           </p>
         </div>
       </div>
     );
   }
-
-  // ── Open Evaluation Form ────────────────────────────────────────────
 
   if (phase === "open-eval") {
     return (
@@ -415,61 +636,116 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
           >
             ← Back
           </button>
-          <h2 className="text-lg font-semibold flex-1 text-center mr-8">New Evaluation</h2>
+          <h2 className="text-lg font-semibold flex-1 text-center mr-8">Open Evaluation</h2>
         </div>
 
         <Card>
           <CardContent className="pt-4 space-y-4">
             <div>
-              <label className="text-xs text-muted-foreground mb-1 block">Expiry (slots from now)</label>
-              <Input
-                type="number"
-                value={evalExpirySlots}
-                onChange={(e) => setEvalExpirySlots(e.target.value)}
-                placeholder="200"
-                min="10"
-              />
-              <p className="text-[10px] text-muted-foreground mt-1">
-                ≈ {Math.round(Number(evalExpirySlots || 0) * 0.4)}s at ~400ms/slot
-              </p>
+              <label className="text-xs text-muted-foreground mb-1 block">Policy profile</label>
+              <select
+                value={selectedProfileId}
+                onChange={(event) => {
+                  const nextId = event.target.value;
+                  setSelectedProfileId(nextId);
+                  const nextProfile = savedProfiles.find((profile) => profile.id === nextId);
+                  if (nextProfile) {
+                    setEvalActionType(nextProfile.actionType);
+                    setEvalToken(nextProfile.tokenSymbol);
+                  }
+                }}
+                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+              >
+                <option value="">No saved profile</option>
+                {savedProfiles.map((profile) => (
+                  <option key={profile.id} value={profile.id}>
+                    {profile.name}
+                  </option>
+                ))}
+              </select>
             </div>
 
-            <div className="space-y-2 text-[10px] text-muted-foreground">
-              <div className="flex justify-between">
-                <span>Policy Version</span>
-                <span className="font-mono">{config?.policyVersion.toString() ?? "?"}</span>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs text-muted-foreground mb-1 block">Action type</label>
+                <select
+                  value={evalActionType}
+                  onChange={(event) => setEvalActionType(event.target.value as PolicyProfile["actionType"])}
+                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+                >
+                  <option value="send">Send</option>
+                  <option value="admin">Admin</option>
+                </select>
               </div>
-              <div className="flex justify-between">
-                <span>Nonce</span>
-                <span className="font-mono">{config?.nextRequestNonce.toString() ?? "?"}</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Action Hash</span>
-                <span className="font-mono text-amber-400">random (auto)</span>
+              <div>
+                <label className="text-xs text-muted-foreground mb-1 block">Expiry (slots)</label>
+                <Input
+                  type="number"
+                  value={evalExpirySlots}
+                  onChange={(event) => setEvalExpirySlots(event.target.value)}
+                  placeholder="200"
+                  min="10"
+                />
               </div>
             </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs text-muted-foreground mb-1 block">Token</label>
+                <Input
+                  value={evalToken}
+                  onChange={(event) => setEvalToken(event.target.value.toUpperCase())}
+                  placeholder="SOL"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-muted-foreground mb-1 block">Amount</label>
+                <Input
+                  type="number"
+                  value={evalAmount}
+                  onChange={(event) => setEvalAmount(event.target.value)}
+                  placeholder="0.5"
+                  min="0"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="text-xs text-muted-foreground mb-1 block">Recipient / target</label>
+              <Input
+                value={evalRecipient}
+                onChange={(event) => setEvalRecipient(event.target.value)}
+                placeholder="Recipient address or admin target"
+              />
+            </div>
+
+            {selectedProfile && (
+              <div className="rounded-xl border border-border bg-background/60 px-3 py-3 text-[11px] text-muted-foreground space-y-1">
+                <p className="font-medium text-foreground">{selectedProfile.name}</p>
+                <p>{formatApprovalMode(selectedProfile.approvalMode)} · {selectedProfile.actionType} · {selectedProfile.tokenSymbol}</p>
+                <p>
+                  Max amount: {selectedProfile.maxAmount ?? "No cap"} · Allowed recipients: {selectedProfile.allowedRecipients.length || "Any"}
+                </p>
+              </div>
+            )}
 
             <Button onClick={handleOpenEvaluation} className="w-full">
               <Plus className="h-4 w-4 mr-2" />
-              Open Policy Evaluation
+              Open policy evaluation
             </Button>
           </CardContent>
         </Card>
 
         <div className="bg-primary/5 rounded-xl px-4 py-3 text-[10px] text-muted-foreground">
-          <p className="font-medium text-foreground/70 mb-1">What is this?</p>
+          <p className="font-medium text-foreground/70 mb-1">What gets bound on-chain</p>
           <p>
-            Opens a new policy evaluation request on-chain. In production, the action hash
-            would bind to a specific spend or admin action. For testing, a random hash is
-            generated. The evaluation can later be finalized (approved), aborted, or queued
-            for Arcium MXE computation.
+            The wallet hashes the selected action summary and chosen policy profile into the evaluation
+            request. That makes the request deterministic and reviewable instead of using a random test hash.
           </p>
         </div>
       </div>
     );
   }
-
-  // ── Main Dashboard ──────────────────────────────────────────────────
 
   return (
     <div className="flex flex-col gap-4 p-4 flex-1">
@@ -486,11 +762,75 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
         </h2>
       </div>
 
-      {/* Policy Config Status */}
       <Card>
         <CardContent className="pt-4 pb-3">
           <div className="flex items-center justify-between mb-3">
-            <span className="text-sm font-medium text-muted-foreground">Policy Configuration</span>
+            <span className="text-sm font-medium text-muted-foreground">Policy Profiles</span>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                resetProfileForm();
+                setPhase("create-profile");
+              }}
+            >
+              <Plus className="h-3.5 w-3.5 mr-1" />
+              New Profile
+            </Button>
+          </div>
+
+          {savedProfiles.length === 0 ? (
+            <div className="text-center py-4">
+              <ShieldAlert className="h-8 w-8 text-muted-foreground mx-auto mb-2 opacity-50" />
+              <p className="text-sm text-muted-foreground">No policy profiles saved yet</p>
+              <p className="text-[10px] text-muted-foreground/70 mt-1">
+                Create reusable rules for send and admin actions so reviewers know what to approve.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {savedProfiles.map((profile) => (
+                <div key={profile.id} className="rounded-xl border border-border bg-background/60 p-3 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <Shield className="h-4 w-4 text-primary" />
+                    <span className="text-sm font-medium">{profile.name}</span>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 px-2 ml-auto text-red-400 hover:text-red-300"
+                      onClick={() => handleDeleteProfile(profile.id)}
+                    >
+                      <XCircle className="h-3 w-3" />
+                    </Button>
+                  </div>
+                  <div className="grid grid-cols-2 gap-1 text-[10px] text-muted-foreground">
+                    <span>Action</span>
+                    <span className="text-right">{profile.actionType}</span>
+                    <span>Decision</span>
+                    <span className="text-right">{formatApprovalMode(profile.approvalMode)}</span>
+                    <span>Token / cap</span>
+                    <span className="text-right">
+                      {profile.tokenSymbol} / {profile.maxAmount ?? "No cap"}
+                    </span>
+                    <span>Recipients</span>
+                    <span className="text-right">{profile.allowedRecipients.length || "Any"}</span>
+                  </div>
+                  {profile.notes && (
+                    <p className="text-[10px] text-muted-foreground border-t border-border pt-2">
+                      {profile.notes}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="pt-4 pb-3">
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-sm font-medium text-muted-foreground">On-Chain Policy Bridge</span>
             <Button
               variant="ghost"
               size="sm"
@@ -519,15 +859,15 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
                 </span>
               </div>
               <div className="flex justify-between text-xs">
-                <span className="text-muted-foreground">Policy Version</span>
+                <span className="text-muted-foreground">Policy version</span>
                 <span className="font-mono">{config.policyVersion.toString()}</span>
               </div>
               <div className="flex justify-between text-xs">
-                <span className="text-muted-foreground">Next Nonce</span>
+                <span className="text-muted-foreground">Next nonce</span>
                 <span className="font-mono">{config.nextRequestNonce.toString()}</span>
               </div>
               <div className="flex justify-between text-xs">
-                <span className="text-muted-foreground">MXE Program</span>
+                <span className="text-muted-foreground">MXE program</span>
                 <span className="font-mono text-[10px] truncate max-w-[140px]">
                   {VAULKYRIE_POLICY_MXE_PROGRAM_ID.toBase58().slice(0, 12)}…
                 </span>
@@ -536,7 +876,7 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
           ) : (
             <div className="text-center py-4">
               <ShieldAlert className="h-8 w-8 text-muted-foreground mx-auto mb-2 opacity-50" />
-              <p className="text-sm text-muted-foreground">No policy config initialized</p>
+              <p className="text-sm text-muted-foreground">No on-chain bridge initialized</p>
               <Button
                 onClick={() => setPhase("init-config")}
                 variant="outline"
@@ -544,14 +884,13 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
                 className="mt-3"
               >
                 <Plus className="h-3.5 w-3.5 mr-1" />
-                Initialize Policy
+                Initialize Bridge
               </Button>
             </div>
           )}
         </CardContent>
       </Card>
 
-      {/* Action Buttons (when config exists) */}
       {config && (
         <div className="flex gap-2">
           <Button
@@ -566,7 +905,6 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
         </div>
       )}
 
-      {/* Evaluations List */}
       <div className="flex items-center justify-between">
         <span className="text-sm font-medium">Policy Evaluations</span>
         <span className="text-[10px] text-muted-foreground">
@@ -581,8 +919,8 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
             <p className="text-sm text-muted-foreground">No evaluations yet</p>
             <p className="text-[10px] text-muted-foreground/70 mt-1">
               {config
-                ? "Create a new evaluation to test the policy engine flow"
-                : "Initialize the policy config first, then create evaluations"}
+                ? "Create an evaluation from a saved policy profile to exercise the bridge."
+                : "Create a policy profile now, then initialize the bridge when you want on-chain evaluations."}
             </p>
           </CardContent>
         </Card>
@@ -619,13 +957,13 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
                   )}
                 </div>
                 <div className="grid grid-cols-2 gap-1 text-[10px] text-muted-foreground">
-                  <span>Action Hash</span>
+                  <span>Action hash</span>
                   <span className="font-mono text-right">{shortenHash(ev.account.actionHash)}</span>
-                  <span>Policy Ver.</span>
+                  <span>Policy ver.</span>
                   <span className="font-mono text-right">{ev.account.policyVersion.toString()}</span>
                   <span>Nonce</span>
                   <span className="font-mono text-right">{ev.account.requestNonce.toString()}</span>
-                  <span>Expiry Slot</span>
+                  <span>Expiry slot</span>
                   <span className="font-mono text-right">{ev.account.expirySlot.toString()}</span>
                 </div>
               </CardContent>
@@ -634,13 +972,12 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
         </div>
       )}
 
-      {/* Info footer */}
       <div className="mt-auto bg-primary/5 rounded-xl px-4 py-3 text-[10px] text-muted-foreground">
-        <p className="font-medium text-foreground/70 mb-1">About Vaulkyrie Policy Engine</p>
+        <p className="font-medium text-foreground/70 mb-1">How to use this screen</p>
         <p>
-          The Arcium MXE evaluates spending policies privately. Sensitive threshold and risk
-          parameters stay encrypted — only approval/denial results are published on-chain.
-          Initialize a policy config, then create evaluations for pending actions.
+          1. Create human-readable policy profiles for common send/admin rules. 2. Initialize the
+          on-chain bridge when you want to test the MXE flow. 3. Open evaluations that bind a real
+          action summary to the selected policy instead of using anonymous placeholder hashes.
         </p>
       </div>
     </div>
