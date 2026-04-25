@@ -48,6 +48,7 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
   const [bootstrapComplete, setBootstrapComplete] = useState(false);
   const [bootstrapError, setBootstrapError] = useState("");
   const [joinedSessionInfo, setJoinedSessionInfo] = useState(() => createRelaySessionMetadata("------"));
+  const [pendingBootstrapRequestId, setPendingBootstrapRequestId] = useState<string | null>(null);
 
   const relayRef = useRef<RelayAdapter | null>(null);
   const orchestratorRef = useRef<DkgOrchestrator | null>(null);
@@ -56,6 +57,7 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
   const dkgStartTimeRef = useRef<number>(0);
   const pendingSigningMessagesRef = useRef<BufferedSigningMessage[]>([]);
   const pendingBootstrapRequestRef = useRef<SignRequestPayload | null>(null);
+  const activeBootstrapRequestIdRef = useRef<string | null>(null);
   const MIN_ANIMATION_MS = 4000;
 
   // Buffer DKG messages that arrive before orchestrator is ready
@@ -135,6 +137,11 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
       return;
     }
 
+    if (activeBootstrapRequestIdRef.current === request.requestId) {
+      return;
+    }
+    activeBootstrapRequestIdRef.current = request.requestId;
+
     setBootstrapError("");
     setStatusMessage(request.summary ?? "Joining vault bootstrap signing...");
 
@@ -162,12 +169,27 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
         signerIds: request.signerIds,
       });
 
+      pendingBootstrapRequestRef.current = null;
+      setPendingBootstrapRequestId(null);
       setStatusMessage("Vault bootstrap signature share submitted. Waiting for final confirmation...");
     } catch (error) {
+      activeBootstrapRequestIdRef.current = null;
       setBootstrapError(error instanceof Error ? error.message : String(error));
       setPhase("error");
     }
   }, [participantId, runSigningOrchestrator]);
+
+  useEffect(() => {
+    if (
+      phase !== "complete" ||
+      !pendingBootstrapRequestRef.current ||
+      activeBootstrapRequestIdRef.current === pendingBootstrapRequestRef.current.requestId
+    ) {
+      return;
+    }
+
+    void handleBootstrapRequest(pendingBootstrapRequestRef.current);
+  }, [handleBootstrapRequest, pendingBootstrapRequestId, phase]);
 
   const handleJoin = useCallback(() => {
     if (!parsedSessionInvite) return;
@@ -185,6 +207,8 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
     setBootstrapComplete(false);
     setBootstrapError("");
     setJoinedSessionInfo(parsedSessionInvite);
+    setPendingBootstrapRequestId(null);
+    activeBootstrapRequestIdRef.current = null;
     pendingBootstrapRequestRef.current = null;
     pendingSigningMessagesRef.current = [];
 
@@ -232,9 +256,7 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
               return;
             }
             pendingBootstrapRequestRef.current = request;
-            if (phase === "complete") {
-              void handleBootstrapRequest(request);
-            }
+            setPendingBootstrapRequestId(request.requestId);
           },
           onSignRound1: (fromId, commitments) => {
             queueOrHandleSigningMessage({ type: "round1", fromId, commitments });
@@ -249,6 +271,9 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
               return;
             }
             setBootstrapComplete(true);
+            pendingBootstrapRequestRef.current = null;
+            setPendingBootstrapRequestId(null);
+            activeBootstrapRequestIdRef.current = null;
             setStatusMessage(`Vault bootstrap finalized: ${signatureHex.slice(0, 12)}...`);
           },
         },
@@ -282,9 +307,7 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
       setErrorMessage("Failed to connect to ceremony session");
     }
   }, [
-    handleBootstrapRequest,
     parsedSessionInvite,
-    phase,
     queueOrHandleSigningMessage,
     relayMode,
     relayUrl,
@@ -348,10 +371,6 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
                 }),
               );
             } catch { /* sessionStorage may be unavailable */ }
-
-            if (pendingBootstrapRequestRef.current) {
-              void handleBootstrapRequest(pendingBootstrapRequestRef.current);
-            }
           };
 
           if (remaining > 0) {
