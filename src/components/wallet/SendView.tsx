@@ -15,19 +15,24 @@ import { deserializeXmssTree } from "@/services/quantum/wots";
 import { shortenAddress } from "@/lib/utils";
 import type { WalletView, Token } from "@/types";
 import { VaulkyrieClient } from "@/sdk/client";
+import { PolicyMxeClient } from "@/sdk/policyClient";
 import {
   createCommitSpendOrchestrationInstruction,
   createCompleteSpendOrchestrationInstruction,
   createInitSpendOrchestrationInstruction,
   createInitVaultInstruction,
 } from "@/sdk/instructions";
-import { VAULKYRIE_POLICY_MXE_PROGRAM_ID } from "@/sdk/constants";
+import { PolicyEvaluationStatus, VAULKYRIE_POLICY_MXE_PROGRAM_ID } from "@/sdk/constants";
 import { findSpendOrchestrationPda, findVaultRegistryPda } from "@/sdk/pda";
 import {
   buildSpendActionHash,
   buildSpendOrchestrationBindings,
   generateSpendSessionNonce,
 } from "@/sdk/spendBindings";
+import {
+  buildWalletPolicyActionHash,
+  buildWalletPolicyActionPayload,
+} from "@/sdk/policyBindings";
 
 interface SendViewProps {
   balance: number;
@@ -162,6 +167,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
     tokens,
     contacts,
     getPolicyProfiles,
+    pendingPolicyRequest,
     setPendingPolicyRequest,
     getXmssTree,
     refreshBalances,
@@ -398,9 +404,48 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
       }
 
       const client = new VaulkyrieClient(connection);
+      const policyClient = new PolicyMxeClient(connection);
       const existingVault = await client.getVaultRegistry(fromPubkey);
       const [vaultRegistryPda, vaultBump] = findVaultRegistryPda(fromPubkey);
-      const policyVersion = existingVault?.account.policyVersion ?? 1n;
+      let reviewedActionHash: Uint8Array | null = null;
+      let policyVersion = existingVault?.account.policyVersion ?? 1n;
+
+      if (needsPolicyReview) {
+        const policyConfig = await policyClient.getPolicyConfig(fromPubkey);
+        if (!policyConfig) {
+          throw new Error("Initialize the Policy Engine before signing this reviewed transfer.");
+        }
+
+        policyVersion = existingVault?.account.policyVersion ?? policyConfig.account.policyVersion;
+        const reviewActionHash = await buildWalletPolicyActionHash(
+          buildWalletPolicyActionPayload({
+            profile: selectedPolicyProfile,
+            actionType: "send",
+            recipient,
+            amount: parsedAmount,
+            token: selectedToken,
+          }),
+        );
+        const evaluation = await policyClient.getPolicyEvaluation(
+          policyConfig.address,
+          reviewActionHash,
+        );
+        if (!evaluation || evaluation.account.status !== PolicyEvaluationStatus.Finalized) {
+          throw new Error(
+            "No finalized policy evaluation matches this transfer yet. Open the Policy Engine first.",
+          );
+        }
+
+        const currentPolicySlot = await connection.getSlot();
+        if (evaluation.account.delayUntilSlot > BigInt(currentPolicySlot)) {
+          throw new Error(
+            `This policy approval is time-locked until slot ${evaluation.account.delayUntilSlot.toString()}.`,
+          );
+        }
+
+        reviewedActionHash = reviewActionHash;
+      }
+
       const authorityHash = (() => {
         if (existingVault) {
           return existingVault.account.currentAuthorityHash;
@@ -419,7 +464,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
       })();
 
       const sessionNonce = generateSpendSessionNonce();
-      const actionHash = await buildSpendActionHash({
+      const actionHash = reviewedActionHash ?? await buildSpendActionHash({
         vaultId: fromPubkey.toBytes(),
         recipient: toPubkey.toBase58(),
         amountAtomic: amountAtomic.toString(),
@@ -559,6 +604,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
       cleanupRelayState();
       setTxSignature(signature);
       setPhase("success");
+      setPendingPolicyRequest(null);
       await Promise.all([refreshBalances(), refreshTransactions(), refreshVaultState()]);
     } catch (err) {
       cleanupRelayState();
@@ -861,6 +907,16 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
       setSelectedPolicyProfileId("");
     }
   }, [savedPolicyProfiles, selectedPolicyProfileId]);
+
+  useEffect(() => {
+    if (!pendingPolicyRequest || pendingPolicyRequest.actionType !== "send") {
+      return;
+    }
+    setRecipient(pendingPolicyRequest.recipient);
+    setAmount(pendingPolicyRequest.amount.toString());
+    setSelectedToken(pendingPolicyRequest.tokenSymbol);
+    setSelectedPolicyProfileId(pendingPolicyRequest.profileId);
+  }, [pendingPolicyRequest]);
 
   const explorerUrl = txSignature
     ? `https://explorer.solana.com/tx/${txSignature}?cluster=${network}`

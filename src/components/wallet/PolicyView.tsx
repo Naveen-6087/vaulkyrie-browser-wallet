@@ -26,6 +26,12 @@ import { NETWORKS } from "@/lib/constants";
 import { withRpcFallback } from "@/services/solanaRpc";
 import type { WalletView, PolicyProfile, PendingPolicyRequest } from "@/types";
 import type { PolicyConfigAccount, PolicyEvaluationAccount } from "@/sdk/types";
+import {
+  buildWalletPolicyActionHash,
+  buildWalletPolicyActionPayload,
+  buildWalletPolicyInputCommitment,
+  buildWalletPolicyResultCommitment,
+} from "@/sdk/policyBindings";
 
 interface PolicyViewProps {
   onNavigate: (view: WalletView) => void;
@@ -75,12 +81,6 @@ function shortenHash(hash: Uint8Array): string {
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
   return `${hex}…`;
-}
-
-async function digestString(value: string): Promise<Uint8Array> {
-  const encoded = new TextEncoder().encode(value);
-  const digest = await crypto.subtle.digest("SHA-256", encoded);
-  return new Uint8Array(digest);
 }
 
 function formatApprovalMode(mode: PolicyProfile["approvalMode"]): string {
@@ -313,21 +313,18 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
       const [configPda] = findPolicyConfigPda(authority);
       const nonce = config.nextRequestNonce;
 
-      const actionPayload = {
-        profileId: selectedProfile?.id ?? null,
-        profileName: selectedProfile?.name ?? null,
+      const actionPayload = buildWalletPolicyActionPayload({
+        profile: selectedProfile,
         actionType: evalActionType,
-        recipient: evalRecipient.trim(),
+        recipient: evalRecipient,
         amount: Number(evalAmount || "0"),
-        token: evalToken.trim().toUpperCase() || "SOL",
-        notes: selectedProfile?.notes ?? "",
-      };
-      const actionHash = await digestString(JSON.stringify(actionPayload));
-      const encryptedInput = await digestString(JSON.stringify({
+        token: evalToken,
+      });
+      const actionHash = await buildWalletPolicyActionHash(actionPayload);
+      const encryptedInput = await buildWalletPolicyInputCommitment({
         policyProfile: selectedProfile,
         actionPayload,
-        source: "wallet-policy-profile",
-      }));
+      });
       const [evalPda] = findPolicyEvaluationPda(configPda, actionHash);
 
       setActionMsg("Building open_policy_evaluation transaction...");
@@ -479,14 +476,12 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
         return;
       }
 
-      const decisionPayload = {
-        kind: "vaulkyrie-policy-result-v1",
+      const resultCommitment = await buildWalletPolicyResultCommitment({
         mode,
         reasonCode,
-        actionHash: Array.from(evaluation.actionHash),
-        computationOffset: evaluation.computationOffset.toString(),
-      };
-      const resultCommitment = await digestString(JSON.stringify(decisionPayload));
+        actionHash: evaluation.actionHash,
+        computationOffset: evaluation.computationOffset,
+      });
 
       await withRpcFallback(network, async (connection) => {
         const currentSlot = await connection.getSlot();
