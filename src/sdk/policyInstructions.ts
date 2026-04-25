@@ -12,6 +12,7 @@
 
 import {
   PublicKey,
+  SystemProgram,
   TransactionInstruction,
   SYSVAR_CLOCK_PUBKEY,
 } from "@solana/web3.js";
@@ -74,7 +75,7 @@ export interface InitPolicyConfigParams {
 /**
  * Initialize the policy configuration PDA.
  *
- * Accounts: [config (writable), authority (signer)]
+ * Accounts: [config (writable), authority (signer, writable), system_program]
  */
 export function createInitPolicyConfigInstruction(
   config: PublicKey,
@@ -95,7 +96,8 @@ export function createInitPolicyConfigInstruction(
   return new TransactionInstruction({
     keys: [
       { pubkey: config, isSigner: false, isWritable: true },
-      { pubkey: authority, isSigner: true, isWritable: false },
+      { pubkey: authority, isSigner: true, isWritable: true },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
     ],
     programId,
     data: Buffer.from(data),
@@ -114,7 +116,7 @@ export interface OpenPolicyEvaluationParams {
 /**
  * Open a new policy evaluation request.
  *
- * Accounts: [config, evaluation (writable), authority (signer), clock]
+ * Accounts: [config, evaluation (writable), authority (signer, writable), clock, system_program]
  */
 export function createOpenPolicyEvaluationInstruction(
   config: PublicKey,
@@ -138,8 +140,9 @@ export function createOpenPolicyEvaluationInstruction(
     keys: [
       { pubkey: config, isSigner: false, isWritable: true },
       { pubkey: evaluation, isSigner: false, isWritable: true },
-      { pubkey: authority, isSigner: true, isWritable: false },
+      { pubkey: authority, isSigner: true, isWritable: true },
       { pubkey: SYSVAR_CLOCK_PUBKEY, isSigner: false, isWritable: false },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
     ],
     programId,
     data: Buffer.from(data),

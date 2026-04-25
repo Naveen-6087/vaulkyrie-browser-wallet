@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { PublicKey, Transaction, SystemProgram } from "@solana/web3.js";
+import { PublicKey, Transaction } from "@solana/web3.js";
 import {
   Shield, ShieldCheck, ShieldAlert, ShieldX,
   Loader2, RefreshCw, Clock, Plus, XCircle, AlertCircle, Check, ExternalLink,
@@ -13,7 +13,6 @@ import {
   VAULKYRIE_POLICY_MXE_PROGRAM_ID,
   VAULKYRIE_CORE_PROGRAM_ID,
   PolicyEvaluationStatus,
-  ACCOUNT_SIZE,
 } from "@/sdk/constants";
 import {
   createInitPolicyConfigInstruction,
@@ -281,18 +280,7 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
           bump,
         });
 
-        const rentLamports = await connection.getMinimumBalanceForRentExemption(
-          ACCOUNT_SIZE.PolicyConfigState,
-        );
-        const fundIx = SystemProgram.createAccount({
-          fromPubkey: authority,
-          newAccountPubkey: configPda,
-          lamports: rentLamports,
-          space: ACCOUNT_SIZE.PolicyConfigState,
-          programId: VAULKYRIE_POLICY_MXE_PROGRAM_ID,
-        });
-
-        const tx = new Transaction().add(fundIx, ix);
+        const tx = new Transaction().add(ix);
 
         return signAndSendTransaction(
           connection,
@@ -338,7 +326,7 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
       const encryptedInput = await digestString(JSON.stringify({
         policyProfile: selectedProfile,
         actionPayload,
-        mode: "wallet-prototype-commitment",
+        source: "wallet-policy-profile",
       }));
       const [evalPda] = findPolicyEvaluationPda(configPda, actionHash);
 
@@ -361,18 +349,7 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
           },
         );
 
-        const rentLamports = await connection.getMinimumBalanceForRentExemption(
-          ACCOUNT_SIZE.PolicyEvaluationState,
-        );
-        const fundIx = SystemProgram.createAccount({
-          fromPubkey: authority,
-          newAccountPubkey: evalPda,
-          lamports: rentLamports,
-          space: ACCOUNT_SIZE.PolicyEvaluationState,
-          programId: VAULKYRIE_POLICY_MXE_PROGRAM_ID,
-        });
-
-        const tx = new Transaction().add(fundIx, ix);
+        const tx = new Transaction().add(ix);
 
         return signAndSendTransaction(
           connection,
@@ -478,10 +455,34 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
     try {
       const authority = new PublicKey(activeAccount.publicKey);
       const configuredThreshold = vaultConfigs[activeAccount.publicKey]?.threshold ?? 1;
+      const reasonCode = mode === "allow" ? 0 : 1;
+
+      if (mode === "block") {
+        await withRpcFallback(network, async (connection) => {
+          const ix = createAbortPolicyEvaluationInstruction(
+            evalAddress,
+            authority,
+            2,
+          );
+
+          const tx = new Transaction().add(ix);
+
+          return signAndSendTransaction(
+            connection,
+            tx,
+            activeAccount.publicKey,
+            (msg) => setActionMsg(msg),
+          );
+        });
+
+        await fetchPolicyData();
+        return;
+      }
 
       const decisionPayload = {
+        kind: "vaulkyrie-policy-result-v1",
         mode,
-        reasonCode: mode === "allow" ? 0 : mode === "review" ? 1 : 2,
+        reasonCode,
         actionHash: Array.from(evaluation.actionHash),
         computationOffset: evaluation.computationOffset.toString(),
       };
@@ -500,7 +501,7 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
             nonce: evaluation.requestNonce,
             receiptExpirySlot: evaluation.expirySlot,
             delayUntilSlot: BigInt(currentSlot + delaySlots),
-            reasonCode: decisionPayload.reasonCode,
+            reasonCode,
             computationOffset: evaluation.computationOffset,
             resultCommitment,
           },
