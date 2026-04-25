@@ -83,12 +83,12 @@ async function signThresholdMessage(
   const dkg = loadDkgResult(walletPubkey);
 
   const availableKeyIds = Object.keys(dkg.keyPackages).map(Number);
-  const hasAllKeys = availableKeyIds.length >= dkg.threshold;
+  const hasLocalThreshold = availableKeyIds.length >= dkg.threshold;
 
-  if (!hasAllKeys || dkg.isMultiDevice) {
+  if (!hasLocalThreshold) {
     throw new Error(
-      "Multi-device signing for this transaction type is not yet supported. " +
-        "Use a single-device vault or sign from the device that has all key packages."
+      `This device only has ${availableKeyIds.length} of ${dkg.threshold} required key packages. ` +
+        "Use the multi-device signing ceremony or sign from a device with enough local shares."
     );
   }
 

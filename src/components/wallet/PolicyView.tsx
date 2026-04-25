@@ -19,8 +19,15 @@ import {
   createOpenPolicyEvaluationInstruction,
   createAbortPolicyEvaluationInstruction,
   createFinalizePolicyEvaluationInstruction,
-  createQueueArciumComputationInstruction,
 } from "@/sdk/policyInstructions";
+import {
+  ARCIUM_DEVNET_CLUSTER_OFFSET,
+  assertPolicyEvaluateArciumReady,
+  createQueuePolicyEvaluateInstruction,
+  derivePolicyMxeAccount,
+  encryptPolicyEvaluateInput,
+  nextPolicyComputationOffset,
+} from "@/sdk/arciumPolicy";
 import { signAndSendTransaction } from "@/services/frost/signTransaction";
 import { NETWORKS } from "@/lib/constants";
 import { withRpcFallback } from "@/services/solanaRpc";
@@ -275,7 +282,7 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
         const ix = createInitPolicyConfigInstruction(configPda, authority, {
           coreProgram: VAULKYRIE_CORE_PROGRAM_ID.toBytes(),
           arciumProgram: VAULKYRIE_POLICY_MXE_PROGRAM_ID.toBytes(),
-          mxeAccount: VAULKYRIE_POLICY_MXE_PROGRAM_ID.toBytes(),
+          mxeAccount: derivePolicyMxeAccount().toBytes(),
           policyVersion: BigInt(initVersion || "1"),
           bump,
         });
@@ -405,14 +412,36 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
     setActionMsg("Queueing Arcium computation...");
 
     try {
+      if (network !== "devnet") {
+        throw new Error("Arcium policy queue is currently configured for devnet cluster offset 456.");
+      }
+
       const authority = new PublicKey(activeAccount.publicKey);
 
       await withRpcFallback(network, async (connection) => {
-        const ix = createQueueArciumComputationInstruction(
-          evalAddress,
-          authority,
-          evaluation.computationOffset,
+        const computationOffset = nextPolicyComputationOffset();
+        setActionMsg("Checking Arcium MXE accounts...");
+        await assertPolicyEvaluateArciumReady(
+          connection,
+          computationOffset,
+          ARCIUM_DEVNET_CLUSTER_OFFSET,
         );
+
+        setActionMsg("Encrypting policy input for Arcium...");
+        const encryptedInput = await encryptPolicyEvaluateInput(
+          connection,
+          authority,
+          evaluation,
+        );
+
+        setActionMsg("Building queue_policy_evaluate transaction...");
+        const ix = createQueuePolicyEvaluateInstruction(evalAddress, authority, {
+          computationOffset,
+          encryptedInput: encryptedInput.encryptedInput,
+          x25519Pubkey: encryptedInput.x25519Pubkey,
+          nonce: encryptedInput.nonce,
+          clusterOffset: ARCIUM_DEVNET_CLUSTER_OFFSET,
+        });
 
         const tx = new Transaction().add(ix);
 
