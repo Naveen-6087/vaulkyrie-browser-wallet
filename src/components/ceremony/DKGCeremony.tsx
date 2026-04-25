@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { PublicKey } from "@solana/web3.js";
+import { LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
 import { Buffer } from "buffer";
 import {
   QrCode,
@@ -37,7 +37,10 @@ import {
 import { SigningOrchestrator } from "@/services/frost/signingOrchestrator";
 import { signAndSendTransaction } from "@/services/frost/signTransaction";
 import { withRpcFallback } from "@/services/solanaRpc";
-import { prepareVaultBootstrapTransaction } from "@/services/bootstrap/vaultBootstrap";
+import {
+  assertVaultBootstrapSimulation,
+  prepareVaultBootstrapTransaction,
+} from "@/services/bootstrap/vaultBootstrap";
 import logo from "@/assets/xlogo.jpeg";
 import { useWalletStore } from "@/store/walletStore";
 import type { SignRequestPayload } from "@/services/relay/channelRelay";
@@ -67,6 +70,47 @@ type BufferedSigningMessage =
   | { type: "round1"; fromId: number; commitments: number[] }
   | { type: "round2"; fromId: number; share: number[] };
 
+const DEFAULT_BOOTSTRAP_FUNDING_HINT_LAMPORTS = Math.floor(0.01 * LAMPORTS_PER_SOL);
+
+function decodeVaultPublicKey(groupPublicKey: string): PublicKey {
+  if (/^[0-9a-fA-F]{64}$/.test(groupPublicKey)) {
+    const bytes = new Uint8Array(32);
+    for (let index = 0; index < 32; index += 1) {
+      bytes[index] = parseInt(groupPublicKey.slice(index * 2, index * 2 + 2), 16);
+    }
+    return new PublicKey(bytes);
+  }
+
+  return new PublicKey(groupPublicKey);
+}
+
+function formatSolAmount(lamports: number): string {
+  if (lamports === 0) return "0 SOL";
+
+  const sol = lamports / LAMPORTS_PER_SOL;
+  const decimals = sol >= 1 ? 3 : sol >= 0.01 ? 4 : 6;
+  return `${sol.toFixed(decimals)} SOL`;
+}
+
+function formatBootstrapFundingError(walletAddress: string, lamports: number): string {
+  return `Fund ${walletAddress} with at least ${formatSolAmount(lamports)} before finalizing the on-chain Vaulkyrie bootstrap.`;
+}
+
+function describeBootstrapError(error: unknown, walletAddress: string, lamports: number): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const lowerMessage = message.toLowerCase();
+  if (
+    lowerMessage.includes("airdrop limit") ||
+    lowerMessage.includes("faucet has run dry")
+  ) {
+    return `${formatBootstrapFundingError(walletAddress, lamports)} The devnet faucet is unavailable right now, so fund the address manually and refresh the balance.`;
+  }
+  if (message.includes("Attempt to debit an account but found no record of a prior credit")) {
+    return formatBootstrapFundingError(walletAddress, lamports);
+  }
+  return message;
+}
+
 export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
   const relayUrl = useWalletStore((state) => state.relayUrl);
   const network = useWalletStore((state) => state.network);
@@ -94,6 +138,13 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
   const [bootstrapMessage, setBootstrapMessage] = useState("");
   const [bootstrapError, setBootstrapError] = useState<string | null>(null);
   const [isBootstrapping, setIsBootstrapping] = useState(false);
+  const [isCheckingBootstrapFunding, setIsCheckingBootstrapFunding] = useState(false);
+  const [isFundingVault, setIsFundingVault] = useState(false);
+  const [bootstrapWalletAddress, setBootstrapWalletAddress] = useState("");
+  const [bootstrapBalanceLamports, setBootstrapBalanceLamports] = useState<number | null>(null);
+  const [bootstrapRequiredLamports, setBootstrapRequiredLamports] = useState<number | null>(null);
+  const [bootstrapPendingActions, setBootstrapPendingActions] = useState<string[]>([]);
+  const [bootstrapAlreadyInitialized, setBootstrapAlreadyInitialized] = useState(false);
   const [copied, setCopied] = useState(false);
   const [relayMode, setRelayMode] = useState<"local" | "remote" | null>(null);
   const [, setConnectionState] = useState<ConnectionState>("disconnected");
@@ -108,6 +159,13 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
   const MIN_ANIMATION_MS = 4000;
 
   const allDevicesPaired = devices.filter((d) => d.status === "ready").length >= config.totalParticipants;
+  const bootstrapFundingReady =
+    bootstrapAlreadyInitialized ||
+    (
+      bootstrapRequiredLamports !== null &&
+      bootstrapBalanceLamports !== null &&
+      bootstrapBalanceLamports >= bootstrapRequiredLamports
+    );
 
   useEffect(() => {
     phaseRef.current = phase;
@@ -272,14 +330,117 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
     }
   }, []);
 
+  const refreshBootstrapFunding = useCallback(async (targetGroupPublicKey?: string) => {
+    const publicKey = targetGroupPublicKey ?? groupPublicKey;
+    if (!publicKey) {
+      return;
+    }
+
+    const walletPubkey = decodeVaultPublicKey(publicKey);
+    const walletAddress = walletPubkey.toBase58();
+    setBootstrapWalletAddress(walletAddress);
+    setBootstrapError(null);
+    setIsCheckingBootstrapFunding(true);
+    setBootstrapMessage("Checking vault funding and bootstrap readiness...");
+
+    try {
+      const result = await withRpcFallback(network, async (connection) => {
+        const prepared = await prepareVaultBootstrapTransaction({
+          connection,
+          walletPubkey,
+          existingXmssTree: getXmssTree(walletAddress),
+        });
+        const balanceLamports = await connection.getBalance(walletPubkey, "confirmed");
+        return {
+          actions: prepared.actions,
+          balanceLamports,
+          requiredFundingLamports: prepared.requiredFundingLamports,
+          alreadyInitialized: prepared.transaction === null,
+        };
+      });
+
+      setBootstrapPendingActions(result.actions);
+      setBootstrapBalanceLamports(result.balanceLamports);
+      setBootstrapRequiredLamports(result.requiredFundingLamports);
+      setBootstrapAlreadyInitialized(result.alreadyInitialized);
+      setBootstrapMessage(
+        result.alreadyInitialized
+          ? "Vault bootstrap already exists on-chain."
+          : result.balanceLamports >= result.requiredFundingLamports
+            ? `Vault is funded and ready to bootstrap ${result.actions.join(", ")}.`
+            : `${formatBootstrapFundingError(walletAddress, result.requiredFundingLamports)} Current balance: ${formatSolAmount(result.balanceLamports)}.`,
+      );
+    } catch (error) {
+      setBootstrapError(
+        describeBootstrapError(
+          error,
+          walletAddress,
+          bootstrapRequiredLamports ?? DEFAULT_BOOTSTRAP_FUNDING_HINT_LAMPORTS,
+        ),
+      );
+    } finally {
+      setIsCheckingBootstrapFunding(false);
+    }
+  }, [bootstrapRequiredLamports, getXmssTree, groupPublicKey, network]);
+
+  const requestDevnetFunding = useCallback(async () => {
+    if (network !== "devnet" || !bootstrapWalletAddress || bootstrapRequiredLamports === null) {
+      return;
+    }
+
+    const walletPubkey = new PublicKey(bootstrapWalletAddress);
+    const currentBalance = bootstrapBalanceLamports ?? 0;
+    const neededLamports = Math.max(bootstrapRequiredLamports - currentBalance, 0);
+    if (neededLamports === 0) {
+      void refreshBootstrapFunding();
+      return;
+    }
+
+    setBootstrapError(null);
+    setIsFundingVault(true);
+    setBootstrapMessage(`Requesting ${formatSolAmount(neededLamports)} from the devnet faucet...`);
+
+    try {
+      await withRpcFallback(network, async (connection) => {
+        const signature = await connection.requestAirdrop(walletPubkey, neededLamports);
+        await connection.confirmTransaction(signature, "confirmed");
+      });
+      await refreshBootstrapFunding();
+    } catch (error) {
+      setBootstrapError(
+        describeBootstrapError(error, bootstrapWalletAddress, neededLamports),
+      );
+    } finally {
+      setIsFundingVault(false);
+    }
+  }, [
+    bootstrapBalanceLamports,
+    bootstrapRequiredLamports,
+    bootstrapWalletAddress,
+    network,
+    refreshBootstrapFunding,
+  ]);
+
+  useEffect(() => {
+    if (phase !== "complete" || !groupPublicKey) {
+      return;
+    }
+
+    void refreshBootstrapFunding();
+  }, [groupPublicKey, phase, refreshBootstrapFunding]);
+
   const handleFinalizeVault = useCallback(async () => {
-    if (!groupPublicKey || isBootstrapping) {
+    if (!groupPublicKey || isBootstrapping || isCheckingBootstrapFunding || !bootstrapFundingReady) {
       return;
     }
 
     setBootstrapError(null);
     setIsBootstrapping(true);
     setBootstrapMessage("Preparing Vaulkyrie vault bootstrap...");
+
+    let walletAddress = groupPublicKey;
+    let relay: RelayAdapter | null = null;
+    let isMultiDevice = false;
 
     try {
       const dkgRaw = sessionStorage.getItem("vaulkyrie_dkg_result");
@@ -295,16 +456,13 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
         participantId?: number;
         isMultiDevice?: boolean;
       };
-      const groupBytes = new Uint8Array(32);
-      for (let index = 0; index < 32; index += 1) {
-        groupBytes[index] = parseInt(dkg.groupPublicKeyHex.slice(index * 2, index * 2 + 2), 16);
-      }
-      const walletPubkey = new PublicKey(groupBytes);
-      const walletAddress = walletPubkey.toBase58();
+      const walletPubkey = decodeVaultPublicKey(dkg.groupPublicKeyHex);
+      walletAddress = walletPubkey.toBase58();
       const myParticipantId = dkg.participantId ?? 1;
       const myKeyPackage = dkg.keyPackages?.[myParticipantId];
       const availableKeyIds = Object.keys(dkg.keyPackages ?? {}).map(Number);
-      const relay = relayRef.current;
+      relay = relayRef.current;
+      isMultiDevice = dkg.isMultiDevice === true;
 
       const result = await withRpcFallback(network, async (connection) => {
         const prepared = await prepareVaultBootstrapTransaction({
@@ -314,16 +472,26 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
         });
 
         if (!prepared.transaction) {
-          if (relay && dkg.isMultiDevice === true) {
+          if (relay && isMultiDevice) {
             relay.broadcastSignComplete("already-initialized", true);
           }
           return { signature: null, generatedXmssTree: prepared.generatedXmssTree };
         }
 
+        const currentBalance = await connection.getBalance(walletPubkey, "confirmed");
+        if (currentBalance < prepared.requiredFundingLamports) {
+          throw new Error(
+            formatBootstrapFundingError(walletAddress, prepared.requiredFundingLamports),
+          );
+        }
+
+        prepared.transaction.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
+        setBootstrapMessage("Simulating on-chain bootstrap...");
+        await assertVaultBootstrapSimulation(connection, prepared.transaction);
         setBootstrapMessage(`Bootstrapping ${prepared.actions.join(", ")}...`);
 
         if (
-          dkg.isMultiDevice === true ||
+          isMultiDevice ||
           availableKeyIds.length < dkg.threshold
         ) {
           if (!relay) {
@@ -382,6 +550,7 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
             preflightCommitment: "confirmed",
           });
           await connection.confirmTransaction(signature, "confirmed");
+          relay.broadcastSignComplete(signature, true);
           return { signature, generatedXmssTree: prepared.generatedXmssTree };
         }
 
@@ -391,6 +560,7 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
           walletAddress,
           setBootstrapMessage,
         );
+        await connection.confirmTransaction(signature, "confirmed");
         return { signature, generatedXmssTree: prepared.generatedXmssTree };
       });
 
@@ -403,9 +573,18 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
           ? `Vault bootstrap confirmed: ${result.signature}`
           : "Vault bootstrap already existed on-chain.",
       );
+      setBootstrapAlreadyInitialized(true);
       onComplete(groupPublicKey);
     } catch (error) {
-      setBootstrapError(error instanceof Error ? error.message : String(error));
+      const message = describeBootstrapError(
+        error,
+        walletAddress,
+        bootstrapRequiredLamports ?? DEFAULT_BOOTSTRAP_FUNDING_HINT_LAMPORTS,
+      );
+      if (relay && isMultiDevice) {
+        relay.broadcastError(message);
+      }
+      setBootstrapError(message);
       setIsBootstrapping(false);
       return;
     }
@@ -415,17 +594,27 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
     config.vaultName,
     getXmssTree,
     groupPublicKey,
+    isCheckingBootstrapFunding,
     isBootstrapping,
     network,
     onComplete,
     runSigningOrchestrator,
     storeXmssTree,
+    bootstrapFundingReady,
+    bootstrapRequiredLamports,
   ]);
 
   const startDKG = useCallback(() => {
     setPhase("dkg-round1");
     setDkgProgress(0);
     setDkgError(null);
+    setBootstrapError(null);
+    setBootstrapMessage("");
+    setBootstrapWalletAddress("");
+    setBootstrapBalanceLamports(null);
+    setBootstrapRequiredLamports(null);
+    setBootstrapPendingActions([]);
+    setBootstrapAlreadyInitialized(false);
     dkgStartTimeRef.current = Date.now();
 
     const relay = relayRef.current;
@@ -595,7 +784,7 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
             {phase === "dkg-round1" && "Round 1 · Generating commitments..."}
             {phase === "dkg-round2" && "Round 2 · Exchanging packages..."}
             {phase === "dkg-round3" && "Round 3 · Computing group key..."}
-            {phase === "complete" && "Your threshold wallet is ready"}
+            {phase === "complete" && "Step 3 of 3 · Fund and finalize your vault"}
           </p>
         </div>
         <img src={logo} alt="" className="h-7 w-7 rounded-lg opacity-60" />
@@ -962,6 +1151,86 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
                 </div>
               </div>
 
+              <div className="w-full bg-card border border-border rounded-xl p-4 mb-4">
+                <div className="flex items-center justify-between gap-3 mb-2">
+                  <p className="text-xs text-muted-foreground">
+                    Vault address
+                  </p>
+                  {(isCheckingBootstrapFunding || isFundingVault) && (
+                    <span className="inline-flex items-center gap-1 text-[10px] text-primary">
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                      {isFundingVault ? "Funding" : "Checking"}
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  <code className="flex-1 text-xs font-mono text-foreground bg-muted rounded-md px-2.5 py-2 truncate">
+                    {bootstrapWalletAddress || "Deriving vault address..."}
+                  </code>
+                  <button
+                    onClick={async () => {
+                      if (!bootstrapWalletAddress) return;
+                      await navigator.clipboard.writeText(bootstrapWalletAddress);
+                    }}
+                    disabled={!bootstrapWalletAddress}
+                    className="p-2 rounded-lg hover:bg-accent transition-colors cursor-pointer shrink-0 disabled:opacity-40"
+                  >
+                    <Copy className="h-3.5 w-3.5 text-muted-foreground" />
+                  </button>
+                </div>
+                <div className="grid grid-cols-2 gap-3 mt-3">
+                  <div className="rounded-lg bg-muted/60 px-3 py-2">
+                    <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Current balance</p>
+                    <p className="text-sm font-medium text-foreground mt-1">
+                      {bootstrapBalanceLamports === null ? "—" : formatSolAmount(bootstrapBalanceLamports)}
+                    </p>
+                  </div>
+                  <div className="rounded-lg bg-muted/60 px-3 py-2">
+                    <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                      {bootstrapAlreadyInitialized ? "Bootstrap state" : "Required to bootstrap"}
+                    </p>
+                    <p className="text-sm font-medium text-foreground mt-1">
+                      {bootstrapAlreadyInitialized
+                        ? "Already initialized"
+                        : bootstrapRequiredLamports === null
+                          ? "—"
+                          : formatSolAmount(bootstrapRequiredLamports)}
+                    </p>
+                  </div>
+                </div>
+                {!bootstrapAlreadyInitialized && bootstrapPendingActions.length > 0 && (
+                  <p className="text-xs text-muted-foreground mt-3">
+                    Bootstrap will create: {bootstrapPendingActions.join(", ")}.
+                  </p>
+                )}
+                <p className="text-xs text-muted-foreground mt-3 leading-relaxed">
+                  The derived Vaulkyrie vault address pays the rent and network fees for its registry, authority, and policy PDAs.
+                </p>
+                <div className="flex gap-2 mt-3">
+                  <button
+                    onClick={() => { void refreshBootstrapFunding(); }}
+                    disabled={isCheckingBootstrapFunding || isFundingVault || !bootstrapWalletAddress}
+                    className="flex-1 py-2.5 rounded-lg border border-border bg-background text-sm font-medium text-foreground hover:bg-accent transition-colors disabled:opacity-50"
+                  >
+                    Refresh balance
+                  </button>
+                  {network === "devnet" && !bootstrapAlreadyInitialized && (
+                    <button
+                      onClick={() => { void requestDevnetFunding(); }}
+                      disabled={
+                        isCheckingBootstrapFunding ||
+                        isFundingVault ||
+                        !bootstrapWalletAddress ||
+                        bootstrapFundingReady
+                      }
+                      className="flex-1 py-2.5 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
+                    >
+                      {isFundingVault ? "Requesting faucet..." : "Request devnet faucet"}
+                    </button>
+                  )}
+                </div>
+              </div>
+
               {/* Devices summary */}
               <div className="w-full bg-card border border-border rounded-xl p-4 mb-4">
                 <p className="text-xs text-muted-foreground mb-2">
@@ -986,7 +1255,7 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
                   On-chain bootstrap
                 </p>
                 <p className="text-sm text-foreground">
-                  {bootstrapMessage || "Finalize the on-chain vault, authority, and policy PDAs before opening the wallet."}
+                  {bootstrapMessage || "Fund the derived vault address, then finalize the on-chain vault, authority, and policy PDAs before opening the wallet."}
                 </p>
                 {bootstrapError && (
                   <p className="text-xs text-destructive mt-2">
@@ -1025,15 +1294,25 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
             whileHover={{ scale: 1.01 }}
             whileTap={{ scale: 0.98 }}
             onClick={handleFinalizeVault}
-            disabled={isBootstrapping}
+            disabled={isBootstrapping || isCheckingBootstrapFunding || !bootstrapFundingReady}
             className="w-full py-3.5 rounded-xl font-semibold text-sm cursor-pointer
                        bg-primary text-primary-foreground
                        disabled:opacity-60 disabled:cursor-not-allowed
                        shadow-lg shadow-primary/20 hover:shadow-primary/35 transition-all
                        flex items-center justify-center gap-2"
           >
-            {isBootstrapping ? "Finalizing Vault..." : "Finalize & Open Vault"}
-            {isBootstrapping ? <Loader2 className="h-4 w-4 animate-spin" /> : <Shield className="h-4 w-4" />}
+            {isBootstrapping
+              ? "Finalizing Vault..."
+              : isCheckingBootstrapFunding
+                ? "Checking Vault Funding..."
+                : bootstrapAlreadyInitialized
+                  ? "Open Wallet"
+                  : bootstrapFundingReady
+                    ? "Finalize & Open Vault"
+                    : "Fund Vault Before Finalizing"}
+            {isBootstrapping || isCheckingBootstrapFunding
+              ? <Loader2 className="h-4 w-4 animate-spin" />
+              : <Shield className="h-4 w-4" />}
           </motion.button>
         )}
       </div>
