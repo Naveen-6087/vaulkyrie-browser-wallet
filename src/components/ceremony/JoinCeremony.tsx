@@ -14,8 +14,10 @@ import {
   DkgOrchestrator,
   type DkgOrchestratorProgress,
 } from "@/services/frost/dkgOrchestrator";
+import { SigningOrchestrator } from "@/services/frost/signingOrchestrator";
 import logo from "@/assets/xlogo.jpeg";
 import { useWalletStore } from "@/store/walletStore";
+import type { SignRequestPayload } from "@/services/relay/channelRelay";
 
 interface JoinCeremonyProps {
   onComplete: (groupPublicKey?: string) => void;
@@ -23,6 +25,10 @@ interface JoinCeremonyProps {
 }
 
 type JoinPhase = "enter-code" | "connecting" | "waiting" | "running" | "complete" | "error";
+
+type BufferedSigningMessage =
+  | { type: "round1"; fromId: number; commitments: number[] }
+  | { type: "round2"; fromId: number; share: number[] };
 
 export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
   const relayUrl = useWalletStore((state) => state.relayUrl);
@@ -35,11 +41,16 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
   const [relayMode, setRelayMode] = useState<"local" | "remote" | null>(null);
   const [dkgParams, setDkgParams] = useState<{ threshold: number; participants: number } | null>(null);
   const [participantId, setParticipantId] = useState<number>(0);
+  const [bootstrapComplete, setBootstrapComplete] = useState(false);
+  const [bootstrapError, setBootstrapError] = useState("");
 
   const relayRef = useRef<RelayAdapter | null>(null);
   const orchestratorRef = useRef<DkgOrchestrator | null>(null);
+  const signingOrchestratorRef = useRef<SigningOrchestrator | null>(null);
   const dkgStartedRef = useRef(false);
   const dkgStartTimeRef = useRef<number>(0);
+  const pendingSigningMessagesRef = useRef<BufferedSigningMessage[]>([]);
+  const pendingBootstrapRequestRef = useRef<SignRequestPayload | null>(null);
   const MIN_ANIMATION_MS = 4000;
 
   // Buffer DKG messages that arrive before orchestrator is ready
@@ -65,6 +76,91 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
     };
   }, []);
 
+  const queueOrHandleSigningMessage = useCallback((message: BufferedSigningMessage) => {
+    const orchestrator = signingOrchestratorRef.current;
+    if (!orchestrator) {
+      pendingSigningMessagesRef.current.push(message);
+      return;
+    }
+
+    if (message.type === "round1") {
+      orchestrator.handleSignRound1(message.fromId, message.commitments);
+      return;
+    }
+
+    orchestrator.handleSignRound2(message.fromId, message.share);
+  }, []);
+
+  const runSigningOrchestrator = useCallback(async (params: {
+    relay: RelayAdapter;
+    participantId: number;
+    keyPackageJson: string;
+    publicKeyPackageJson: string;
+    message: Uint8Array;
+    signerIds: number[];
+  }) => {
+    const orchestrator = new SigningOrchestrator({
+      relay: params.relay,
+      participantId: params.participantId,
+      keyPackageJson: params.keyPackageJson,
+      publicKeyPackageJson: params.publicKeyPackageJson,
+      message: params.message,
+      signerIds: params.signerIds,
+      onProgress: (progress) => setStatusMessage(progress.message),
+    });
+    signingOrchestratorRef.current = orchestrator;
+
+    const bufferedMessages = pendingSigningMessagesRef.current.splice(0);
+    for (const buffered of bufferedMessages) {
+      if (buffered.type === "round1") {
+        orchestrator.handleSignRound1(buffered.fromId, buffered.commitments);
+      } else {
+        orchestrator.handleSignRound2(buffered.fromId, buffered.share);
+      }
+    }
+
+    return orchestrator.run();
+  }, []);
+
+  const handleBootstrapRequest = useCallback(async (request: SignRequestPayload) => {
+    if (!request.signerIds.includes(participantId) || !relayRef.current) {
+      return;
+    }
+
+    setBootstrapError("");
+    setStatusMessage(request.summary ?? "Joining vault bootstrap signing...");
+
+    try {
+      const dkgRaw = sessionStorage.getItem("vaulkyrie_dkg_result");
+      if (!dkgRaw) {
+        throw new Error("Missing DKG result. Rejoin the ceremony and try again.");
+      }
+
+      const dkg = JSON.parse(dkgRaw) as {
+        publicKeyPackage: string;
+        keyPackages: Record<number, string>;
+      };
+      const myKeyPackage = dkg.keyPackages?.[participantId];
+      if (!myKeyPackage) {
+        throw new Error(`No key package found for participant ${participantId}.`);
+      }
+
+      await runSigningOrchestrator({
+        relay: relayRef.current,
+        participantId,
+        keyPackageJson: myKeyPackage,
+        publicKeyPackageJson: dkg.publicKeyPackage,
+        message: Uint8Array.from(request.message),
+        signerIds: request.signerIds,
+      });
+
+      setStatusMessage("Vault bootstrap signature share submitted. Waiting for final confirmation...");
+    } catch (error) {
+      setBootstrapError(error instanceof Error ? error.message : String(error));
+      setPhase("error");
+    }
+  }, [participantId, runSigningOrchestrator]);
+
   const handleJoin = useCallback(() => {
     if (!isValidCode) return;
 
@@ -72,6 +168,10 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
     const mode = relayMode ?? "local";
     setPhase("connecting");
     setStatusMessage("Connecting to ceremony session…");
+    setBootstrapComplete(false);
+    setBootstrapError("");
+    pendingBootstrapRequestRef.current = null;
+    pendingSigningMessagesRef.current = [];
 
     try {
       const relay = createRelay({
@@ -112,6 +212,30 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
             setPhase("error");
             setErrorMessage(error);
           },
+          onSignRequest: (_fromId, request) => {
+            if (request.purpose !== "bootstrap") {
+              return;
+            }
+            pendingBootstrapRequestRef.current = request;
+            if (phase === "complete") {
+              void handleBootstrapRequest(request);
+            }
+          },
+          onSignRound1: (fromId, commitments) => {
+            queueOrHandleSigningMessage({ type: "round1", fromId, commitments });
+          },
+          onSignRound2: (fromId, share) => {
+            queueOrHandleSigningMessage({ type: "round2", fromId, share });
+          },
+          onSignComplete: (signatureHex, verified) => {
+            if (!verified) {
+              setBootstrapError("Vault bootstrap signature verification failed.");
+              setPhase("error");
+              return;
+            }
+            setBootstrapComplete(true);
+            setStatusMessage(`Vault bootstrap finalized: ${signatureHex.slice(0, 12)}...`);
+          },
         },
         onConnectionStateChange: (state) => {
           setConnectionState(state);
@@ -142,7 +266,15 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
       setPhase("error");
       setErrorMessage("Failed to connect to ceremony session");
     }
-  }, [isValidCode, relayMode, relayUrl, sessionCode]);
+  }, [
+    handleBootstrapRequest,
+    isValidCode,
+    phase,
+    queueOrHandleSigningMessage,
+    relayMode,
+    relayUrl,
+    sessionCode,
+  ]);
 
   // Start DKG when params arrive from coordinator
   useEffect(() => {
@@ -185,7 +317,7 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
           const finish = () => {
             setPhase("complete");
             setProgress(100);
-            setStatusMessage("Ceremony complete — vault created!");
+            setStatusMessage("Ceremony complete — waiting for vault bootstrap...");
 
             try {
               sessionStorage.setItem(
@@ -202,6 +334,10 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
                 }),
               );
             } catch { /* sessionStorage may be unavailable */ }
+
+            if (pendingBootstrapRequestRef.current) {
+              void handleBootstrapRequest(pendingBootstrapRequestRef.current);
+            }
           };
 
           if (remaining > 0) {
@@ -219,7 +355,7 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
     }, 0);
 
     return () => window.clearTimeout(timer);
-  }, [dkgParams, participantId, phase]);
+  }, [dkgParams, handleBootstrapRequest, participantId, phase]);
 
   const handleComplete = () => {
     const dkgRaw = sessionStorage.getItem("vaulkyrie_dkg_result");
@@ -353,10 +489,22 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
           </div>
           <p className="text-lg font-semibold">Ceremony Complete</p>
           <p className="text-sm text-muted-foreground text-center">
-            Your vault keys have been distributed. You can now use the wallet.
+            {bootstrapComplete
+              ? "Your vault keys have been distributed and the on-chain vault bootstrap is complete."
+              : "Your vault keys have been distributed. Waiting for the coordinator to finalize the on-chain vault bootstrap."}
           </p>
-          <Button onClick={handleComplete} className="w-full mt-4">
-            Open Wallet
+          <Card className="w-full p-4">
+            <p className="text-xs text-muted-foreground">
+              {bootstrapComplete
+                ? statusMessage
+                : statusMessage || "Stay on this screen until the coordinator finishes the shared bootstrap transaction."}
+            </p>
+            {bootstrapError && (
+              <p className="text-xs text-destructive mt-2">{bootstrapError}</p>
+            )}
+          </Card>
+          <Button onClick={handleComplete} className="w-full mt-4" disabled={!bootstrapComplete}>
+            {bootstrapComplete ? "Open Wallet" : "Waiting for Bootstrap..."}
           </Button>
         </motion.div>
       )}

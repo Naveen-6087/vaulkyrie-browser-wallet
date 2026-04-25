@@ -167,6 +167,8 @@ function App() {
           keyPackages: parsed.keyPackages ?? {},
           threshold: parsed.threshold ?? vaultConfig?.threshold ?? 2,
           participants: parsed.participants ?? vaultConfig?.totalParticipants ?? 3,
+          participantId: parsed.participantId,
+          isMultiDevice: parsed.isMultiDevice,
           createdAt: Date.now(),
         });
         sessionStorage.removeItem("vaulkyrie_dkg_result");

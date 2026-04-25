@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { PublicKey } from "@solana/web3.js";
+import { Buffer } from "buffer";
 import {
   QrCode,
   Smartphone,
@@ -16,7 +18,7 @@ import {
 } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import type { VaultConfig } from "@/components/onboarding/VaultConfigStep";
-import { runLocalDkg } from "@/services/frost/frostService";
+import { runLocalDkg, hexToBytes } from "@/services/frost/frostService";
 import type { LocalDkgProgress } from "@/services/frost/frostService";
 import {
   createRelay,
@@ -31,8 +33,13 @@ import {
   DkgOrchestrator,
   type DkgOrchestratorProgress,
 } from "@/services/frost/dkgOrchestrator";
+import { SigningOrchestrator } from "@/services/frost/signingOrchestrator";
+import { signAndSendTransaction } from "@/services/frost/signTransaction";
+import { withRpcFallback } from "@/services/solanaRpc";
+import { prepareVaultBootstrapTransaction } from "@/services/bootstrap/vaultBootstrap";
 import logo from "@/assets/xlogo.jpeg";
 import { useWalletStore } from "@/store/walletStore";
+import type { SignRequestPayload } from "@/services/relay/channelRelay";
 
 type CeremonyPhase =
   | "pairing"       // Show QR / waiting for devices
@@ -55,8 +62,15 @@ interface DKGCeremonyProps {
   onBack: () => void;
 }
 
+type BufferedSigningMessage =
+  | { type: "round1"; fromId: number; commitments: number[] }
+  | { type: "round2"; fromId: number; share: number[] };
+
 export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
   const relayUrl = useWalletStore((state) => state.relayUrl);
+  const network = useWalletStore((state) => state.network);
+  const getXmssTree = useWalletStore((state) => state.getXmssTree);
+  const storeXmssTree = useWalletStore((state) => state.storeXmssTree);
   const [phase, setPhase] = useState<CeremonyPhase>("pairing");
   const [sessionCode, setSessionCode] = useState(generateSessionCode);
   const [qrPayload, setQrPayload] = useState(() =>
@@ -75,16 +89,31 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
   const [dkgMessage, setDkgMessage] = useState("");
   const [groupPublicKey, setGroupPublicKey] = useState("");
   const [dkgError, setDkgError] = useState<string | null>(null);
+  const [bootstrapMessage, setBootstrapMessage] = useState("");
+  const [bootstrapError, setBootstrapError] = useState<string | null>(null);
+  const [isBootstrapping, setIsBootstrapping] = useState(false);
   const [copied, setCopied] = useState(false);
   const [relayMode, setRelayMode] = useState<"local" | "remote" | null>(null);
   const [, setConnectionState] = useState<ConnectionState>("disconnected");
 
   const relayRef = useRef<RelayAdapter | null>(null);
   const orchestratorRef = useRef<DkgOrchestrator | null>(null);
+  const signingOrchestratorRef = useRef<SigningOrchestrator | null>(null);
+  const pendingSigningMessagesRef = useRef<BufferedSigningMessage[]>([]);
   const dkgStartTimeRef = useRef<number>(0);
+  const phaseRef = useRef<CeremonyPhase>("pairing");
+  const bootstrappingRef = useRef(false);
   const MIN_ANIMATION_MS = 4000;
 
   const allDevicesPaired = devices.filter((d) => d.status === "ready").length >= config.totalParticipants;
+
+  useEffect(() => {
+    phaseRef.current = phase;
+  }, [phase]);
+
+  useEffect(() => {
+    bootstrappingRef.current = isBootstrapping;
+  }, [isBootstrapping]);
 
   // Detect relay availability on mount and set up relay
   useEffect(() => {
@@ -130,9 +159,24 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
             orchestratorRef.current?.handleDkgRound3Done(fromId, groupKeyHex);
           },
           onError: (_fromId: number, error: string) => {
+            if (bootstrappingRef.current || phaseRef.current === "complete") {
+              setBootstrapError(error);
+              setIsBootstrapping(false);
+              return;
+            }
             setDkgError(error);
             setPhase("pairing");
           },
+          onSignRequest: () => {},
+          onSignRound1: (fromId, commitments) => {
+            queueOrHandleSigningMessage({ type: "round1", fromId, commitments });
+          },
+          onSignRound2: (fromId, share) => {
+            queueOrHandleSigningMessage({ type: "round2", fromId, share });
+          },
+          onSignComplete: () => {},
+          onStartDkg: () => {},
+          onParticipantIdAssigned: () => {},
         },
         onConnectionStateChange: setConnectionState,
         onSessionCreated: (code: string) => {
@@ -158,6 +202,53 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [relayUrl]);
 
+  const queueOrHandleSigningMessage = useCallback((message: BufferedSigningMessage) => {
+    const orchestrator = signingOrchestratorRef.current;
+    if (!orchestrator) {
+      pendingSigningMessagesRef.current.push(message);
+      return;
+    }
+
+    if (message.type === "round1") {
+      orchestrator.handleSignRound1(message.fromId, message.commitments);
+      return;
+    }
+
+    orchestrator.handleSignRound2(message.fromId, message.share);
+  }, []);
+
+  const runSigningOrchestrator = useCallback(async (params: {
+    relay: RelayAdapter;
+    participantId: number;
+    keyPackageJson: string;
+    publicKeyPackageJson: string;
+    message: Uint8Array;
+    signerIds: number[];
+    onStatus: (message: string) => void;
+  }) => {
+    const orchestrator = new SigningOrchestrator({
+      relay: params.relay,
+      participantId: params.participantId,
+      keyPackageJson: params.keyPackageJson,
+      publicKeyPackageJson: params.publicKeyPackageJson,
+      message: params.message,
+      signerIds: params.signerIds,
+      onProgress: (progress) => params.onStatus(progress.message),
+    });
+    signingOrchestratorRef.current = orchestrator;
+
+    const bufferedMessages = pendingSigningMessagesRef.current.splice(0);
+    for (const buffered of bufferedMessages) {
+      if (buffered.type === "round1") {
+        orchestrator.handleSignRound1(buffered.fromId, buffered.commitments);
+      } else {
+        orchestrator.handleSignRound2(buffered.fromId, buffered.share);
+      }
+    }
+
+    return orchestrator.run();
+  }, []);
+
   // Start DKG — multi-device via orchestrator, or local fallback
   const delayedComplete = useCallback((fn: () => void) => {
     const elapsed = Date.now() - dkgStartTimeRef.current;
@@ -170,6 +261,153 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
       fn();
     }
   }, []);
+
+  const handleFinalizeVault = useCallback(async () => {
+    if (!groupPublicKey || isBootstrapping) {
+      return;
+    }
+
+    setBootstrapError(null);
+    setIsBootstrapping(true);
+    setBootstrapMessage("Preparing Vaulkyrie vault bootstrap...");
+
+    try {
+      const dkgRaw = sessionStorage.getItem("vaulkyrie_dkg_result");
+      if (!dkgRaw) {
+        throw new Error("Missing DKG result. Run the ceremony again.");
+      }
+
+      const dkg = JSON.parse(dkgRaw) as {
+        groupPublicKeyHex: string;
+        publicKeyPackage: string;
+        keyPackages: Record<number, string>;
+        threshold: number;
+        participantId?: number;
+        isMultiDevice?: boolean;
+      };
+      const groupBytes = new Uint8Array(32);
+      for (let index = 0; index < 32; index += 1) {
+        groupBytes[index] = parseInt(dkg.groupPublicKeyHex.slice(index * 2, index * 2 + 2), 16);
+      }
+      const walletPubkey = new PublicKey(groupBytes);
+      const walletAddress = walletPubkey.toBase58();
+      const myParticipantId = dkg.participantId ?? 1;
+      const myKeyPackage = dkg.keyPackages?.[myParticipantId];
+      const availableKeyIds = Object.keys(dkg.keyPackages ?? {}).map(Number);
+      const relay = relayRef.current;
+
+      const result = await withRpcFallback(network, async (connection) => {
+        const prepared = await prepareVaultBootstrapTransaction({
+          connection,
+          walletPubkey,
+          existingXmssTree: getXmssTree(walletAddress),
+        });
+
+        if (!prepared.transaction) {
+          return { signature: null, generatedXmssTree: prepared.generatedXmssTree };
+        }
+
+        setBootstrapMessage(`Bootstrapping ${prepared.actions.join(", ")}...`);
+
+        if (
+          dkg.isMultiDevice === true ||
+          availableKeyIds.length < dkg.threshold
+        ) {
+          if (!relay) {
+            throw new Error("Relay session is no longer available for multi-device bootstrap.");
+          }
+          if (!myKeyPackage) {
+            throw new Error(`No key package found for participant ${myParticipantId}.`);
+          }
+
+          const signerIds = [myParticipantId, ...relay
+            .getParticipants()
+            .map((participant) => participant.participantId)
+            .filter((participantId, index, ids) => participantId > 0 && ids.indexOf(participantId) === index)
+            .sort((left, right) => left - right)]
+            .filter((participantId, index, ids) => ids.indexOf(participantId) === index)
+            .slice(0, dkg.threshold);
+
+          if (signerIds.length < dkg.threshold) {
+            throw new Error(
+              `Need ${dkg.threshold} connected signers to finalize bootstrap, but only ${signerIds.length} are available.`,
+            );
+          }
+
+          const request: SignRequestPayload = {
+            requestId: crypto.randomUUID(),
+            message: Array.from(prepared.transaction.serializeMessage()),
+            signerIds,
+            amount: 0,
+            token: "VAULKYRIE",
+            recipient: walletAddress,
+            initiator: config.vaultName,
+            network,
+            createdAt: Date.now(),
+            purpose: "bootstrap",
+            summary: `Finalize ${prepared.actions.join(", ")}`,
+          };
+          relay.broadcastSignRequest(request);
+
+          const signingResult = await runSigningOrchestrator({
+            relay,
+            participantId: myParticipantId,
+            keyPackageJson: myKeyPackage,
+            publicKeyPackageJson: dkg.publicKeyPackage,
+            message: prepared.transaction.serializeMessage(),
+            signerIds,
+            onStatus: setBootstrapMessage,
+          });
+
+          if (!signingResult.verified) {
+            throw new Error("Bootstrap signature verification failed.");
+          }
+
+          prepared.transaction.addSignature(walletPubkey, Buffer.from(hexToBytes(signingResult.signatureHex)));
+          const signature = await connection.sendRawTransaction(prepared.transaction.serialize(), {
+            skipPreflight: false,
+            preflightCommitment: "confirmed",
+          });
+          await connection.confirmTransaction(signature, "confirmed");
+          return { signature, generatedXmssTree: prepared.generatedXmssTree };
+        }
+
+        const signature = await signAndSendTransaction(
+          connection,
+          prepared.transaction,
+          walletAddress,
+          setBootstrapMessage,
+        );
+        return { signature, generatedXmssTree: prepared.generatedXmssTree };
+      });
+
+      if (result.generatedXmssTree) {
+        storeXmssTree(walletAddress, result.generatedXmssTree);
+      }
+
+      setBootstrapMessage(
+        result.signature
+          ? `Vault bootstrap confirmed: ${result.signature}`
+          : "Vault bootstrap already existed on-chain.",
+      );
+      onComplete(groupPublicKey);
+    } catch (error) {
+      setBootstrapError(error instanceof Error ? error.message : String(error));
+      setIsBootstrapping(false);
+      return;
+    }
+
+    setIsBootstrapping(false);
+  }, [
+    config.vaultName,
+    getXmssTree,
+    groupPublicKey,
+    isBootstrapping,
+    network,
+    onComplete,
+    runSigningOrchestrator,
+    storeXmssTree,
+  ]);
 
   const startDKG = useCallback(() => {
     setPhase("dkg-round1");
@@ -714,6 +952,20 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
                     </div>
                   ))}
               </div>
+
+              <div className="w-full bg-card border border-border rounded-xl p-4">
+                <p className="text-xs text-muted-foreground mb-2">
+                  On-chain bootstrap
+                </p>
+                <p className="text-sm text-foreground">
+                  {bootstrapMessage || "Finalize the on-chain vault, authority, and policy PDAs before opening the wallet."}
+                </p>
+                {bootstrapError && (
+                  <p className="text-xs text-destructive mt-2">
+                    {bootstrapError}
+                  </p>
+                )}
+              </div>
             </motion.div>
           )}
         </AnimatePresence>
@@ -744,14 +996,16 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
             animate={{ opacity: 1, y: 0 }}
             whileHover={{ scale: 1.01 }}
             whileTap={{ scale: 0.98 }}
-            onClick={() => onComplete(groupPublicKey)}
+            onClick={handleFinalizeVault}
+            disabled={isBootstrapping}
             className="w-full py-3.5 rounded-xl font-semibold text-sm cursor-pointer
                        bg-primary text-primary-foreground
+                       disabled:opacity-60 disabled:cursor-not-allowed
                        shadow-lg shadow-primary/20 hover:shadow-primary/35 transition-all
                        flex items-center justify-center gap-2"
           >
-            Open Vault
-            <Shield className="h-4 w-4" />
+            {isBootstrapping ? "Finalizing Vault..." : "Finalize & Open Vault"}
+            {isBootstrapping ? <Loader2 className="h-4 w-4 animate-spin" /> : <Shield className="h-4 w-4" />}
           </motion.button>
         )}
       </div>

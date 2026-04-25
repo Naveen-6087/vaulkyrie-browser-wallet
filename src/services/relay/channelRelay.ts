@@ -74,6 +74,8 @@ export interface SignRequestPayload {
   initiator: string;
   network: string;
   createdAt: number;
+  purpose?: "send" | "bootstrap";
+  summary?: string;
 }
 
 // ── Participant state ────────────────────────────────────────────────
