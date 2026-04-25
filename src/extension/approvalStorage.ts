@@ -8,6 +8,19 @@ export interface ApprovedOriginRecord {
   lastUsedAt: number;
 }
 
+export interface ExtensionApprovalDetailField {
+  label: string;
+  value: string;
+  monospace?: boolean;
+  tone?: "default" | "muted" | "warning";
+}
+
+export interface ExtensionApprovalDetails {
+  title?: string;
+  fields: ExtensionApprovalDetailField[];
+  warnings?: string[];
+}
+
 export interface ExtensionApprovalRequest {
   id: string;
   origin: string;
@@ -16,6 +29,7 @@ export interface ExtensionApprovalRequest {
   status: ExtensionApprovalStatus;
   accountPublicKey: string | null;
   summary: string;
+  details?: ExtensionApprovalDetails;
 }
 
 const APPROVALS_KEY = "vaulkyrie-extension-approvals";
@@ -119,8 +133,81 @@ async function readApprovedOriginRecords(): Promise<ApprovedOriginRecord[]> {
   return normalizeApprovedOriginRecords(raw);
 }
 
+function normalizeApprovalRequests(value: unknown): ExtensionApprovalRequest[] {
+  if (!Array.isArray(value)) return [];
+
+  return value.flatMap((entry) => {
+    if (!entry || typeof entry !== "object") {
+      return [];
+    }
+
+    const candidate = entry as Partial<ExtensionApprovalRequest>;
+    if (
+      typeof candidate.id !== "string" ||
+      typeof candidate.origin !== "string" ||
+      typeof candidate.method !== "string" ||
+      typeof candidate.createdAt !== "number" ||
+      typeof candidate.status !== "string" ||
+      typeof candidate.summary !== "string"
+    ) {
+      return [];
+    }
+
+    const details =
+      candidate.details &&
+      typeof candidate.details === "object" &&
+      Array.isArray(candidate.details.fields)
+        ? {
+            title:
+              typeof candidate.details.title === "string"
+                ? candidate.details.title
+                : undefined,
+            fields: candidate.details.fields.flatMap((field) => {
+              if (!field || typeof field !== "object") {
+                return [];
+              }
+
+              const detail = field as Partial<ExtensionApprovalDetailField>;
+              if (typeof detail.label !== "string" || typeof detail.value !== "string") {
+                return [];
+              }
+
+              return [{
+                label: detail.label,
+                value: detail.value,
+                monospace: detail.monospace === true,
+                tone: (
+                  detail.tone === "warning" || detail.tone === "muted"
+                    ? detail.tone
+                    : "default"
+                ) as ExtensionApprovalDetailField["tone"],
+              }];
+            }),
+            warnings: Array.isArray(candidate.details.warnings)
+              ? candidate.details.warnings.filter((warning): warning is string => typeof warning === "string")
+              : [],
+          }
+        : undefined;
+
+    return [{
+      id: candidate.id,
+      origin: candidate.origin,
+      method: candidate.method as ExtensionApprovalMethod,
+      createdAt: candidate.createdAt,
+      status: candidate.status as ExtensionApprovalStatus,
+      accountPublicKey:
+        typeof candidate.accountPublicKey === "string"
+          ? candidate.accountPublicKey
+          : null,
+      summary: candidate.summary,
+      details,
+    }];
+  });
+}
+
 export async function listExtensionApprovals(): Promise<ExtensionApprovalRequest[]> {
-  return getStorageValue<ExtensionApprovalRequest[]>(APPROVALS_KEY, []);
+  const raw = await getStorageValue<unknown[]>(APPROVALS_KEY, []);
+  return normalizeApprovalRequests(raw);
 }
 
 export async function listPendingExtensionApprovals(): Promise<ExtensionApprovalRequest[]> {

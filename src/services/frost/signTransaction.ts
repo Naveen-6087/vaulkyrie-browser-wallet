@@ -57,6 +57,25 @@ export function loadDkgResult(publicKey: string): DkgResult {
 
 export type SerializedTransactionKind = "legacy" | "versioned";
 
+function assertLegacyWalletSigner(transaction: Transaction, walletPubkey: PublicKey) {
+  const message = transaction.compileMessage();
+  const signerMatched = message.accountKeys
+    .slice(0, message.header.numRequiredSignatures)
+    .some((publicKey) => publicKey.equals(walletPubkey));
+  if (!signerMatched) {
+    throw new Error("The active vault is not a required signer for this legacy transaction.");
+  }
+}
+
+function assertVersionedWalletSigner(transaction: VersionedTransaction, walletPubkey: PublicKey) {
+  const signerMatched = transaction.message.staticAccountKeys
+    .slice(0, transaction.message.header.numRequiredSignatures)
+    .some((publicKey) => publicKey.equals(walletPubkey));
+  if (!signerMatched) {
+    throw new Error("The active vault is not a required signer for this versioned transaction.");
+  }
+}
+
 async function signThresholdMessage(
   walletPubkey: string,
   messageBytes: Uint8Array,
@@ -98,6 +117,7 @@ export async function signSerializedTransaction(
 
   if (kind === "versioned") {
     const transaction = VersionedTransaction.deserialize(rawBytes);
+    assertVersionedWalletSigner(transaction, fromPubkey);
     const signatureBytes = await signThresholdMessage(
       walletPubkey,
       transaction.message.serialize(),
@@ -110,6 +130,7 @@ export async function signSerializedTransaction(
   }
 
   const transaction = Transaction.from(rawBytes);
+  assertLegacyWalletSigner(transaction, fromPubkey);
   const signatureBytes = await signThresholdMessage(
     walletPubkey,
     transaction.serializeMessage(),
@@ -150,6 +171,7 @@ export async function signAndSendTransaction(
   const { blockhash } = await connection.getLatestBlockhash();
   tx.recentBlockhash = blockhash;
   tx.feePayer = fromPubkey;
+  assertLegacyWalletSigner(tx, fromPubkey);
 
   onProgress?.("Signing with FROST threshold key...");
 
@@ -178,6 +200,7 @@ export async function signAndSendVersionedTransaction(
   const transaction = VersionedTransaction.deserialize(
     Buffer.from(serializedTransactionBase64, "base64"),
   );
+  assertVersionedWalletSigner(transaction, fromPubkey);
 
   onProgress?.("Signing swap transaction...");
   const signatureBytes = await signThresholdMessage(

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Check, Clock, Shield, Trash2, XCircle } from "lucide-react";
+import { AlertTriangle, Check, Clock, Shield, Trash2, XCircle } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import {
@@ -181,6 +181,56 @@ export function ApprovalCenter({ onNavigate }: ApprovalCenterProps) {
                 <div className="rounded-lg border border-border bg-background/60 px-3 py-2 text-[11px] text-muted-foreground">
                   {approval.summary}
                 </div>
+
+                {approval.details && (
+                  <div className="space-y-3 rounded-lg border border-border bg-background/40 px-3 py-3">
+                    {approval.details.title && (
+                      <p className="text-[11px] font-medium text-foreground">{approval.details.title}</p>
+                    )}
+
+                    {approval.details.fields.length > 0 && (
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                        {approval.details.fields.map((field) => (
+                          <div
+                            key={`${approval.id}-${field.label}`}
+                            className="rounded-md border border-border/70 bg-background/60 px-2.5 py-2"
+                          >
+                            <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                              {field.label}
+                            </p>
+                            <p
+                              className={`mt-1 text-[11px] ${
+                                field.monospace ? "font-mono break-all" : ""
+                              } ${
+                                field.tone === "warning"
+                                  ? "text-amber-300"
+                                  : field.tone === "muted"
+                                    ? "text-muted-foreground"
+                                    : "text-foreground"
+                              }`}
+                            >
+                              {field.value}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {approval.details.warnings && approval.details.warnings.length > 0 && (
+                      <div className="space-y-2">
+                        {approval.details.warnings.map((warning) => (
+                          <div
+                            key={`${approval.id}-${warning}`}
+                            className="flex items-start gap-2 rounded-md border border-amber-400/20 bg-amber-400/5 px-2.5 py-2 text-[11px] text-amber-100"
+                          >
+                            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-300" />
+                            <span>{warning}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 <div className="flex gap-2">
                   <Button

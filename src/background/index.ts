@@ -25,7 +25,12 @@ import {
   removeExtensionApproval,
   waitForExtensionApproval,
   type ExtensionApprovalMethod,
+  type ExtensionApprovalDetails,
 } from "@/extension/approvalStorage";
+import {
+  buildMessageApprovalPreview,
+  buildTransactionApprovalPreview,
+} from "@/extension/approvalPreview";
 
 chrome.runtime.onInstalled.addListener(() => {
   console.log("[Vaulkyrie] Extension installed");
@@ -56,22 +61,33 @@ function ensurePageSender(sender: chrome.runtime.MessageSender): void {
   }
 }
 
-function approvalSummary(method: ExtensionApprovalMethod, params?: Record<string, unknown>): string {
+function approvalSummary(method: ExtensionApprovalMethod, params?: Record<string, unknown>): {
+  summary: string;
+  details?: ExtensionApprovalDetails;
+} {
   switch (method) {
     case "connect":
-      return "Allow this site to connect to your active vault and read the public key and network.";
+      return {
+        summary: "Allow this site to connect to your active vault and read the public key and network.",
+      };
     case "signTransaction":
-      return `This site wants a ${String(params?.kind ?? "transaction")} transaction signed by your vault.`;
+      return {
+        summary: `This site wants a ${String(params?.kind ?? "transaction")} transaction signed by your vault.`,
+      };
     case "signMessage": {
       const encoded = typeof params?.message === "string" ? params.message : "";
       const bytes = Buffer.from(encoded, "base64");
       const preview = bytes.toString("utf8").replace(/\s+/g, " ").slice(0, 72);
-      return preview
-        ? `Message preview: "${preview}${preview.length >= 72 ? "…" : ""}"`
-        : `This site wants a ${bytes.length}-byte message signed by your vault.`;
+      return {
+        summary: preview
+          ? `Message preview: "${preview}${preview.length >= 72 ? "…" : ""}"`
+          : `This site wants a ${bytes.length}-byte message signed by your vault.`,
+      };
     }
     default:
-      return "This site is requesting access to your vault.";
+      return {
+        summary: "This site is requesting access to your vault.",
+      };
   }
 }
 
@@ -79,16 +95,21 @@ async function requestApproval(
   sender: chrome.runtime.MessageSender,
   method: ExtensionApprovalMethod,
   accountPublicKey: string | null,
-  params?: Record<string, unknown>,
+  preview?: {
+    summary: string;
+    details?: ExtensionApprovalDetails;
+  },
 ): Promise<void> {
   const origin = senderOrigin(sender);
+  const approval = preview ?? approvalSummary(method);
   const request = await enqueueExtensionApproval({
     id: crypto.randomUUID(),
     origin,
     method,
     createdAt: Date.now(),
     accountPublicKey,
-    summary: approvalSummary(method, params),
+    summary: approval.summary,
+    details: approval.details,
   });
 
   if (typeof chrome !== "undefined" && chrome.tabs?.create) {
@@ -192,9 +213,16 @@ async function handleRpcRequest(
         if (!params.serializedTransaction || !params.kind) {
           throw new Error("Transaction payload is incomplete.");
         }
-        await requestApproval(sender, "signTransaction", providerState.publicKey, {
-          kind: params.kind,
-        });
+        const preview = buildTransactionApprovalPreview(params, providerState.publicKey);
+        if (!preview.walletSignerRequired) {
+          throw new Error("Vaulkyrie rejected this transaction because the active vault is not a required signer.");
+        }
+        await requestApproval(
+          sender,
+          "signTransaction",
+          providerState.publicKey,
+          preview,
+        );
         const result = await signSerializedTransaction(
           params.serializedTransaction,
           providerState.publicKey,
@@ -221,9 +249,12 @@ async function handleRpcRequest(
         if (!params.message) {
           throw new Error("Message payload is incomplete.");
         }
-        await requestApproval(sender, "signMessage", providerState.publicKey, {
-          message: params.message,
-        });
+        await requestApproval(
+          sender,
+          "signMessage",
+          providerState.publicKey,
+          buildMessageApprovalPreview(params),
+        );
         const signature = await signMessageBytes(
           providerState.publicKey,
           Buffer.from(params.message, "base64"),
