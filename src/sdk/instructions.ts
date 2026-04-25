@@ -147,7 +147,8 @@ export function createInitVaultInstruction(
     buf,
     [
       { pubkey: vaultRegistry, isSigner: false, isWritable: true },
-      { pubkey: walletSigner, isSigner: true, isWritable: false },
+      { pubkey: walletSigner, isSigner: true, isWritable: true },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
     ],
     programId
   );
@@ -496,7 +497,8 @@ export function createInitSpendOrchestrationInstruction(
     [
       { pubkey: orchAccount, isSigner: false, isWritable: true },
       { pubkey: vault, isSigner: false, isWritable: false },
-      { pubkey: walletSigner, isSigner: true, isWritable: false },
+      { pubkey: walletSigner, isSigner: true, isWritable: true },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
     ],
     programId
   );

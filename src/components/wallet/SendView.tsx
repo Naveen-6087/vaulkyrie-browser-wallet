@@ -11,8 +11,23 @@ import type { SignRequestPayload } from "@/services/relay/channelRelay";
 import { useWalletStore } from "@/store/walletStore";
 import { createConnection, SOL_ICON } from "@/services/solanaRpc";
 import { buildSplTransferTransaction } from "@/services/splToken";
+import { deserializeXmssTree } from "@/services/quantum/wots";
 import { shortenAddress } from "@/lib/utils";
 import type { WalletView, Token } from "@/types";
+import { VaulkyrieClient } from "@/sdk/client";
+import {
+  createCommitSpendOrchestrationInstruction,
+  createCompleteSpendOrchestrationInstruction,
+  createInitSpendOrchestrationInstruction,
+  createInitVaultInstruction,
+} from "@/sdk/instructions";
+import { VAULKYRIE_POLICY_MXE_PROGRAM_ID } from "@/sdk/constants";
+import { findSpendOrchestrationPda, findVaultRegistryPda } from "@/sdk/pda";
+import {
+  buildSpendActionHash,
+  buildSpendOrchestrationBindings,
+  generateSpendSessionNonce,
+} from "@/sdk/spendBindings";
 
 interface SendViewProps {
   balance: number;
@@ -133,13 +148,26 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
   const [mode, setMode] = useState<SendMode>("send");
   const [signingMessage, setSigningMessage] = useState("");
   const [txSignature, setTxSignature] = useState("");
+  const [orchestrationAddress, setOrchestrationAddress] = useState("");
   const [signingSessionCode, setSigningSessionCode] = useState("");
   const [joinSessionCode, setJoinSessionCode] = useState("");
   const [pendingSignRequest, setPendingSignRequest] = useState<SignRequestPayload | null>(null);
   const [selectedToken, setSelectedToken] = useState("SOL");
   const [selectedPolicyProfileId, setSelectedPolicyProfileId] = useState("");
   const [showContacts, setShowContacts] = useState(false);
-  const { activeAccount, network, relayUrl, tokens, contacts, getPolicyProfiles, setPendingPolicyRequest } = useWalletStore();
+  const {
+    activeAccount,
+    network,
+    relayUrl,
+    tokens,
+    contacts,
+    getPolicyProfiles,
+    setPendingPolicyRequest,
+    getXmssTree,
+    refreshBalances,
+    refreshTransactions,
+    refreshVaultState,
+  } = useWalletStore();
   const relayRef = useRef<RelayAdapter | null>(null);
   const orchestratorRef = useRef<SigningOrchestrator | null>(null);
   const pendingSigningMessagesRef = useRef<BufferedSigningMessage[]>([]);
@@ -301,6 +329,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
     setError("");
     setSigningMessage("");
     setTxSignature("");
+    setOrchestrationAddress("");
   }, [cleanupRelayState]);
 
   const handleReview = () => {
@@ -326,6 +355,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
     setSigningMessage("Loading DKG key packages...");
     setError("");
     setPendingSignRequest(null);
+    setOrchestrationAddress("");
 
     try {
       const dkg = loadDkgState();
@@ -339,20 +369,25 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
       const fromPubkey = new PublicKey(activeAccount!.publicKey);
       const toPubkey = new PublicKey(recipient);
 
-      let tx: Transaction;
+      let baseTransferTx: Transaction;
+      let amountAtomic: bigint;
+      let tokenMint: string | null = null;
 
       if (selectedToken === "SOL") {
-        tx = new Transaction().add(
+        amountAtomic = BigInt(Math.floor(parsedAmount * LAMPORTS_PER_SOL));
+        baseTransferTx = new Transaction().add(
           SystemProgram.transfer({
             fromPubkey,
             toPubkey,
-            lamports: Math.floor(parsedAmount * LAMPORTS_PER_SOL),
+            lamports: Number(amountAtomic),
           }),
         );
       } else {
         const tokenInfo = tokens.find((t) => t.symbol === selectedToken);
         if (!tokenInfo?.mint) throw new Error("Token mint not found");
-        tx = await buildSplTransferTransaction(
+        tokenMint = tokenInfo.mint;
+        amountAtomic = BigInt(Math.round(parsedAmount * (10 ** (tokenInfo.decimals ?? 9))));
+        baseTransferTx = await buildSplTransferTransaction(
           connection,
           fromPubkey,
           toPubkey,
@@ -362,16 +397,97 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
         );
       }
 
-      const { blockhash } = await connection.getLatestBlockhash();
-      tx.recentBlockhash = blockhash;
-      tx.feePayer = fromPubkey;
+      const client = new VaulkyrieClient(connection);
+      const existingVault = await client.getVaultRegistry(fromPubkey);
+      const [vaultRegistryPda, vaultBump] = findVaultRegistryPda(fromPubkey);
+      const policyVersion = existingVault?.account.policyVersion ?? 1n;
+      const authorityHash = (() => {
+        if (existingVault) {
+          return existingVault.account.currentAuthorityHash;
+        }
 
-      const messageBytes = tx.serializeMessage();
+        const serializedTree = getXmssTree(activeAccount!.publicKey);
+        if (!serializedTree) {
+          return new Uint8Array(32);
+        }
+
+        try {
+          return deserializeXmssTree(serializedTree).root;
+        } catch {
+          return new Uint8Array(32);
+        }
+      })();
+
+      const sessionNonce = generateSpendSessionNonce();
+      const actionHash = await buildSpendActionHash({
+        vaultId: fromPubkey.toBytes(),
+        recipient: toPubkey.toBase58(),
+        amountAtomic: amountAtomic.toString(),
+        tokenSymbol: selectedToken,
+        tokenMint,
+        policyVersion,
+        sessionNonce,
+      });
+      const [orchPda, orchBump] = findSpendOrchestrationPda(vaultRegistryPda, actionHash);
 
       // Determine available key packages
       const availableKeyIds = Object.keys(dkg.keyPackages).map(Number);
       const hasAllKeys = availableKeyIds.length >= dkg.threshold;
       const isMultiDevice = dkg.isMultiDevice === true;
+      let finalTx: Transaction | null = null;
+
+      const buildOrchestratedTransaction = async (signerIds: number[]) => {
+        const { blockhash } = await connection.getLatestBlockhash();
+        const currentSlot = await connection.getSlot();
+        const transferTx = new Transaction();
+        transferTx.recentBlockhash = blockhash;
+        transferTx.feePayer = fromPubkey;
+        baseTransferTx.instructions.forEach((instruction) => transferTx.add(instruction));
+        const transferMessageBytes = transferTx.serializeMessage();
+        const expirySlot = BigInt(currentSlot + 200);
+        const bindings = await buildSpendOrchestrationBindings({
+          actionHash,
+          messageBytes: transferMessageBytes,
+          signerIds,
+          threshold: dkg.threshold,
+          participantCount: dkg.participants,
+          expirySlot,
+        });
+
+        const tx = new Transaction();
+        if (!existingVault) {
+          tx.add(createInitVaultInstruction(vaultRegistryPda, fromPubkey, {
+            walletPubkey: fromPubkey,
+            authorityHash,
+            policyVersion,
+            bump: vaultBump,
+            policyMxeProgram: VAULKYRIE_POLICY_MXE_PROGRAM_ID,
+          }));
+        }
+        tx.add(createInitSpendOrchestrationInstruction(orchPda, vaultRegistryPda, fromPubkey, {
+          actionHash,
+          sessionCommitment: bindings.sessionCommitment,
+          signersCommitment: bindings.signersCommitment,
+          signingPackageHash: bindings.signingPackageHash,
+          expirySlot,
+          threshold: dkg.threshold,
+          participantCount: dkg.participants,
+          bump: orchBump,
+        }));
+        tx.add(createCommitSpendOrchestrationInstruction(orchPda, vaultRegistryPda, fromPubkey, {
+          actionHash,
+          signingPackageHash: bindings.signingPackageHash,
+        }));
+        baseTransferTx.instructions.forEach((instruction) => tx.add(instruction));
+        tx.add(createCompleteSpendOrchestrationInstruction(orchPda, vaultRegistryPda, fromPubkey, {
+          actionHash,
+          txBinding: bindings.txBinding,
+        }));
+        tx.recentBlockhash = blockhash;
+        tx.feePayer = fromPubkey;
+        setOrchestrationAddress(orchPda.toBase58());
+        return tx;
+      };
 
       let signatureHex: string;
       let verified: boolean;
@@ -380,7 +496,14 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
         // Single-device (local DKG): sign locally with all key packages
         setSigningMessage(`Running FROST threshold signing (${dkg.threshold}-of-${dkg.participants})...`);
         const signerIds = availableKeyIds.slice(0, dkg.threshold);
-        const result = await signLocal(messageBytes, dkg.keyPackages, dkg.publicKeyPackage, signerIds);
+        const tx = await buildOrchestratedTransaction(signerIds);
+        finalTx = tx;
+        const result = await signLocal(
+          tx.serializeMessage(),
+          dkg.keyPackages,
+          dkg.publicKeyPackage,
+          signerIds,
+        );
         signatureHex = result.signatureHex;
         verified = result.verified;
       } else {
@@ -402,10 +525,14 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
           myParticipantId,
           myKeyPkg,
           dkg.publicKeyPackage,
-          messageBytes,
           dkg.threshold,
           (msg) => setSigningMessage(msg),
+          async (signerIds) => {
+            const tx = await buildOrchestratedTransaction(signerIds);
+            return { message: tx.serializeMessage(), tx };
+          },
         );
+        finalTx = result.preparedTx;
         signatureHex = result.signatureHex;
         verified = result.verified;
       }
@@ -417,10 +544,13 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
       setPhase("signing");
       setSigningMessage("Signature verified! Submitting to Solana...");
 
+      if (!finalTx) {
+        throw new Error("Spend orchestration transaction was not prepared.");
+      }
       const sigBytes = hexToBytes(signatureHex);
-      tx.addSignature(fromPubkey, Buffer.from(sigBytes));
+      finalTx.addSignature(fromPubkey, Buffer.from(sigBytes));
 
-      const rawTx = tx.serialize();
+      const rawTx = finalTx.serialize();
       const signature = await connection.sendRawTransaction(rawTx, {
         skipPreflight: false,
         preflightCommitment: "confirmed",
@@ -429,6 +559,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
       cleanupRelayState();
       setTxSignature(signature);
       setPhase("success");
+      await Promise.all([refreshBalances(), refreshTransactions(), refreshVaultState()]);
     } catch (err) {
       cleanupRelayState();
       const message = err instanceof Error ? err.message : String(err);
@@ -442,16 +573,16 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
     participantId: number,
     keyPackageJson: string,
     publicKeyPackageJson: string,
-    message: Uint8Array,
     requiredSigners: number,
     onStatus: (msg: string) => void,
+    prepareMessage: (signerIds: number[]) => Promise<{ message: Uint8Array; tx: Transaction }>,
   ) => {
     cleanupRelayState();
     const relayMode = await canReachRelay(relayUrl) ? "remote" : "local";
     const requestedSessionCode = generateSessionCode();
 
     setSigningSessionCode(requestedSessionCode);
-    return new Promise<{ signatureHex: string; publicKeyHex: string; verified: boolean }>((resolve, reject) => {
+    return new Promise<{ signatureHex: string; publicKeyHex: string; verified: boolean; preparedTx: Transaction }>((resolve, reject) => {
       let settled = false;
       let signingStarted = false;
 
@@ -491,32 +622,39 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
             }
 
             signingStarted = true;
-            const request: SignRequestPayload = {
-              requestId: crypto.randomUUID(),
-              message: Array.from(message),
-              signerIds,
-              amount: parsedAmount,
-              token: selectedToken,
-              recipient,
-              initiator: activeAccount?.name ?? `Signer ${participantId}`,
-              network,
-              createdAt: Date.now(),
-            };
+            void (async () => {
+              try {
+                onStatus("Preparing orchestrated spend transaction...");
+                const { message, tx } = await prepareMessage(signerIds);
+                const request: SignRequestPayload = {
+                  requestId: crypto.randomUUID(),
+                  message: Array.from(message),
+                  signerIds,
+                  amount: parsedAmount,
+                  token: selectedToken,
+                  recipient,
+                  initiator: activeAccount?.name ?? `Signer ${participantId}`,
+                  network,
+                  createdAt: Date.now(),
+                };
 
-            relay.broadcastSignRequest(request);
-            setPhase("signing");
+                relay.broadcastSignRequest(request);
+                setPhase("signing");
 
-            runSigningOrchestrator({
-              relay,
-              participantId,
-              keyPackageJson,
-              publicKeyPackageJson,
-              message,
-              signerIds,
-              onStatus,
-            })
-              .then((result) => settle(() => resolve(result)))
-              .catch((err) => settle(() => reject(err)));
+                const result = await runSigningOrchestrator({
+                  relay,
+                  participantId,
+                  keyPackageJson,
+                  publicKeyPackageJson,
+                  message,
+                  signerIds,
+                  onStatus,
+                });
+                settle(() => resolve({ ...result, preparedTx: tx }));
+              } catch (err) {
+                settle(() => reject(err));
+              }
+            })();
           },
           onParticipantLeft: () => {
             onStatus(`A signer disconnected. Connected: ${relay.participantCount}/${requiredSigners}`);
@@ -563,9 +701,9 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
     cleanupRelayState,
     network,
     parsedAmount,
+    recipient,
     queueOrHandleSigningMessage,
     relayUrl,
-    recipient,
     runSigningOrchestrator,
     selectedToken,
   ]);
@@ -794,6 +932,11 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
             ? `You approved ${successAmount} ${successToken} to ${shortenAddress(successRecipient, 6)}.`
             : `${successAmount} ${successToken} sent to ${successRecipient.substring(0, 8)}...`}
         </p>
+        {orchestrationAddress && txSignature && (
+          <p className="text-[10px] text-muted-foreground text-center">
+            Spend orchestration recorded at {shortenAddress(orchestrationAddress, 8)}.
+          </p>
+        )}
         {txSignature && (
           <a
             href={explorerUrl}
