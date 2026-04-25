@@ -39,6 +39,10 @@ import {
   buildWalletPolicyActionHash,
   buildWalletPolicyActionPayload,
 } from "@/sdk/policyBindings";
+import {
+  analyzeLegacyTransaction,
+  type TransactionAnalysis,
+} from "@/services/transactionAnalysis";
 
 interface SendViewProps {
   balance: number;
@@ -51,6 +55,11 @@ type SendMode = "send" | "join";
 type BufferedSigningMessage =
   | { type: "round1"; fromId: number; commitments: number[] }
   | { type: "round2"; fromId: number; share: number[] };
+
+type ReviewAnalysisState =
+  | { status: "idle" | "loading" }
+  | { status: "ready"; data: TransactionAnalysis }
+  | { status: "error"; error: string };
 
 // ── Custom token dropdown with icons ────────────────────────────────
 function TokenDropdown({
@@ -165,6 +174,36 @@ async function canReachRelay(url: string): Promise<boolean> {
   return probeRelayAvailability(url, 1500);
 }
 
+function buildPreviewSignerIds(
+  threshold: number,
+  participants: number,
+  availableKeyIds: number[],
+  preferredId?: number,
+): number[] {
+  const signerIds: number[] = [];
+  const pushSigner = (candidate: number | undefined) => {
+    if (!candidate || signerIds.includes(candidate)) return;
+    signerIds.push(candidate);
+  };
+
+  pushSigner(preferredId);
+  availableKeyIds
+    .slice()
+    .sort((left, right) => left - right)
+    .forEach(pushSigner);
+
+  for (let candidate = 1; signerIds.length < threshold && candidate <= Math.max(participants, threshold); candidate += 1) {
+    pushSigner(candidate);
+  }
+
+  return signerIds.slice(0, threshold);
+}
+
+function formatFeeLabel(lamports: number | null): string {
+  if (lamports === null) return "Unavailable";
+  return `~${(lamports / LAMPORTS_PER_SOL).toFixed(6)} SOL`;
+}
+
 export function SendView({ balance, onNavigate }: SendViewProps) {
   const [recipient, setRecipient] = useState("");
   const [amount, setAmount] = useState("");
@@ -177,6 +216,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
   const [signingSessionCode, setSigningSessionCode] = useState("");
   const [joinSessionCode, setJoinSessionCode] = useState("");
   const [pendingSignRequest, setPendingSignRequest] = useState<SignRequestPayload | null>(null);
+  const [reviewAnalysis, setReviewAnalysis] = useState<ReviewAnalysisState>({ status: "idle" });
   const [selectedToken, setSelectedToken] = useState("SOL");
   const [selectedPolicyProfileId, setSelectedPolicyProfileId] = useState("");
   const [showContacts, setShowContacts] = useState(false);
@@ -377,80 +417,77 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
     setPhase("review");
   };
 
-  const handleSign = async () => {
-    setPhase("signing");
-    setSigningMessage("Loading DKG key packages...");
-    setError("");
-    setPendingSignRequest(null);
-    setOrchestrationAddress("");
+  const prepareSpendTransaction = useCallback(async (options: {
+    signerIds: number[];
+    requireFinalizedPolicyEvaluation: boolean;
+    onStatus?: (message: string) => void;
+  }) => {
+    const dkg = loadDkgState();
+    if (!dkg) {
+      throw new Error("No DKG key packages found. Run DKG ceremony first.");
+    }
 
-    try {
-      const dkg = loadDkgState();
-      if (!dkg) {
-        throw new Error("No DKG key packages found. Run DKG ceremony first.");
-      }
+    const connection = createConnection(network);
+    const fromPubkey = new PublicKey(activeAccount!.publicKey);
+    const toPubkey = new PublicKey(recipient);
 
-      // Build the Solana transfer transaction
-      setSigningMessage("Building transaction...");
-      const connection = createConnection(network);
-      const fromPubkey = new PublicKey(activeAccount!.publicKey);
-      const toPubkey = new PublicKey(recipient);
+    let baseTransferTx: Transaction;
+    let amountAtomic: bigint;
+    let tokenMint: string | null = null;
 
-      let baseTransferTx: Transaction;
-      let amountAtomic: bigint;
-      let tokenMint: string | null = null;
-
-      if (selectedToken === "SOL") {
-        amountAtomic = BigInt(Math.floor(parsedAmount * LAMPORTS_PER_SOL));
-        baseTransferTx = new Transaction().add(
-          SystemProgram.transfer({
-            fromPubkey,
-            toPubkey,
-            lamports: Number(amountAtomic),
-          }),
-        );
-      } else {
-        const tokenInfo = tokens.find((t) => t.symbol === selectedToken);
-        if (!tokenInfo?.mint) throw new Error("Token mint not found");
-        tokenMint = tokenInfo.mint;
-        amountAtomic = BigInt(Math.round(parsedAmount * (10 ** (tokenInfo.decimals ?? 9))));
-        baseTransferTx = await buildSplTransferTransaction(
-          connection,
+    if (selectedToken === "SOL") {
+      amountAtomic = BigInt(Math.floor(parsedAmount * LAMPORTS_PER_SOL));
+      baseTransferTx = new Transaction().add(
+        SystemProgram.transfer({
           fromPubkey,
           toPubkey,
-          new PublicKey(tokenInfo.mint),
-          parsedAmount,
-          tokenInfo.decimals ?? 9,
-        );
+          lamports: Number(amountAtomic),
+        }),
+      );
+    } else {
+      const tokenInfo = tokens.find((token) => token.symbol === selectedToken);
+      if (!tokenInfo?.mint) throw new Error("Token mint not found");
+      tokenMint = tokenInfo.mint;
+      amountAtomic = BigInt(Math.round(parsedAmount * (10 ** (tokenInfo.decimals ?? 9))));
+      baseTransferTx = await buildSplTransferTransaction(
+        connection,
+        fromPubkey,
+        toPubkey,
+        new PublicKey(tokenInfo.mint),
+        parsedAmount,
+        tokenInfo.decimals ?? 9,
+      );
+    }
+
+    const client = new VaulkyrieClient(connection);
+    const policyClient = new PolicyMxeClient(connection);
+    const existingVault = await client.getVaultRegistry(fromPubkey);
+    const [vaultRegistryPda, vaultBump] = findVaultRegistryPda(fromPubkey);
+    const [authorityPda, authorityBump] = findQuantumAuthorityPda(vaultRegistryPda);
+    const existingAuthority = existingVault
+      ? await client.getQuantumAuthority(vaultRegistryPda)
+      : null;
+    let reviewedActionHash: Uint8Array | null = null;
+    let policyVersion = existingVault?.account.policyVersion ?? 1n;
+
+    if (needsPolicyReview) {
+      const policyConfig = await policyClient.getPolicyConfig(fromPubkey);
+      if (!policyConfig) {
+        throw new Error("Initialize the Policy Engine before signing this reviewed transfer.");
       }
 
-      const client = new VaulkyrieClient(connection);
-      const policyClient = new PolicyMxeClient(connection);
-      const existingVault = await client.getVaultRegistry(fromPubkey);
-      const [vaultRegistryPda, vaultBump] = findVaultRegistryPda(fromPubkey);
-      const [authorityPda, authorityBump] = findQuantumAuthorityPda(vaultRegistryPda);
-      const existingAuthority = existingVault
-        ? await client.getQuantumAuthority(vaultRegistryPda)
-        : null;
-      let reviewedActionHash: Uint8Array | null = null;
-      let policyVersion = existingVault?.account.policyVersion ?? 1n;
+      policyVersion = existingVault?.account.policyVersion ?? policyConfig.account.policyVersion;
+      const reviewActionHash = await buildWalletPolicyActionHash(
+        buildWalletPolicyActionPayload({
+          profile: selectedPolicyProfile,
+          actionType: "send",
+          recipient,
+          amount: parsedAmount,
+          token: selectedToken,
+        }),
+      );
 
-      if (needsPolicyReview) {
-        const policyConfig = await policyClient.getPolicyConfig(fromPubkey);
-        if (!policyConfig) {
-          throw new Error("Initialize the Policy Engine before signing this reviewed transfer.");
-        }
-
-        policyVersion = existingVault?.account.policyVersion ?? policyConfig.account.policyVersion;
-        const reviewActionHash = await buildWalletPolicyActionHash(
-          buildWalletPolicyActionPayload({
-            profile: selectedPolicyProfile,
-            actionType: "send",
-            recipient,
-            amount: parsedAmount,
-            token: selectedToken,
-          }),
-        );
+      if (options.requireFinalizedPolicyEvaluation) {
         const evaluation = await policyClient.getPolicyEvaluation(
           policyConfig.address,
           reviewActionHash,
@@ -467,131 +504,222 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
             `This policy approval is time-locked until slot ${evaluation.account.delayUntilSlot.toString()}.`,
           );
         }
-
-        reviewedActionHash = reviewActionHash;
       }
 
-      let authorityHash = existingVault?.account.currentAuthorityHash ?? null;
-      let authorityRoot = existingAuthority?.account.currentAuthorityRoot ?? null;
+      reviewedActionHash = reviewActionHash;
+    }
 
-      if (!existingVault || !existingAuthority) {
-        const serializedTree = getXmssTree(activeAccount!.publicKey);
-        let xmssTree = serializedTree
-          ? (() => {
-              try {
-                return deserializeXmssTree(serializedTree);
-              } catch {
-                return null;
-              }
-            })()
-          : null;
+    let authorityHash = existingVault?.account.currentAuthorityHash ?? null;
+    let authorityRoot = existingAuthority?.account.currentAuthorityRoot ?? null;
 
-        if (!xmssTree) {
-          setSigningMessage("Generating Vaulkyrie XMSS authority tree...");
-          xmssTree = await generateXmssTree();
-          storeXmssTree(activeAccount!.publicKey, serializeXmssTree(xmssTree));
-        }
+    if (!existingVault || !existingAuthority) {
+      const serializedTree = getXmssTree(activeAccount!.publicKey);
+      let xmssTree = serializedTree
+        ? (() => {
+            try {
+              return deserializeXmssTree(serializedTree);
+            } catch {
+              return null;
+            }
+          })()
+        : null;
 
-        const initialAuthorityHash = getInitialXmssAuthorityHash(xmssTree);
-        if (
-          existingVault &&
-          !equalBytes(existingVault.account.currentAuthorityHash, initialAuthorityHash)
-        ) {
-          throw new Error(
-            "The stored XMSS authority tree does not match this vault's on-chain authority hash. " +
-              "Recover or re-create the vault before submitting authority-bound spends.",
-          );
-        }
-
-        authorityHash = authorityHash ?? initialAuthorityHash;
-        authorityRoot = authorityRoot ?? new Uint8Array(xmssTree.root);
+      if (!xmssTree) {
+        options.onStatus?.("Generating Vaulkyrie XMSS authority tree...");
+        xmssTree = await generateXmssTree();
+        storeXmssTree(activeAccount!.publicKey, serializeXmssTree(xmssTree));
       }
 
-      if (!authorityHash) {
-        throw new Error("Missing post-quantum authority hash for this vault.");
+      const initialAuthorityHash = getInitialXmssAuthorityHash(xmssTree);
+      if (
+        existingVault &&
+        !equalBytes(existingVault.account.currentAuthorityHash, initialAuthorityHash)
+      ) {
+        throw new Error(
+          "The stored XMSS authority tree does not match this vault's on-chain authority hash. " +
+            "Recover or re-create the vault before submitting authority-bound spends.",
+        );
       }
 
-      const sessionNonce = generateSpendSessionNonce();
-      const actionHash = reviewedActionHash ?? await buildSpendActionHash({
-        vaultId: fromPubkey.toBytes(),
-        recipient: toPubkey.toBase58(),
-        amountAtomic: amountAtomic.toString(),
-        tokenSymbol: selectedToken,
-        tokenMint,
+      authorityHash = authorityHash ?? initialAuthorityHash;
+      authorityRoot = authorityRoot ?? new Uint8Array(xmssTree.root);
+    }
+
+    if (!authorityHash) {
+      throw new Error("Missing post-quantum authority hash for this vault.");
+    }
+
+    const sessionNonce = generateSpendSessionNonce();
+    const actionHash = reviewedActionHash ?? await buildSpendActionHash({
+      vaultId: fromPubkey.toBytes(),
+      recipient: toPubkey.toBase58(),
+      amountAtomic: amountAtomic.toString(),
+      tokenSymbol: selectedToken,
+      tokenMint,
+      policyVersion,
+      sessionNonce,
+    });
+    const [orchPda, orchBump] = findSpendOrchestrationPda(vaultRegistryPda, actionHash);
+    const { blockhash } = await connection.getLatestBlockhash();
+    const currentSlot = await connection.getSlot();
+    const transferTx = new Transaction();
+    transferTx.recentBlockhash = blockhash;
+    transferTx.feePayer = fromPubkey;
+    baseTransferTx.instructions.forEach((instruction) => transferTx.add(instruction));
+    const transferMessageBytes = transferTx.serializeMessage();
+    const expirySlot = BigInt(currentSlot + 200);
+    const bindings = await buildSpendOrchestrationBindings({
+      actionHash,
+      messageBytes: transferMessageBytes,
+      signerIds: options.signerIds,
+      threshold: dkg.threshold,
+      participantCount: dkg.participants,
+      expirySlot,
+    });
+
+    const tx = new Transaction();
+    if (!existingVault) {
+      tx.add(createInitVaultInstruction(vaultRegistryPda, fromPubkey, {
+        walletPubkey: fromPubkey,
+        authorityHash,
         policyVersion,
-        sessionNonce,
-      });
-      const [orchPda, orchBump] = findSpendOrchestrationPda(vaultRegistryPda, actionHash);
+        bump: vaultBump,
+        policyMxeProgram: VAULKYRIE_POLICY_MXE_PROGRAM_ID,
+      }));
+    }
+    if (!existingAuthority) {
+      if (!authorityRoot) {
+        throw new Error("Missing XMSS authority root for quantum authority initialization.");
+      }
 
+      tx.add(createInitAuthorityInstruction(authorityPda, vaultRegistryPda, fromPubkey, {
+        currentAuthorityHash: authorityHash,
+        currentAuthorityRoot: authorityRoot,
+        bump: authorityBump,
+      }));
+    }
+    tx.add(createInitSpendOrchestrationInstruction(orchPda, vaultRegistryPda, fromPubkey, {
+      actionHash,
+      sessionCommitment: bindings.sessionCommitment,
+      signersCommitment: bindings.signersCommitment,
+      signingPackageHash: bindings.signingPackageHash,
+      expirySlot,
+      threshold: dkg.threshold,
+      participantCount: dkg.participants,
+      bump: orchBump,
+    }));
+    tx.add(createCommitSpendOrchestrationInstruction(orchPda, vaultRegistryPda, fromPubkey, {
+      actionHash,
+      signingPackageHash: bindings.signingPackageHash,
+    }));
+    baseTransferTx.instructions.forEach((instruction) => tx.add(instruction));
+    tx.add(createCompleteSpendOrchestrationInstruction(orchPda, vaultRegistryPda, fromPubkey, {
+      actionHash,
+      txBinding: bindings.txBinding,
+    }));
+    tx.recentBlockhash = blockhash;
+    tx.feePayer = fromPubkey;
+
+    return {
+      connection,
+      fromPubkey,
+      tx,
+      orchestrationAddress: orchPda.toBase58(),
+    };
+  }, [
+    activeAccount,
+    getXmssTree,
+    network,
+    needsPolicyReview,
+    parsedAmount,
+    recipient,
+    selectedPolicyProfile,
+    selectedToken,
+    storeXmssTree,
+    loadDkgState,
+    tokens,
+  ]);
+
+  useEffect(() => {
+    if (phase !== "review" || !activeAccount || !isValid || blockedByPolicy || needsPolicyReview) {
+      setReviewAnalysis({ status: "idle" });
+      return;
+    }
+
+    let cancelled = false;
+    setReviewAnalysis({ status: "loading" });
+
+    void (async () => {
+      try {
+        const dkg = loadDkgState();
+        if (!dkg) {
+          throw new Error("No DKG key packages found. Run DKG ceremony first.");
+        }
+
+        const availableKeyIds = Object.keys(dkg.keyPackages).map(Number);
+        const signerIds = buildPreviewSignerIds(
+          dkg.threshold,
+          dkg.participants,
+          availableKeyIds,
+          dkg.participantId,
+        );
+        const prepared = await prepareSpendTransaction({
+          signerIds,
+          requireFinalizedPolicyEvaluation: false,
+        });
+        const analysis = await analyzeLegacyTransaction(
+          prepared.connection,
+          prepared.tx,
+          prepared.fromPubkey.toBase58(),
+        );
+        if (!cancelled) {
+          setOrchestrationAddress(prepared.orchestrationAddress);
+          setReviewAnalysis({ status: "ready", data: analysis });
+        }
+      } catch (previewError) {
+        if (!cancelled) {
+          setReviewAnalysis({
+            status: "error",
+            error: previewError instanceof Error ? previewError.message : String(previewError),
+          });
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeAccount,
+    blockedByPolicy,
+    isValid,
+    loadDkgState,
+    needsPolicyReview,
+    phase,
+    prepareSpendTransaction,
+  ]);
+
+  const handleSign = async () => {
+    setPhase("signing");
+    setSigningMessage("Loading DKG key packages...");
+    setError("");
+    setPendingSignRequest(null);
+    setOrchestrationAddress("");
+
+    try {
+      const dkg = loadDkgState();
+      if (!dkg) {
+        throw new Error("No DKG key packages found. Run DKG ceremony first.");
+      }
+
+      setSigningMessage("Building transaction...");
       // Determine available key packages
       const availableKeyIds = Object.keys(dkg.keyPackages).map(Number);
       const hasAllKeys = availableKeyIds.length >= dkg.threshold;
       const isMultiDevice = dkg.isMultiDevice === true;
       let finalTx: Transaction | null = null;
-
-      const buildOrchestratedTransaction = async (signerIds: number[]) => {
-        const { blockhash } = await connection.getLatestBlockhash();
-        const currentSlot = await connection.getSlot();
-        const transferTx = new Transaction();
-        transferTx.recentBlockhash = blockhash;
-        transferTx.feePayer = fromPubkey;
-        baseTransferTx.instructions.forEach((instruction) => transferTx.add(instruction));
-        const transferMessageBytes = transferTx.serializeMessage();
-        const expirySlot = BigInt(currentSlot + 200);
-        const bindings = await buildSpendOrchestrationBindings({
-          actionHash,
-          messageBytes: transferMessageBytes,
-          signerIds,
-          threshold: dkg.threshold,
-          participantCount: dkg.participants,
-          expirySlot,
-        });
-
-        const tx = new Transaction();
-        if (!existingVault) {
-          tx.add(createInitVaultInstruction(vaultRegistryPda, fromPubkey, {
-            walletPubkey: fromPubkey,
-            authorityHash,
-            policyVersion,
-            bump: vaultBump,
-            policyMxeProgram: VAULKYRIE_POLICY_MXE_PROGRAM_ID,
-          }));
-        }
-        if (!existingAuthority) {
-          if (!authorityRoot) {
-            throw new Error("Missing XMSS authority root for quantum authority initialization.");
-          }
-
-          tx.add(createInitAuthorityInstruction(authorityPda, vaultRegistryPda, fromPubkey, {
-            currentAuthorityHash: authorityHash,
-            currentAuthorityRoot: authorityRoot,
-            bump: authorityBump,
-          }));
-        }
-        tx.add(createInitSpendOrchestrationInstruction(orchPda, vaultRegistryPda, fromPubkey, {
-          actionHash,
-          sessionCommitment: bindings.sessionCommitment,
-          signersCommitment: bindings.signersCommitment,
-          signingPackageHash: bindings.signingPackageHash,
-          expirySlot,
-          threshold: dkg.threshold,
-          participantCount: dkg.participants,
-          bump: orchBump,
-        }));
-        tx.add(createCommitSpendOrchestrationInstruction(orchPda, vaultRegistryPda, fromPubkey, {
-          actionHash,
-          signingPackageHash: bindings.signingPackageHash,
-        }));
-        baseTransferTx.instructions.forEach((instruction) => tx.add(instruction));
-        tx.add(createCompleteSpendOrchestrationInstruction(orchPda, vaultRegistryPda, fromPubkey, {
-          actionHash,
-          txBinding: bindings.txBinding,
-        }));
-        tx.recentBlockhash = blockhash;
-        tx.feePayer = fromPubkey;
-        setOrchestrationAddress(orchPda.toBase58());
-        return tx;
-      };
+      const fromPubkey = new PublicKey(activeAccount!.publicKey);
+      const connection = createConnection(network);
 
       let signatureHex: string;
       let verified: boolean;
@@ -600,10 +728,15 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
         // Single-device (local DKG): sign locally with all key packages
         setSigningMessage(`Running FROST threshold signing (${dkg.threshold}-of-${dkg.participants})...`);
         const signerIds = availableKeyIds.slice(0, dkg.threshold);
-        const tx = await buildOrchestratedTransaction(signerIds);
-        finalTx = tx;
+        const prepared = await prepareSpendTransaction({
+          signerIds,
+          requireFinalizedPolicyEvaluation: true,
+          onStatus: setSigningMessage,
+        });
+        finalTx = prepared.tx;
+        setOrchestrationAddress(prepared.orchestrationAddress);
         const result = await signLocal(
-          tx.serializeMessage(),
+          prepared.tx.serializeMessage(),
           dkg.keyPackages,
           dkg.publicKeyPackage,
           signerIds,
@@ -632,11 +765,26 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
           dkg.threshold,
           (msg) => setSigningMessage(msg),
           async (signerIds) => {
-            const tx = await buildOrchestratedTransaction(signerIds);
-            return { message: tx.serializeMessage(), tx };
+            const prepared = await prepareSpendTransaction({
+              signerIds,
+              requireFinalizedPolicyEvaluation: true,
+              onStatus: setSigningMessage,
+            });
+            const analysis = await analyzeLegacyTransaction(
+              prepared.connection,
+              prepared.tx,
+              prepared.fromPubkey.toBase58(),
+            );
+            return {
+              message: prepared.tx.serializeMessage(),
+              tx: prepared.tx,
+              analysis,
+              orchestrationAddress: prepared.orchestrationAddress,
+            };
           },
         );
         finalTx = result.preparedTx;
+        setOrchestrationAddress(result.orchestrationAddress);
         signatureHex = result.signatureHex;
         verified = result.verified;
       }
@@ -680,14 +828,25 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
     publicKeyPackageJson: string,
     requiredSigners: number,
     onStatus: (msg: string) => void,
-    prepareMessage: (signerIds: number[]) => Promise<{ message: Uint8Array; tx: Transaction }>,
+    prepareMessage: (signerIds: number[]) => Promise<{
+      message: Uint8Array;
+      tx: Transaction;
+      analysis: TransactionAnalysis;
+      orchestrationAddress: string;
+    }>,
   ) => {
     cleanupRelayState();
     const relayMode = await canReachRelay(relayUrl) ? "remote" : "local";
     const requestedSessionCode = generateSessionCode();
 
     setSigningSessionCode(requestedSessionCode);
-    return new Promise<{ signatureHex: string; publicKeyHex: string; verified: boolean; preparedTx: Transaction }>((resolve, reject) => {
+    return new Promise<{
+      signatureHex: string;
+      publicKeyHex: string;
+      verified: boolean;
+      preparedTx: Transaction;
+      orchestrationAddress: string;
+    }>((resolve, reject) => {
       let settled = false;
       let signingStarted = false;
 
@@ -730,7 +889,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
             void (async () => {
               try {
                 onStatus("Preparing orchestrated spend transaction...");
-                const { message, tx } = await prepareMessage(signerIds);
+                const { message, tx, analysis, orchestrationAddress } = await prepareMessage(signerIds);
                 const request: SignRequestPayload = {
                   requestId: crypto.randomUUID(),
                   message: Array.from(message),
@@ -741,10 +900,15 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
                   initiator: activeAccount?.name ?? `Signer ${participantId}`,
                   network,
                   createdAt: Date.now(),
+                  estimatedFeeLamports: analysis.estimatedFeeLamports,
+                  computeUnitsConsumed: analysis.computeUnitsConsumed,
+                  requiredSignerCount: analysis.requiredSignerCount,
+                  writableAccountCount: analysis.writableAccountCount,
                 };
 
                 relay.broadcastSignRequest(request);
                 setPhase("signing");
+                setOrchestrationAddress(orchestrationAddress);
 
                 const result = await runSigningOrchestrator({
                   relay,
@@ -755,7 +919,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
                   signerIds,
                   onStatus,
                 });
-                settle(() => resolve({ ...result, preparedTx: tx }));
+                settle(() => resolve({ ...result, preparedTx: tx, orchestrationAddress }));
               } catch (err) {
                 settle(() => reject(err));
               }
@@ -983,6 +1147,14 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
   const successAmount = pendingSignRequest?.amount ?? parsedAmount;
   const successToken = pendingSignRequest?.token ?? selectedToken;
   const successRecipient = pendingSignRequest?.recipient ?? recipient;
+  const reviewFeeLamports = reviewAnalysis.status === "ready"
+    ? reviewAnalysis.data.estimatedFeeLamports
+    : null;
+  const reviewTotalLabel = selectedToken === "SOL"
+    ? reviewFeeLamports !== null
+      ? `${(parsedAmount + (reviewFeeLamports / LAMPORTS_PER_SOL)).toFixed(6)} SOL`
+      : `${parsedAmount.toFixed(6)} SOL + fee pending`
+    : `${parsedAmount} ${selectedToken}${reviewFeeLamports !== null ? ` + ${formatFeeLabel(reviewFeeLamports)}` : " + fee pending"}`;
 
   // ── Render ───────────────────────────────────────────────────────
 
@@ -1131,6 +1303,33 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
               <span className="text-xs text-muted-foreground">Network</span>
               <span className="text-xs uppercase">{pendingSignRequest.network}</span>
             </div>
+            <div className="flex justify-between">
+              <span className="text-xs text-muted-foreground">Estimated fee</span>
+              <span className="text-xs text-muted-foreground">
+                {formatFeeLabel(pendingSignRequest.estimatedFeeLamports ?? null)}
+              </span>
+            </div>
+            {(pendingSignRequest.requiredSignerCount || pendingSignRequest.writableAccountCount) && (
+              <div className="grid grid-cols-2 gap-2 pt-1">
+                <div className="rounded-lg bg-muted/40 px-2 py-2">
+                  <div className="text-[10px] text-muted-foreground">Required signers</div>
+                  <div className="text-xs font-semibold">
+                    {pendingSignRequest.requiredSignerCount ?? pendingSignRequest.signerIds.length}
+                  </div>
+                </div>
+                <div className="rounded-lg bg-muted/40 px-2 py-2">
+                  <div className="text-[10px] text-muted-foreground">Writable accounts</div>
+                  <div className="text-xs font-semibold">
+                    {pendingSignRequest.writableAccountCount ?? "Unknown"}
+                  </div>
+                </div>
+              </div>
+            )}
+            {pendingSignRequest.computeUnitsConsumed !== undefined && pendingSignRequest.computeUnitsConsumed !== null && (
+              <div className="rounded-lg border border-primary/20 bg-primary/5 px-2 py-2 text-[10px] text-muted-foreground">
+                Simulation consumed about {pendingSignRequest.computeUnitsConsumed.toLocaleString()} compute units.
+              </div>
+            )}
           </CardContent>
         </Card>
 
@@ -1184,18 +1383,59 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
             </div>
             <div className="flex justify-between">
               <span className="text-xs text-muted-foreground">Network fee</span>
-              <span className="text-xs text-muted-foreground">~0.000005 SOL</span>
+              <span className="text-xs text-muted-foreground">
+                {reviewAnalysis.status === "loading"
+                  ? "Estimating..."
+                  : reviewAnalysis.status === "ready"
+                    ? formatFeeLabel(reviewAnalysis.data.estimatedFeeLamports)
+                    : reviewAnalysis.status === "error"
+                      ? "Unavailable"
+                      : "Pending"}
+              </span>
             </div>
             <div className="border-t border-border pt-2 flex justify-between">
               <span className="text-xs font-medium">Total</span>
-              <span className="text-sm font-bold">
-                {selectedToken === "SOL"
-                  ? `${(parsedAmount + 0.000005).toFixed(6)} SOL`
-                  : `${parsedAmount} ${selectedToken} + ~0.000005 SOL`}
-              </span>
+              <span className="text-sm font-bold">{reviewTotalLabel}</span>
             </div>
           </CardContent>
         </Card>
+
+        {reviewAnalysis.status === "ready" && (
+          <Card>
+            <CardContent className="pt-4 grid grid-cols-2 gap-3 text-xs">
+              <div>
+                <div className="text-muted-foreground">Required signers</div>
+                <div className="font-semibold">{reviewAnalysis.data.requiredSignerCount}</div>
+              </div>
+              <div>
+                <div className="text-muted-foreground">Writable accounts</div>
+                <div className="font-semibold">{reviewAnalysis.data.writableAccountCount}</div>
+              </div>
+              <div>
+                <div className="text-muted-foreground">Instructions</div>
+                <div className="font-semibold">{reviewAnalysis.data.instructionCount}</div>
+              </div>
+              <div>
+                <div className="text-muted-foreground">Compute units</div>
+                <div className="font-semibold">
+                  {reviewAnalysis.data.computeUnitsConsumed?.toLocaleString() ?? "Unavailable"}
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {reviewAnalysis.status === "error" && (
+          <div className="rounded-xl border border-primary/20 bg-primary/5 px-3 py-3 text-xs text-muted-foreground">
+            Preview warning: {reviewAnalysis.error}
+          </div>
+        )}
+
+        {reviewAnalysis.status === "ready" && reviewAnalysis.data.simulationError && (
+          <div className="rounded-xl border border-primary/20 bg-primary/5 px-3 py-3 text-xs text-muted-foreground">
+            Simulation warning: {reviewAnalysis.data.simulationError}
+          </div>
+        )}
 
         <p className="text-[10px] text-muted-foreground text-center">
           Signing via FROST {useWalletStore.getState().vaultState?.threshold ?? 2}-of-{useWalletStore.getState().vaultState?.participants ?? 3} threshold ceremony

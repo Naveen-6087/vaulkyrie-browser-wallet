@@ -76,6 +76,10 @@ export interface SignRequestPayload {
   createdAt: number;
   purpose?: "send" | "bootstrap";
   summary?: string;
+  estimatedFeeLamports?: number | null;
+  computeUnitsConsumed?: number | null;
+  requiredSignerCount?: number;
+  writableAccountCount?: number;
 }
 
 // ── Participant state ────────────────────────────────────────────────

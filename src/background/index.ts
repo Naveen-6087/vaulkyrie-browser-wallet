@@ -35,6 +35,7 @@ import {
   buildMessageApprovalPreview,
   buildTransactionApprovalPreview,
 } from "@/extension/approvalPreview";
+import { analyzeSerializedTransaction } from "@/services/transactionAnalysis";
 
 chrome.runtime.onInstalled.addListener(() => {
   console.log("[Vaulkyrie] Extension installed");
@@ -343,7 +344,16 @@ async function handleRpcRequest(
         if (!params.serializedTransaction || !params.kind) {
           throw new Error("Transaction payload is incomplete.");
         }
-        const preview = buildTransactionApprovalPreview(params, providerState.publicKey);
+        const analysis = await analyzeSerializedTransaction(
+          providerState.network,
+          params,
+          providerState.publicKey,
+        );
+        const preview = buildTransactionApprovalPreview(
+          params,
+          providerState.publicKey,
+          analysis,
+        );
         if (!preview.walletSignerRequired) {
           throw new Error("Vaulkyrie rejected this transaction because the active vault is not a required signer.");
         }

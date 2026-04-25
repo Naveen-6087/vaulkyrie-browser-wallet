@@ -1,5 +1,6 @@
 import { Buffer } from "buffer";
 import {
+  LAMPORTS_PER_SOL,
   PublicKey,
   Transaction,
   VersionedTransaction,
@@ -13,6 +14,7 @@ import type {
   SignMessageParams,
   SignTransactionParams,
 } from "@/extension/messages";
+import type { TransactionAnalysis } from "@/services/transactionAnalysis";
 
 function pushField(
   fields: ExtensionApprovalDetailField[],
@@ -59,6 +61,33 @@ function detailPackage(summary: string, details: ExtensionApprovalDetails): {
   return { summary, details };
 }
 
+function feeLabel(lamports: number | null): string | null {
+  if (lamports === null) return null;
+  return `${(lamports / LAMPORTS_PER_SOL).toFixed(6)} SOL`;
+}
+
+function appendAnalysisDetails(
+  fields: ExtensionApprovalDetailField[],
+  warnings: string[],
+  analysis?: TransactionAnalysis,
+) {
+  if (!analysis) return;
+
+  pushField(fields, "Estimated fee", feeLabel(analysis.estimatedFeeLamports), {
+    monospace: true,
+  });
+  pushField(fields, "Writable accounts", `${analysis.writableAccountCount}`, {
+    monospace: true,
+  });
+  pushField(fields, "Compute units", analysis.computeUnitsConsumed?.toLocaleString(), {
+    monospace: true,
+  });
+
+  if (analysis.simulationError) {
+    warnings.push(`Simulation warning: ${analysis.simulationError}`);
+  }
+}
+
 export function buildMessageApprovalPreview(params: SignMessageParams): {
   summary: string;
   details: ExtensionApprovalDetails;
@@ -96,6 +125,7 @@ export function buildMessageApprovalPreview(params: SignMessageParams): {
 function legacyTransactionDetails(
   transaction: Transaction,
   walletPublicKey: string,
+  analysis?: TransactionAnalysis,
 ): {
   fields: ExtensionApprovalDetailField[];
   warnings: string[];
@@ -119,6 +149,7 @@ function legacyTransactionDetails(
   pushField(fields, "Programs", describePrograms(programs), { monospace: true });
   pushField(fields, "Recent blockhash", transaction.recentBlockhash ?? null, { monospace: true });
   pushField(fields, "Message bytes", `${transaction.serializeMessage().length}`, { monospace: true });
+  appendAnalysisDetails(fields, warnings, analysis);
 
   if (!walletSignerRequired) {
     warnings.push("The active vault is not listed as a required signer on this transaction.");
@@ -157,6 +188,7 @@ function versionedProgramIds(
 function versionedTransactionDetails(
   transaction: VersionedTransaction,
   walletPublicKey: string,
+  analysis?: TransactionAnalysis,
 ): {
   fields: ExtensionApprovalDetailField[];
   warnings: string[];
@@ -183,6 +215,7 @@ function versionedTransactionDetails(
   pushField(fields, "Programs", describePrograms(programs), { monospace: true });
   pushField(fields, "Recent blockhash", transaction.message.recentBlockhash, { monospace: true });
   pushField(fields, "Message bytes", `${transaction.message.serialize().length}`, { monospace: true });
+  appendAnalysisDetails(fields, warnings, analysis);
 
   if (!walletSignerRequired) {
     warnings.push("The active vault is not listed as a required signer on this versioned transaction.");
@@ -211,6 +244,7 @@ function versionedTransactionDetails(
 export function buildTransactionApprovalPreview(
   params: SignTransactionParams,
   walletPublicKey: string,
+  analysis?: TransactionAnalysis,
 ): {
   summary: string;
   details: ExtensionApprovalDetails;
@@ -220,7 +254,11 @@ export function buildTransactionApprovalPreview(
 
   if (params.kind === "versioned") {
     const transaction = VersionedTransaction.deserialize(rawBytes);
-    const { fields, warnings, instructionCount, walletSignerRequired } = versionedTransactionDetails(transaction, walletPublicKey);
+    const { fields, warnings, instructionCount, walletSignerRequired } = versionedTransactionDetails(
+      transaction,
+      walletPublicKey,
+      analysis,
+    );
     return {
       summary: `This site wants a versioned transaction signed by your vault (${instructionCount} instruction${instructionCount === 1 ? "" : "s"}).`,
       details: { title: "Transaction review", fields, warnings },
@@ -229,7 +267,11 @@ export function buildTransactionApprovalPreview(
   }
 
   const transaction = Transaction.from(rawBytes);
-  const { fields, warnings, instructionCount, walletSignerRequired } = legacyTransactionDetails(transaction, walletPublicKey);
+  const { fields, warnings, instructionCount, walletSignerRequired } = legacyTransactionDetails(
+    transaction,
+    walletPublicKey,
+    analysis,
+  );
   return {
     summary: `This site wants a legacy transaction signed by your vault (${instructionCount} instruction${instructionCount === 1 ? "" : "s"}).`,
     details: { title: "Transaction review", fields, warnings },
