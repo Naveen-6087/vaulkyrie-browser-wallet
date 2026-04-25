@@ -10,6 +10,11 @@ import type { NetworkId, WalletView } from "@/types";
 import { NETWORKS } from "@/lib/constants";
 import { probeRelayAvailability, validateRelayUrl } from "@/services/relay/relayAdapter";
 import { exportEncryptedWalletBackup } from "@/lib/walletBackup";
+import {
+  listApprovedOrigins,
+  revokeOrigin,
+  type ApprovedOriginRecord,
+} from "@/extension/approvalStorage";
 
 interface SettingsViewProps {
   network: NetworkId;
@@ -48,6 +53,7 @@ function SettingRow({ icon: Icon, label, value, badge, onClick }: SettingRowProp
 export function SettingsView({ network, onNavigate }: SettingsViewProps) {
   const [showAccounts, setShowAccounts] = useState(false);
   const [showSecurity, setShowSecurity] = useState(false);
+  const [showConnectedSites, setShowConnectedSites] = useState(false);
   const [relayDraft, setRelayDraft] = useState("");
   const [relayStatus, setRelayStatus] = useState<"checking" | "reachable" | "unreachable">("checking");
   const [relayError, setRelayError] = useState("");
@@ -56,6 +62,10 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
   const [backupStatus, setBackupStatus] = useState("");
   const [backupError, setBackupError] = useState("");
   const [isExportingBackup, setIsExportingBackup] = useState(false);
+  const [approvedOrigins, setApprovedOrigins] = useState<ApprovedOriginRecord[]>([]);
+  const [sitesLoading, setSitesLoading] = useState(false);
+  const [sitesError, setSitesError] = useState("");
+  const [revokingSiteKey, setRevokingSiteKey] = useState<string | null>(null);
   const {
     accounts,
     activeAccount,
@@ -84,6 +94,33 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
   useEffect(() => {
     setRelayDraft(relayUrl);
   }, [relayUrl]);
+
+  useEffect(() => {
+    if (!showConnectedSites) return;
+
+    let cancelled = false;
+    setSitesLoading(true);
+    setSitesError("");
+
+    void listApprovedOrigins(activeAccount?.publicKey ?? null)
+      .then((records) => {
+        if (cancelled) return;
+        setApprovedOrigins(records);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setSitesError(error instanceof Error ? error.message : "Failed to load connected sites.");
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setSitesLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeAccount?.publicKey, showConnectedSites]);
 
   useEffect(() => {
     const validation = validateRelayUrl(relayUrl);
@@ -146,6 +183,31 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
     }
   };
 
+  const handleRevokeSite = async (site: ApprovedOriginRecord) => {
+    const siteKey = `${site.origin}:${site.accountPublicKey ?? "all"}`;
+    setRevokingSiteKey(siteKey);
+    setSitesError("");
+
+    try {
+      await revokeOrigin(site.origin, site.accountPublicKey);
+      setApprovedOrigins((current) =>
+        current.filter(
+          (record) =>
+            !(record.origin === site.origin && record.accountPublicKey === site.accountPublicKey),
+        ),
+      );
+    } catch (error) {
+      setSitesError(error instanceof Error ? error.message : "Failed to revoke the selected site.");
+    } finally {
+      setRevokingSiteKey(null);
+    }
+  };
+
+  const formatSiteTimestamp = (value: number) => {
+    if (!value) return "Unknown";
+    return new Date(value).toLocaleString();
+  };
+
   return (
     <div className="flex flex-col gap-4 p-4 flex-1">
       <div className="flex items-center gap-2 mb-2">
@@ -191,6 +253,13 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
           label="DApp Approvals"
           value="Review extension connect/sign requests"
           onClick={() => onNavigate("approval")}
+        />
+        <SettingRow
+          icon={Globe}
+          label="Connected Sites"
+          value={activeAccount ? "Manage approved extension origins" : "Unlock a vault to view site access"}
+          badge={`${approvedOrigins.length}`}
+          onClick={() => setShowConnectedSites(!showConnectedSites)}
         />
         <SettingRow
           icon={Globe}
@@ -280,6 +349,77 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
                 Status: {activeCooldown ? "Cooldown active" : "No active cooldown"}
               </p>
             </div>
+          </div>
+        </Card>
+      )}
+
+      {showConnectedSites && (
+        <Card className="overflow-hidden">
+          <div className="border-b border-border px-4 py-3">
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+              Connected sites
+            </p>
+          </div>
+          <div className="space-y-3 p-4">
+            <p className="text-xs text-muted-foreground">
+              Review which websites can connect to this Vaulkyrie extension wallet and revoke access per origin.
+            </p>
+
+            {sitesError && (
+              <p className="text-xs text-red-400">{sitesError}</p>
+            )}
+
+            {sitesLoading ? (
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <Bell className="h-3.5 w-3.5 animate-pulse" />
+                Loading approved origins…
+              </div>
+            ) : approvedOrigins.length === 0 ? (
+              <div className="rounded-xl border border-border bg-muted/20 px-3 py-4 text-xs text-muted-foreground">
+                No connected sites have been approved for {activeAccount ? shortenAddress(activeAccount.publicKey) : "this wallet"} yet.
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {approvedOrigins.map((site) => {
+                  const siteKey = `${site.origin}:${site.accountPublicKey ?? "all"}`;
+                  const isRevoking = revokingSiteKey === siteKey;
+
+                  return (
+                    <div
+                      key={siteKey}
+                      className="rounded-xl border border-border bg-card/60 px-3 py-3"
+                    >
+                      <div className="flex items-start gap-3">
+                        <div className="mt-0.5 flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10">
+                          <Globe className="h-4 w-4 text-primary" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-medium break-all">{site.origin}</p>
+                          <p className="mt-1 text-[11px] text-muted-foreground">
+                            Approved: {formatSiteTimestamp(site.approvedAt)}
+                          </p>
+                          <p className="text-[11px] text-muted-foreground">
+                            Last used: {formatSiteTimestamp(site.lastUsedAt)}
+                          </p>
+                          <p className="mt-1 text-[11px] text-muted-foreground font-mono">
+                            Account: {site.accountPublicKey ? shortenAddress(site.accountPublicKey) : "Any active vault"}
+                          </p>
+                        </div>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="shrink-0"
+                          onClick={() => void handleRevokeSite(site)}
+                          disabled={isRevoking}
+                        >
+                          {isRevoking ? "Revoking..." : "Revoke"}
+                        </Button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </Card>
       )}

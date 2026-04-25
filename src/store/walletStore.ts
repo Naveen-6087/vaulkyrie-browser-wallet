@@ -222,7 +222,16 @@ export const useWalletStore = create<WalletState>()(
       setOnboarded: (onboarded) => set({ isOnboarded: onboarded }),
       setActiveAccount: (account) => set({ activeAccount: account }),
       addAccount: (account) =>
-        set((state) => ({ accounts: [...state.accounts, account] })),
+        set((state) => {
+          const existingIndex = state.accounts.findIndex((candidate) => candidate.publicKey === account.publicKey);
+          if (existingIndex === -1) {
+            return { accounts: [...state.accounts, account] };
+          }
+
+          const accounts = [...state.accounts];
+          accounts[existingIndex] = { ...accounts[existingIndex], ...account };
+          return { accounts };
+        }),
       removeAccount: (publicKey) =>
         set((state) => {
           const accounts = state.accounts.filter((a) => a.publicKey !== publicKey);

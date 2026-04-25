@@ -304,6 +304,9 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
         });
 
         if (!prepared.transaction) {
+          if (relay && dkg.isMultiDevice === true) {
+            relay.broadcastSignComplete("already-initialized", true);
+          }
           return { signature: null, generatedXmssTree: prepared.generatedXmssTree };
         }
 

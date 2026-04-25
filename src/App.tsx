@@ -41,6 +41,7 @@ function App() {
     storeVaultConfig,
     setNetwork,
     setLocked: setStoreLocked,
+    refreshAll,
   } = useWalletStore();
 
   const [view, setView] = useState<WalletView>("onboarding");
@@ -190,6 +191,7 @@ function App() {
     setOnboarded(true);
     setStoreLocked(false);
     setView("dashboard");
+    void refreshAll();
   };
 
   const renderView = () => {
