@@ -3,11 +3,13 @@ import { useEffect, useState } from "react";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { useWalletStore } from "@/store/walletStore";
 import { shortenAddress } from "@/lib/utils";
 import type { NetworkId, WalletView } from "@/types";
 import { NETWORKS } from "@/lib/constants";
 import { probeRelayAvailability, validateRelayUrl } from "@/services/relay/relayAdapter";
+import { exportEncryptedWalletBackup } from "@/lib/walletBackup";
 
 interface SettingsViewProps {
   network: NetworkId;
@@ -49,6 +51,11 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
   const [relayDraft, setRelayDraft] = useState("");
   const [relayStatus, setRelayStatus] = useState<"checking" | "reachable" | "unreachable">("checking");
   const [relayError, setRelayError] = useState("");
+  const [backupPassword, setBackupPassword] = useState("");
+  const [backupConfirm, setBackupConfirm] = useState("");
+  const [backupStatus, setBackupStatus] = useState("");
+  const [backupError, setBackupError] = useState("");
+  const [isExportingBackup, setIsExportingBackup] = useState(false);
   const {
     accounts,
     activeAccount,
@@ -100,6 +107,44 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
       cancelled = true;
     };
   }, [relayUrl]);
+
+  const handleExportBackup = async () => {
+    if (accounts.length === 0) {
+      setBackupError("Create or restore a vault before exporting a backup.");
+      return;
+    }
+    if (backupPassword.length < 10) {
+      setBackupError("Backup password must be at least 10 characters.");
+      return;
+    }
+    if (backupPassword !== backupConfirm) {
+      setBackupError("Backup passwords do not match.");
+      return;
+    }
+
+    setIsExportingBackup(true);
+    setBackupError("");
+    setBackupStatus("");
+
+    try {
+      const backup = await exportEncryptedWalletBackup(backupPassword);
+      const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `vaulkyrie-backup-${new Date(backup.exportedAt).toISOString().slice(0, 10)}.json`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+
+      setBackupStatus("Encrypted backup downloaded. Import it from the onboarding screen on another device.");
+      setBackupPassword("");
+      setBackupConfirm("");
+    } catch (error) {
+      setBackupError(error instanceof Error ? error.message : "Failed to export encrypted backup.");
+    } finally {
+      setIsExportingBackup(false);
+    }
+  };
 
   return (
     <div className="flex flex-col gap-4 p-4 flex-1">
@@ -293,6 +338,50 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
           >
             Save relay URL
           </Button>
+        </div>
+      </Card>
+
+      <Card className="overflow-hidden">
+        <div className="border-b border-border px-4 py-3">
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+            Backup & restore
+          </p>
+        </div>
+        <div className="space-y-3 p-4">
+          <p className="text-xs text-muted-foreground">
+            Export an encrypted local backup of this browser wallet. You can restore it later from the onboarding screen using <span className="font-medium text-foreground">Import Existing Vault</span>.
+          </p>
+          <Input
+            type="password"
+            value={backupPassword}
+            onChange={(event) => {
+              setBackupPassword(event.target.value);
+              setBackupError("");
+            }}
+            placeholder="Backup password"
+          />
+          <Input
+            type="password"
+            value={backupConfirm}
+            onChange={(event) => {
+              setBackupConfirm(event.target.value);
+              setBackupError("");
+            }}
+            placeholder="Confirm backup password"
+          />
+          {backupError && <p className="text-xs text-red-400">{backupError}</p>}
+          {backupStatus && <p className="text-xs text-emerald-400">{backupStatus}</p>}
+          <Button
+            variant="outline"
+            className="w-full"
+            onClick={handleExportBackup}
+            disabled={isExportingBackup}
+          >
+            {isExportingBackup ? "Exporting encrypted backup…" : "Download encrypted backup"}
+          </Button>
+          <p className="text-[11px] text-muted-foreground">
+            Onchain recovery and authority-migration flows are still separate from this local restore path.
+          </p>
         </div>
       </Card>
 

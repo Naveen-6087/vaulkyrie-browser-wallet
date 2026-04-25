@@ -14,6 +14,7 @@ import { AddressBook } from "@/components/wallet/AddressBook";
 import { SettingsView } from "@/components/settings/SettingsView";
 import { ApprovalCenter } from "@/components/extension/ApprovalCenter";
 import { OnboardingWelcome } from "@/components/onboarding/OnboardingWelcome";
+import { RestoreVaultStep } from "@/components/onboarding/RestoreVaultStep";
 import { VaultConfigStep } from "@/components/onboarding/VaultConfigStep";
 import { LockScreen } from "@/components/onboarding/LockScreen";
 import { DKGCeremony } from "@/components/ceremony/DKGCeremony";
@@ -207,11 +208,21 @@ function App() {
         return (
           <OnboardingWelcome
             onCreateVault={() => setView("vault-config")}
-            onImportVault={() => {
-              setOnboarded(true);
-              setView("dashboard");
-            }}
+            onImportVault={() => setView("import-vault")}
             onJoinCeremony={() => setView("join-ceremony")}
+          />
+        );
+
+      case "import-vault":
+        return (
+          <RestoreVaultStep
+            onBack={() => setView("onboarding")}
+            onRestored={() => {
+              setOnboarded(true);
+              setIsLocked(true);
+              setStoreLocked(true);
+              setView("lock");
+            }}
           />
         );
 

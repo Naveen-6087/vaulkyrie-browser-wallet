@@ -88,6 +88,7 @@ export type WalletView =
   | "quantum-vault"
   | "onboarding"
   | "vault-config"
+  | "import-vault"
   | "dkg-ceremony"
   | "join-ceremony"
   | "contacts"

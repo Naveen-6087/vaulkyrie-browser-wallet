@@ -53,40 +53,32 @@ interface SecurityPreferences {
   lockOnHide: boolean;
 }
 
-interface WalletState {
-  // Auth
-  isLocked: boolean;
+export interface PersistedWalletState {
   isOnboarded: boolean;
-  hasHydrated: boolean;
-
-  // Password (PBKDF2 hash + salt, hex-encoded)
+  isLocked: boolean;
+  accounts: WalletAccount[];
+  activeAccount: WalletAccount | null;
+  network: NetworkId;
+  relayUrl: string;
+  dkgResults: Record<string, StoredDkgResult>;
+  vaultConfigs: Record<string, VaultConfigPersist>;
   passwordHash: string | null;
   passwordSalt: string | null;
   failedUnlockAttempts: number;
   lastUnlockFailureAt: number | null;
   unlockBlockedUntil: number | null;
   securityPreferences: SecurityPreferences;
-
-  // Active account
-  activeAccount: WalletAccount | null;
-  accounts: WalletAccount[];
-
-  // Per-vault DKG keys (keyed by publicKey)
-  dkgResults: Record<string, StoredDkgResult>;
-
-  // Vault configs (keyed by publicKey)
-  vaultConfigs: Record<string, VaultConfigPersist>;
-
-  // Address book
   contacts: Contact[];
-
-  // XMSS tree state (serialized per vault, keyed by publicKey)
   xmssTrees: Record<string, string>;
   quantumVaultKeys: Record<string, string>;
-
-  // Local policy profiles stored per vault
   policyProfiles: Record<string, PolicyProfile[]>;
+}
 
+interface WalletState extends PersistedWalletState {
+  // Auth
+  hasHydrated: boolean;
+
+  // Password (PBKDF2 hash + salt, hex-encoded)
   // In-memory handoff from SendView to PolicyView
   pendingPolicyRequest: PendingPolicyRequest | null;
 
@@ -166,6 +158,29 @@ interface WalletState {
   refreshCollectibles: () => Promise<void>;
   refreshVaultState: () => Promise<void>;
   refreshAll: () => Promise<void>;
+}
+
+export function pickPersistedWalletState(state: WalletState): PersistedWalletState {
+  return {
+    isOnboarded: state.isOnboarded,
+    isLocked: state.isLocked,
+    accounts: state.accounts,
+    activeAccount: state.activeAccount,
+    network: state.network,
+    relayUrl: state.relayUrl,
+    dkgResults: state.dkgResults,
+    vaultConfigs: state.vaultConfigs,
+    passwordHash: state.passwordHash,
+    passwordSalt: state.passwordSalt,
+    failedUnlockAttempts: state.failedUnlockAttempts,
+    lastUnlockFailureAt: state.lastUnlockFailureAt,
+    unlockBlockedUntil: state.unlockBlockedUntil,
+    securityPreferences: state.securityPreferences,
+    contacts: state.contacts,
+    xmssTrees: state.xmssTrees,
+    quantumVaultKeys: state.quantumVaultKeys,
+    policyProfiles: state.policyProfiles,
+  };
 }
 
 export const useWalletStore = create<WalletState>()(
@@ -487,26 +502,7 @@ export const useWalletStore = create<WalletState>()(
     {
       name: "vaulkyrie-wallet-storage",
       storage: walletPersistStorage,
-      partialize: (state) => ({
-        isOnboarded: state.isOnboarded,
-        isLocked: state.isLocked,
-        accounts: state.accounts,
-        activeAccount: state.activeAccount,
-        network: state.network,
-        relayUrl: state.relayUrl,
-        dkgResults: state.dkgResults,
-        vaultConfigs: state.vaultConfigs,
-        passwordHash: state.passwordHash,
-        passwordSalt: state.passwordSalt,
-        failedUnlockAttempts: state.failedUnlockAttempts,
-        lastUnlockFailureAt: state.lastUnlockFailureAt,
-        unlockBlockedUntil: state.unlockBlockedUntil,
-        securityPreferences: state.securityPreferences,
-        contacts: state.contacts,
-        xmssTrees: state.xmssTrees,
-        quantumVaultKeys: state.quantumVaultKeys,
-        policyProfiles: state.policyProfiles,
-      }),
+      partialize: (state) => pickPersistedWalletState(state),
       onRehydrateStorage: (state) => {
         return () => {
           state.setHasHydrated(true);
