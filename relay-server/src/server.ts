@@ -25,6 +25,9 @@ const SESSION_TTL_MS = 10 * 60 * 1000; // 10 minutes
 const CLEANUP_INTERVAL_MS = 30 * 1000;
 const MAX_SESSIONS = 100;
 const MAX_PARTICIPANTS_PER_SESSION = 10;
+const MEMBER_STALE_MS = 45 * 1000;
+const SESSION_AUTH_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const SESSION_AUTH_LENGTH = 8;
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -39,11 +42,18 @@ interface RelayMessage {
 
 interface Session {
   code: string;
+  authToken: string;
   createdAt: number;
   lastActivity: number;
   threshold: number;
   maxParticipants: number;
-  members: Map<string, { ws: WebSocket; participantId: number; deviceName: string }>;
+  members: Map<string, {
+    ws: WebSocket;
+    participantId: number;
+    deviceName: string;
+    deviceType: "browser" | "mobile" | "desktop";
+    lastSeen: number;
+  }>;
 }
 
 // ── State ────────────────────────────────────────────────────────────
@@ -63,6 +73,14 @@ function generateCode(): string {
     }
   } while (sessions.has(code));
   return code;
+}
+
+function generateAuthToken(): string {
+  let token = "";
+  for (let index = 0; index < SESSION_AUTH_LENGTH; index += 1) {
+    token += SESSION_AUTH_CHARS[Math.floor(Math.random() * SESSION_AUTH_CHARS.length)];
+  }
+  return token;
 }
 
 // ── HTTP server (health check + upgrade) ─────────────────────────────
@@ -103,7 +121,13 @@ wss.on("connection", (ws) => {
           return;
         }
 
-        const sessionPayload = msg.payload as { threshold?: number; maxParticipants?: number; deviceName?: string; requestedCode?: string } | null;
+        const sessionPayload = msg.payload as {
+          threshold?: number;
+          maxParticipants?: number;
+          deviceName?: string;
+          deviceType?: "browser" | "mobile" | "desktop";
+          requestedCode?: string;
+        } | null;
 
         // Accept client-specified code if available and not already in use
         let code: string;
@@ -115,10 +139,11 @@ wss.on("connection", (ws) => {
 
         const session: Session = {
           code,
+          authToken: generateAuthToken(),
           createdAt: Date.now(),
           lastActivity: Date.now(),
           threshold: sessionPayload?.threshold ?? 2,
-          maxParticipants: sessionPayload?.maxParticipants ?? 3,
+          maxParticipants: Math.min(sessionPayload?.maxParticipants ?? 3, MAX_PARTICIPANTS_PER_SESSION),
           members: new Map(),
         };
 
@@ -131,6 +156,8 @@ wss.on("connection", (ws) => {
           ws,
           participantId: requestedParticipantId,
           deviceName: (sessionPayload?.deviceName as string) ?? "Unknown",
+          deviceType: sessionPayload?.deviceType ?? "browser",
+          lastSeen: Date.now(),
         });
 
         sessions.set(code, session);
@@ -145,8 +172,10 @@ wss.on("connection", (ws) => {
           timestamp: Date.now(),
           payload: {
             code,
+            authToken: session.authToken,
             threshold: session.threshold,
             maxParticipants: session.maxParticipants,
+            expiresAt: session.lastActivity + SESSION_TTL_MS,
           },
         }));
 
@@ -155,7 +184,12 @@ wss.on("connection", (ws) => {
       }
 
       case "join": {
-        const joinPayload = msg.payload as { code?: string; deviceName?: string } | null;
+        const joinPayload = msg.payload as {
+          code?: string;
+          authToken?: string;
+          deviceName?: string;
+          deviceType?: "browser" | "mobile" | "desktop";
+        } | null;
         const code = joinPayload?.code ?? msg.sessionId;
         const session = sessions.get(code);
 
@@ -168,7 +202,16 @@ wss.on("connection", (ws) => {
           return;
         }
 
-        if (session.members.size >= MAX_PARTICIPANTS_PER_SESSION) {
+        if (!joinPayload?.authToken || joinPayload.authToken !== session.authToken) {
+          ws.send(JSON.stringify({
+            type: "error",
+            senderId: "server",
+            payload: "Invalid or expired session invite.",
+          }));
+          return;
+        }
+
+        if (session.members.size >= Math.min(MAX_PARTICIPANTS_PER_SESSION, session.maxParticipants)) {
           ws.send(JSON.stringify({
             type: "error",
             senderId: "server",
@@ -196,6 +239,8 @@ wss.on("connection", (ws) => {
           ws,
           participantId: assignedParticipantId,
           deviceName: joinPayload?.deviceName ?? "Unknown",
+          deviceType: joinPayload?.deviceType ?? "browser",
+          lastSeen: Date.now(),
         });
         session.lastActivity = Date.now();
         currentSessionCode = code;
@@ -206,6 +251,7 @@ wss.on("connection", (ws) => {
           senderId: id,
           participantId: m.participantId,
           deviceName: m.deviceName,
+          deviceType: m.deviceType,
         }));
 
         ws.send(JSON.stringify({
@@ -215,12 +261,13 @@ wss.on("connection", (ws) => {
           participantId: 0,
           timestamp: Date.now(),
           payload: {
-            participantId: assignedParticipantId,
-            participants: participantList,
-            threshold: session.threshold,
-            maxParticipants: session.maxParticipants,
-          },
-        }));
+          participantId: assignedParticipantId,
+          participants: participantList,
+          threshold: session.threshold,
+          maxParticipants: session.maxParticipants,
+          expiresAt: session.lastActivity + SESSION_TTL_MS,
+        },
+      }));
 
         // Notify all other members
         broadcastToOthers(session, msg.senderId, {
@@ -233,6 +280,7 @@ wss.on("connection", (ws) => {
             senderId: msg.senderId,
             participantId: assignedParticipantId,
             deviceName: joinPayload?.deviceName ?? "Unknown",
+            deviceType: joinPayload?.deviceType ?? "browser",
           },
         });
 
@@ -244,20 +292,8 @@ wss.on("connection", (ws) => {
         if (currentSessionCode && currentSenderId) {
           const session = sessions.get(currentSessionCode);
           if (session) {
-            session.members.delete(currentSenderId);
-            broadcastToOthers(session, currentSenderId, {
-              type: "participant-left",
-              sessionId: currentSessionCode,
-              senderId: currentSenderId,
-              participantId: msg.participantId,
-              timestamp: Date.now(),
-              payload: { senderId: currentSenderId },
-            });
-
-            if (session.members.size === 0) {
-              sessions.delete(currentSessionCode);
-              console.log(`[session] ${currentSessionCode}: closed (empty)`);
-            }
+            const participantId = session.members.get(currentSenderId)?.participantId ?? msg.participantId;
+            removeMemberFromSession(session, currentSessionCode, currentSenderId, participantId);
           }
           currentSessionCode = null;
           currentSenderId = null;
@@ -267,6 +303,14 @@ wss.on("connection", (ws) => {
 
       // Heartbeat — always respond, even without a session
       case "Ping": {
+        if (currentSessionCode && currentSenderId) {
+          const session = sessions.get(currentSessionCode);
+          const member = session?.members.get(currentSenderId);
+          if (session && member) {
+            session.lastActivity = Date.now();
+            member.lastSeen = Date.now();
+          }
+        }
         ws.send(JSON.stringify({ type: "Pong", sessionId: currentSessionCode ?? "", senderId: "server", participantId: 0, timestamp: Date.now(), payload: null }));
         break;
       }
@@ -282,7 +326,20 @@ wss.on("connection", (ws) => {
         if (!session) return;
 
         session.lastActivity = Date.now();
-        broadcastToOthers(session, msg.senderId, msg);
+        const member = currentSenderId ? session.members.get(currentSenderId) : null;
+        if (!member || !currentSenderId) {
+          ws.send(JSON.stringify({ type: "error", payload: "Session membership is no longer valid" }));
+          return;
+        }
+
+        member.lastSeen = Date.now();
+        broadcastToOthers(session, currentSenderId, {
+          ...msg,
+          sessionId: currentSessionCode,
+          senderId: currentSenderId,
+          participantId: member.participantId,
+          timestamp: Date.now(),
+        });
         break;
       }
     }
@@ -292,20 +349,8 @@ wss.on("connection", (ws) => {
     if (currentSessionCode && currentSenderId) {
       const session = sessions.get(currentSessionCode);
       if (session) {
-        session.members.delete(currentSenderId);
-        broadcastToOthers(session, currentSenderId, {
-          type: "participant-left",
-          sessionId: currentSessionCode,
-          senderId: currentSenderId,
-          participantId: 0,
-          timestamp: Date.now(),
-          payload: { senderId: currentSenderId },
-        });
-
-        if (session.members.size === 0) {
-          sessions.delete(currentSessionCode);
-          console.log(`[session] ${currentSessionCode}: closed (empty)`);
-        }
+        const participantId = session.members.get(currentSenderId)?.participantId ?? 0;
+        removeMemberFromSession(session, currentSessionCode, currentSenderId, participantId);
       }
     }
   });
@@ -326,11 +371,53 @@ function broadcastToOthers(session: Session, excludeSenderId: string, msg: unkno
   }
 }
 
+function removeMemberFromSession(
+  session: Session,
+  sessionCode: string,
+  senderId: string,
+  participantId: number,
+): void {
+  if (!session.members.has(senderId)) {
+    return;
+  }
+
+  session.members.delete(senderId);
+  session.lastActivity = Date.now();
+  broadcastToOthers(session, senderId, {
+    type: "participant-left",
+    sessionId: sessionCode,
+    senderId,
+    participantId,
+    timestamp: Date.now(),
+    payload: { senderId },
+  });
+
+  if (session.members.size === 0) {
+    sessions.delete(sessionCode);
+    console.log(`[session] ${sessionCode}: closed (empty)`);
+  }
+}
+
 // ── Stale session cleanup ────────────────────────────────────────────
 
 setInterval(() => {
   const now = Date.now();
   for (const [code, session] of sessions) {
+    for (const [senderId, member] of session.members) {
+      const stale =
+        member.ws.readyState !== WebSocket.OPEN || now - member.lastSeen > MEMBER_STALE_MS;
+      if (stale) {
+        if (member.ws.readyState === WebSocket.OPEN) {
+          member.ws.close(1000, "Member stale");
+        }
+        removeMemberFromSession(session, code, senderId, member.participantId);
+      }
+    }
+
+    if (!sessions.has(code)) {
+      continue;
+    }
+
     if (now - session.lastActivity > SESSION_TTL_MS) {
       // Notify remaining members
       for (const [, member] of session.members) {

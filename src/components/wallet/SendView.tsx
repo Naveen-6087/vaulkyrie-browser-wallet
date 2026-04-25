@@ -6,8 +6,15 @@ import { Input } from "@/components/ui/input";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { signLocal, hexToBytes } from "@/services/frost/frostService";
 import { SigningOrchestrator } from "@/services/frost/signingOrchestrator";
-import { createRelay, generateSessionCode, probeRelayAvailability, type RelayAdapter } from "@/services/relay/relayAdapter";
+import {
+  createRelay,
+  generateSessionCode,
+  parseSessionInvite,
+  probeRelayAvailability,
+  type RelayAdapter,
+} from "@/services/relay/relayAdapter";
 import type { SignRequestPayload } from "@/services/relay/channelRelay";
+import { createRelaySessionMetadata } from "@/services/relay/sessionInvite";
 import { useWalletStore } from "@/store/walletStore";
 import { createConnection, SOL_ICON } from "@/services/solanaRpc";
 import { buildSplTransferTransaction } from "@/services/splToken";
@@ -214,6 +221,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
   const [txSignature, setTxSignature] = useState("");
   const [orchestrationAddress, setOrchestrationAddress] = useState("");
   const [signingSessionCode, setSigningSessionCode] = useState("");
+  const [relaySessionInfo, setRelaySessionInfo] = useState(() => createRelaySessionMetadata("------"));
   const [joinSessionCode, setJoinSessionCode] = useState("");
   const [pendingSignRequest, setPendingSignRequest] = useState<SignRequestPayload | null>(null);
   const [reviewAnalysis, setReviewAnalysis] = useState<ReviewAnalysisState>({ status: "idle" });
@@ -245,6 +253,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
     : tokens.find((t) => t.symbol === selectedToken) ?? { symbol: selectedToken, balance: 0, decimals: 9, mint: undefined };
   const tokenBalance = selectedTokenInfo.balance;
   const parsedAmount = parseFloat(amount) || 0;
+  const parsedJoinSession = parseSessionInvite(joinSessionCode);
   const isValid =
     recipient.length >= 32 && parsedAmount > 0 && parsedAmount <= tokenBalance;
   const savedPolicyProfiles = useMemo(
@@ -397,6 +406,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
     setSigningMessage("");
     setTxSignature("");
     setOrchestrationAddress("");
+    setRelaySessionInfo(createRelaySessionMetadata("------"));
   }, [cleanupRelayState]);
 
   const handleReview = () => {
@@ -840,6 +850,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
     const requestedSessionCode = generateSessionCode();
 
     setSigningSessionCode(requestedSessionCode);
+    setRelaySessionInfo(createRelaySessionMetadata(requestedSessionCode));
     return new Promise<{
       signatureHex: string;
       publicKeyHex: string;
@@ -948,9 +959,10 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
             settle(() => reject(new Error("Relay connection failed")));
           }
         },
-        onSessionCreated: (code) => {
-          onStatus(`Signing session created: ${code}. Share with other signers.`);
-          setSigningSessionCode(code);
+        onSessionCreated: (session) => {
+          onStatus(`Signing session created: ${session.invite}. Share with other signers.`);
+          setSigningSessionCode(session.invite);
+          setRelaySessionInfo(session);
         },
       });
 
@@ -978,15 +990,17 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
   ]);
 
   const handleJoinSigningSession = useCallback(async () => {
-    const sessionCode = joinSessionCode.trim().toUpperCase();
-    if (!sessionCode) {
-      setError("Enter the signing session code first.");
+    if (!parsedJoinSession) {
+      setError("Enter the signing session invite first.");
       return;
     }
+
+    const sessionCode = parsedJoinSession.code;
 
     setError("");
     setPhase("coordinate");
     setSigningMessage("Loading local signer key package...");
+    setRelaySessionInfo(parsedJoinSession);
     cleanupRelayState(false);
 
     try {
@@ -998,6 +1012,9 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
       const availableKeyIds = Object.keys(dkg.keyPackages).map(Number);
       const myParticipantId = dkg.participantId ?? availableKeyIds[0] ?? 1;
       const relayMode = await canReachRelay(relayUrl) ? "remote" : "local";
+      if (relayMode === "remote" && !parsedJoinSession.authToken) {
+        throw new Error("Paste the full signing session invite from the coordinator.");
+      }
       const relay = createRelay({
         mode: relayMode,
         participantId: myParticipantId,
@@ -1038,7 +1055,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
           if (state === "connected") {
             setSigningMessage("Connected. Joining signing session...");
             if (relayMode === "remote") {
-              relay.joinSession(sessionCode);
+              relay.joinSession(parsedJoinSession.invite);
             }
           } else if (state === "failed") {
             cleanupRelayState();
@@ -1049,7 +1066,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
       });
 
       relayRef.current = relay;
-      setSigningSessionCode(sessionCode);
+      setSigningSessionCode(relayMode === "remote" ? parsedJoinSession.invite : sessionCode);
       relay.connect();
 
       if (relayMode === "local") {
@@ -1060,7 +1077,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
       setError(err instanceof Error ? err.message : String(err));
       setPhase("error");
     }
-  }, [cleanupRelayState, joinSessionCode, loadDkgState, queueOrHandleSigningMessage, relayUrl]);
+  }, [cleanupRelayState, loadDkgState, parsedJoinSession, queueOrHandleSigningMessage, relayUrl]);
 
   const handleApproveSigningRequest = useCallback(async () => {
     if (!pendingSignRequest || !relayRef.current) {
@@ -1187,12 +1204,19 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
         <h3 className="text-base font-semibold">Multi-Device Signing</h3>
         {signingSessionCode && (
           <div className="flex flex-col items-center gap-1 mt-2">
-            <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Session Code</p>
-            <code className="text-lg font-mono font-bold text-primary tracking-[.3em] bg-primary/10 px-4 py-1.5 rounded-lg select-all">
+            <p className="text-[10px] text-muted-foreground uppercase tracking-wider">
+              {relaySessionInfo.authToken ? "Session Invite" : "Session Code"}
+            </p>
+            <code className={`font-mono font-bold text-primary bg-primary/10 px-4 py-1.5 rounded-lg select-all ${
+              relaySessionInfo.authToken ? "text-xs tracking-wide" : "text-lg tracking-[.3em]"
+            }`}>
               {signingSessionCode}
             </code>
             <p className="text-[10px] text-muted-foreground mt-1">
-              Share this code with other vault signers
+              Share this {relaySessionInfo.authToken ? "invite" : "code"} with other vault signers
+            </p>
+            <p className="text-[11px] text-muted-foreground">
+              Verify phrase: <span className="font-mono text-foreground">{relaySessionInfo.verificationPhrase}</span>
             </p>
           </div>
         )}
@@ -1677,21 +1701,29 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
       ) : (
         <Card>
           <CardHeader>
-            <CardTitle className="text-sm">Signing session code</CardTitle>
+            <CardTitle className="text-sm">Signing session invite</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
             <Input
-              placeholder="Enter 6-character code"
+              placeholder="Enter invite or 6-character local code"
               value={joinSessionCode}
               onChange={(e) => {
                 setJoinSessionCode(e.target.value.toUpperCase());
                 setError("");
               }}
-              className="font-mono text-center tracking-[0.3em]"
-              maxLength={6}
+              className="font-mono text-center tracking-wide"
+              maxLength={20}
             />
+            {parsedJoinSession && (
+              <div className="rounded-xl border border-primary/20 bg-primary/5 px-3 py-3 text-center">
+                <div className="text-[10px] uppercase tracking-wide text-primary">Verify phrase</div>
+                <div className="mt-1 font-mono text-sm font-semibold text-foreground">
+                  {parsedJoinSession.verificationPhrase}
+                </div>
+              </div>
+            )}
             <p className="text-[11px] text-muted-foreground">
-              Use this on another browser or device to approve the coordinator&apos;s transfer.
+              Use the full invite from the coordinator on another browser or device. Local fallback still accepts a 6-character code.
             </p>
             <Button className="w-full" onClick={handleJoinSigningSession}>
               Connect to session

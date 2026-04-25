@@ -29,6 +29,7 @@ import {
   type ConnectionState,
 } from "@/services/relay/relayAdapter";
 import type { RelayParticipant } from "@/services/relay/channelRelay";
+import { createRelaySessionMetadata } from "@/services/relay/sessionInvite";
 import {
   DkgOrchestrator,
   type DkgOrchestratorProgress,
@@ -73,6 +74,7 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
   const storeXmssTree = useWalletStore((state) => state.storeXmssTree);
   const [phase, setPhase] = useState<CeremonyPhase>("pairing");
   const [sessionCode, setSessionCode] = useState(generateSessionCode);
+  const [relaySessionInfo, setRelaySessionInfo] = useState(() => createRelaySessionMetadata(sessionCode));
   const [qrPayload, setQrPayload] = useState(() =>
     buildQrPayload(sessionCode, config.threshold, config.totalParticipants),
   );
@@ -179,11 +181,19 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
           onParticipantIdAssigned: () => {},
         },
         onConnectionStateChange: setConnectionState,
-        onSessionCreated: (code: string) => {
-          console.log("[DKGCeremony] Session created:", code);
-          // Update UI if server assigned a different code
-          setSessionCode(code);
-          setQrPayload(buildQrPayload(code, config.threshold, config.totalParticipants));
+        onSessionCreated: (session) => {
+          console.log("[DKGCeremony] Session created:", session.invite);
+          setSessionCode(session.code);
+          setRelaySessionInfo(session);
+          setQrPayload(
+            buildQrPayload(
+              session.code,
+              config.threshold,
+              config.totalParticipants,
+              session.authToken,
+              session.expiresAt,
+            ),
+          );
         },
       });
 
@@ -510,7 +520,9 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
   }, [config.threshold, config.totalParticipants, devices.length, delayedComplete]);
 
   const handleCopyCode = async () => {
-    await navigator.clipboard.writeText(sessionCode);
+    await navigator.clipboard.writeText(
+      relayMode === "remote" ? relaySessionInfo.invite : sessionCode,
+    );
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };
@@ -642,16 +654,18 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
                   </span>
                 </div>
 
-                {/* Session code for manual entry */}
+                {/* Session invite for manual entry */}
                 <div className="flex items-center justify-center gap-2">
                   <span className="text-xs text-muted-foreground">
-                    Or enter code:
+                    {relayMode === "remote" ? "Share invite:" : "Or enter code:"}
                   </span>
                   <button
                     onClick={handleCopyCode}
-                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-muted font-mono text-sm font-bold tracking-widest cursor-pointer hover:bg-accent transition-colors"
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-muted font-mono cursor-pointer hover:bg-accent transition-colors ${
+                      relayMode === "remote" ? "text-[11px] font-semibold tracking-wide" : "text-sm font-bold tracking-widest"
+                    }`}
                   >
-                    {sessionCode}
+                    {relayMode === "remote" ? relaySessionInfo.invite : sessionCode}
                     {copied ? (
                       <Check className="h-3 w-3 text-success" />
                     ) : (
@@ -659,6 +673,17 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
                     )}
                   </button>
                 </div>
+                {relayMode === "remote" && (
+                  <div className="mt-3 rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-center">
+                    <div className="flex items-center justify-center gap-1.5 text-[10px] uppercase tracking-wide text-primary">
+                      <Shield className="h-3 w-3" />
+                      Verify this phrase on every device
+                    </div>
+                    <div className="mt-1 font-mono text-sm font-semibold text-foreground">
+                      {relaySessionInfo.verificationPhrase}
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Device list */}

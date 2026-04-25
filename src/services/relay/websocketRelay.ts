@@ -13,6 +13,12 @@
 
 import type { RelayEvents, RelayParticipant, JoinPayload, SignRequestPayload } from "./channelRelay";
 import { RelayMessageType } from "./channelRelay";
+import {
+  buildSessionInvite,
+  createRelaySessionMetadata,
+  parseSessionInvite,
+  type RelaySessionMetadata,
+} from "./sessionInvite";
 
 export { RelayMessageType };
 export type { RelayEvents, RelayParticipant };
@@ -48,7 +54,7 @@ export interface WebSocketRelayOptions {
   deviceType: "browser" | "mobile" | "desktop";
   events: RelayEvents;
   onConnectionStateChange?: (state: ConnectionState) => void;
-  onSessionCreated?: (code: string) => void;
+  onSessionCreated?: (session: RelaySessionMetadata) => void;
   onParticipantIdAssigned?: (id: number) => void;
 }
 
@@ -64,6 +70,8 @@ export class WebSocketRelay {
 
   private connectionState: ConnectionState = "disconnected";
   private sessionCode: string | null = null;
+  private sessionAuthToken: string | null = null;
+  private sessionExpiresAt: number | null = null;
 
   readonly relayUrl: string;
   readonly senderId: string;
@@ -75,7 +83,7 @@ export class WebSocketRelay {
   private participants = new Map<string, RelayParticipant>();
   private events: RelayEvents;
   private onConnectionStateChange?: (state: ConnectionState) => void;
-  private onSessionCreated?: (code: string) => void;
+  private onSessionCreated?: (session: RelaySessionMetadata) => void;
   private onParticipantIdAssigned?: (id: number) => void;
 
   constructor(opts: WebSocketRelayOptions) {
@@ -171,24 +179,37 @@ export class WebSocketRelay {
 
   /** Create a new session (coordinator only). Sends the desired session code to the server. */
   createSession(threshold: number, maxParticipants: number, requestedCode?: string): void {
+    if (requestedCode) {
+      this.sessionCode = requestedCode;
+    }
     this.sendOrQueue({
       type: "create-session",
       payload: {
         threshold,
         maxParticipants,
         deviceName: this.deviceName,
+        deviceType: this.deviceType,
         requestedCode: requestedCode ?? this.sessionCode,
       },
     });
   }
 
-  /** Join an existing session by code */
-  joinSession(code: string): void {
-    this.sessionCode = code;
+  /** Join an existing session by invite or code */
+  joinSession(invite: string): void {
+    const parsedInvite = parseSessionInvite(invite);
+    if (!parsedInvite) {
+      this.events.onError?.(0, "Invalid relay session invite.");
+      return;
+    }
+
+    this.sessionCode = parsedInvite.code;
+    this.sessionAuthToken = parsedInvite.authToken;
+    this.sessionExpiresAt = parsedInvite.expiresAt;
     this.sendOrQueue({
       type: "join",
       payload: {
-        code,
+        code: parsedInvite.code,
+        authToken: parsedInvite.authToken,
         deviceName: this.deviceName,
         deviceType: this.deviceType,
       },
@@ -198,6 +219,11 @@ export class WebSocketRelay {
   /** Get the session code (available after creation or joining) */
   getSessionCode(): string | null {
     return this.sessionCode;
+  }
+
+  /** Get the current shareable invite, when available */
+  getSessionInvite(): string | null {
+    return this.sessionCode ? buildSessionInvite(this.sessionCode, this.sessionAuthToken) : null;
   }
 
   /** Get current connection state */
@@ -294,19 +320,35 @@ export class WebSocketRelay {
     // Server-originated messages
     switch (msg.type) {
       case "session-created": {
-        const sp = msg.payload as { code: string; threshold: number; maxParticipants: number };
+        const sp = msg.payload as {
+          code: string;
+          authToken?: string | null;
+          threshold: number;
+          maxParticipants: number;
+          expiresAt?: number | null;
+        };
         this.sessionCode = sp.code;
+        this.sessionAuthToken = sp.authToken ?? null;
+        this.sessionExpiresAt = sp.expiresAt ?? null;
         this.startHeartbeat();
-        this.onSessionCreated?.(sp.code);
+        this.onSessionCreated?.(
+          createRelaySessionMetadata(sp.code, sp.authToken ?? null, sp.expiresAt ?? null),
+        );
         return;
       }
 
       case "join-ack": {
         const jp = msg.payload as {
           participantId: number;
-          participants: Array<{ senderId: string; participantId: number; deviceName: string }>;
+          participants: Array<{
+            senderId: string;
+            participantId: number;
+            deviceName: string;
+            deviceType?: "browser" | "mobile" | "desktop";
+          }>;
           threshold: number;
           maxParticipants: number;
+          expiresAt?: number | null;
         };
         // Update our own participant ID from server assignment
         if (jp.participantId > 0) {
@@ -316,6 +358,7 @@ export class WebSocketRelay {
           if (self) self.participantId = jp.participantId;
           this.onParticipantIdAssigned?.(jp.participantId);
         }
+        this.sessionExpiresAt = jp.expiresAt ?? this.sessionExpiresAt;
         this.startHeartbeat();
         // Populate participant list from server state
         for (const p of jp.participants) {
@@ -324,7 +367,7 @@ export class WebSocketRelay {
               senderId: p.senderId,
               participantId: p.participantId,
               deviceName: p.deviceName,
-              deviceType: "browser",
+              deviceType: p.deviceType ?? "browser",
               joinedAt: Date.now(),
               lastSeen: Date.now(),
             };
@@ -336,13 +379,18 @@ export class WebSocketRelay {
       }
 
       case "participant-joined": {
-        const pj = msg.payload as { senderId: string; participantId: number; deviceName: string };
+        const pj = msg.payload as {
+          senderId: string;
+          participantId: number;
+          deviceName: string;
+          deviceType?: "browser" | "mobile" | "desktop";
+        };
         if (!this.participants.has(pj.senderId)) {
           const participant: RelayParticipant = {
             senderId: pj.senderId,
             participantId: pj.participantId,
             deviceName: pj.deviceName,
-            deviceType: "browser",
+            deviceType: pj.deviceType ?? "browser",
             joinedAt: Date.now(),
             lastSeen: Date.now(),
           };
@@ -360,6 +408,7 @@ export class WebSocketRelay {
       }
 
       case "session-expired": {
+        this.sessionExpiresAt = Date.now();
         this.events.onError?.(0, "Session expired");
         this.disconnect();
         return;
@@ -482,7 +531,7 @@ export class WebSocketRelay {
       if (this.sessionCode) {
         setTimeout(() => {
           if (this.ws?.readyState === WebSocket.OPEN && this.sessionCode) {
-            this.joinSession(this.sessionCode);
+            this.joinSession(buildSessionInvite(this.sessionCode, this.sessionAuthToken));
           }
         }, 500);
       }

@@ -11,6 +11,10 @@ import {
   type ConnectionState,
 } from "@/services/relay/relayAdapter";
 import {
+  createRelaySessionMetadata,
+  parseSessionInvite,
+} from "@/services/relay/sessionInvite";
+import {
   DkgOrchestrator,
   type DkgOrchestratorProgress,
 } from "@/services/frost/dkgOrchestrator";
@@ -43,6 +47,7 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
   const [participantId, setParticipantId] = useState<number>(0);
   const [bootstrapComplete, setBootstrapComplete] = useState(false);
   const [bootstrapError, setBootstrapError] = useState("");
+  const [joinedSessionInfo, setJoinedSessionInfo] = useState(() => createRelaySessionMetadata("------"));
 
   const relayRef = useRef<RelayAdapter | null>(null);
   const orchestratorRef = useRef<DkgOrchestrator | null>(null);
@@ -60,7 +65,10 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
     | { type: "round3"; fromId: number; groupKeyHex: string }
   >>([]);
 
-  const isValidCode = /^[A-Z0-9]{6}$/.test(sessionCode.toUpperCase());
+  const parsedSessionInvite = parseSessionInvite(sessionCode);
+  const isValidInvite =
+    parsedSessionInvite !== null &&
+    (relayMode !== "remote" || parsedSessionInvite.authToken !== null);
 
   // Detect relay availability on mount
   useEffect(() => {
@@ -162,14 +170,21 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
   }, [participantId, runSigningOrchestrator]);
 
   const handleJoin = useCallback(() => {
-    if (!isValidCode) return;
+    if (!parsedSessionInvite) return;
 
-    const code = sessionCode.toUpperCase();
+    if (relayMode === "remote" && !parsedSessionInvite.authToken) {
+      setErrorMessage("Paste the full session invite from the coordinator for cross-device relay sessions.");
+      return;
+    }
+
+    const code = parsedSessionInvite.code;
     const mode = relayMode ?? "local";
     setPhase("connecting");
     setStatusMessage("Connecting to ceremony session…");
+    setErrorMessage("");
     setBootstrapComplete(false);
     setBootstrapError("");
+    setJoinedSessionInfo(parsedSessionInvite);
     pendingBootstrapRequestRef.current = null;
     pendingSigningMessagesRef.current = [];
 
@@ -256,7 +271,7 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
       relay.connect();
 
       if (mode === "remote") {
-        relay.joinSession(code);
+        relay.joinSession(parsedSessionInvite.invite);
       } else {
         // Local mode — set waiting immediately
         setPhase("waiting");
@@ -268,12 +283,11 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
     }
   }, [
     handleBootstrapRequest,
-    isValidCode,
+    parsedSessionInvite,
     phase,
     queueOrHandleSigningMessage,
     relayMode,
     relayUrl,
-    sessionCode,
   ]);
 
   // Start DKG when params arrive from coordinator
@@ -412,23 +426,34 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
           className="flex flex-col gap-4"
         >
           <Card className="p-4">
-            <p className="text-sm font-medium mb-2">Enter Session Code</p>
+            <p className="text-sm font-medium mb-2">
+              {relayMode === "remote" ? "Enter Session Invite" : "Enter Session Code"}
+            </p>
             <p className="text-xs text-muted-foreground mb-4">
-              Ask the vault creator for the 6-character session code shown on
-              their screen or scan their QR code.
+              {relayMode === "remote"
+                ? "Paste the full invite from the vault creator or scan their QR code. Cross-device relay sessions now require the authenticated invite."
+                : "Ask the vault creator for the 6-character session code shown on their screen or scan their QR code."}
             </p>
             <Input
               value={sessionCode}
-              onChange={(e) => setSessionCode(e.target.value.toUpperCase().slice(0, 6))}
-              placeholder="e.g. YWNFNL"
-              className="font-mono text-center text-lg tracking-widest"
-              maxLength={6}
+              onChange={(e) => setSessionCode(e.target.value.toUpperCase())}
+              placeholder={relayMode === "remote" ? "e.g. YWNFNL.A7Q9M3KD" : "e.g. YWNFNL"}
+              className={`font-mono text-center ${relayMode === "remote" ? "text-sm tracking-wide" : "text-lg tracking-widest"}`}
+              maxLength={relayMode === "remote" ? 20 : 6}
             />
+            {parsedSessionInvite && (
+              <div className="mt-3 rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-center">
+                <div className="text-[10px] uppercase tracking-wide text-primary">Verify phrase</div>
+                <div className="mt-1 font-mono text-sm font-semibold text-foreground">
+                  {parsedSessionInvite.verificationPhrase}
+                </div>
+              </div>
+            )}
           </Card>
 
           <Button
             onClick={handleJoin}
-            disabled={!isValidCode}
+            disabled={!isValidInvite}
             className="w-full"
           >
             <Users className="h-4 w-4 mr-2" />
@@ -473,8 +498,13 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
           )}
 
           <p className="text-xs text-muted-foreground">
-            Session: {sessionCode}
+            Session: {joinedSessionInfo.invite}
           </p>
+          {joinedSessionInfo.code !== "------" && (
+            <p className="text-[11px] text-muted-foreground">
+              Verify phrase: <span className="font-mono text-foreground">{joinedSessionInfo.verificationPhrase}</span>
+            </p>
+          )}
         </motion.div>
       )}
 

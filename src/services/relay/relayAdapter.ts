@@ -6,12 +6,19 @@
  * - "remote" → WebSocket relay (cross-device/browser, requires relay server)
  */
 
-import { ChannelRelay, generateSessionCode, buildQrPayload } from "./channelRelay";
+import { ChannelRelay } from "./channelRelay";
 import { WebSocketRelay, type ConnectionState, type WebSocketRelayOptions } from "./websocketRelay";
 import type { RelayEvents, RelayParticipant, SignRequestPayload } from "./channelRelay";
+import {
+  buildQrPayload,
+  generateSessionCode,
+  parseSessionInvite,
+  type RelaySessionMetadata,
+} from "./sessionInvite";
 
-export { generateSessionCode, buildQrPayload };
+export { buildQrPayload, generateSessionCode, parseSessionInvite };
 export type { RelayEvents, RelayParticipant, ConnectionState };
+export type { RelaySessionMetadata };
 
 export type RelayMode = "local" | "remote";
 const LOCAL_RELAY_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
@@ -31,7 +38,7 @@ export interface RelayAdapter {
 
   // Session management (remote only)
   createSession(threshold: number, maxParticipants: number, requestedCode?: string): void;
-  joinSession(code: string): void;
+  joinSession(invite: string): void;
 
   // DKG broadcasting
   broadcastDkgRound1(pkg: number[]): void;
@@ -154,7 +161,7 @@ export interface CreateRelayOptions {
   // Remote mode
   relayUrl?: string;
   onConnectionStateChange?: (state: ConnectionState) => void;
-  onSessionCreated?: (code: string) => void;
+  onSessionCreated?: (session: RelaySessionMetadata) => void;
   onParticipantIdAssigned?: (id: number) => void;
 }
 
