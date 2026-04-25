@@ -12,7 +12,8 @@ export type ExtensionRpcMethod =
   | "getBalance"
   | "getTransactions"
   | "signTransaction"
-  | "signMessage";
+  | "signMessage"
+  | "getApprovalStatus";
 
 export interface SignTransactionParams {
   serializedTransaction: string;
@@ -31,6 +32,22 @@ export interface SignMessageParams {
 export interface SignMessageResult {
   signature: string;
   publicKey: string;
+}
+
+export interface ApprovalPendingResult {
+  approvalRequestId: string;
+  status: "pending";
+}
+
+export interface ApprovalStatusParams {
+  approvalRequestId: string;
+}
+
+export interface ApprovalStatusResult<T = unknown> {
+  approvalRequestId: string;
+  status: "pending" | "approved" | "rejected" | "completed" | "failed";
+  result?: T;
+  error?: string;
 }
 
 export interface ExtensionRpcRequest {

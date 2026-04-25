@@ -3,6 +3,9 @@ import {
   VAULKYRIE_EXTENSION_RPC,
   type ExtensionRpcRequest,
   type ExtensionRpcResponse,
+  type ApprovalPendingResult,
+  type ApprovalStatusParams,
+  type ApprovalStatusResult,
 } from "@/extension/messages";
 import { readExtensionProviderState } from "@/extension/providerState";
 import {
@@ -19,11 +22,12 @@ import type {
 } from "@/extension/messages";
 import {
   approveOrigin,
+  completeExtensionApproval,
   enqueueExtensionApproval,
+  failExtensionApproval,
+  getExtensionApproval,
   isOriginApproved,
   markOriginUsed,
-  removeExtensionApproval,
-  waitForExtensionApproval,
   type ExtensionApprovalMethod,
   type ExtensionApprovalDetails,
 } from "@/extension/approvalStorage";
@@ -91,7 +95,9 @@ function approvalSummary(method: ExtensionApprovalMethod, params?: Record<string
   }
 }
 
-async function requestApproval(
+const APPROVAL_TTL_MS = 5 * 60 * 1000;
+
+async function beginApprovalRequest(
   sender: chrome.runtime.MessageSender,
   method: ExtensionApprovalMethod,
   accountPublicKey: string | null,
@@ -99,7 +105,8 @@ async function requestApproval(
     summary: string;
     details?: ExtensionApprovalDetails;
   },
-): Promise<void> {
+  requestPayload?: Record<string, unknown>,
+): Promise<ApprovalPendingResult> {
   const origin = senderOrigin(sender);
   const approval = preview ?? approvalSummary(method);
   const request = await enqueueExtensionApproval({
@@ -107,9 +114,11 @@ async function requestApproval(
     origin,
     method,
     createdAt: Date.now(),
+    expiresAt: Date.now() + APPROVAL_TTL_MS,
     accountPublicKey,
     summary: approval.summary,
     details: approval.details,
+    requestPayload,
   });
 
   if (typeof chrome !== "undefined" && chrome.tabs?.create) {
@@ -119,16 +128,137 @@ async function requestApproval(
     });
   }
 
+  return {
+    approvalRequestId: request.id,
+    status: "pending",
+  };
+}
+
+async function executeApprovedRequest(
+  approvalId: string,
+  providerState: Awaited<ReturnType<typeof readExtensionProviderState>>,
+  sender: chrome.runtime.MessageSender,
+): Promise<ApprovalStatusResult> {
+  const approval = await getExtensionApproval(approvalId);
+  if (!approval) {
+    throw new Error("Approval request was not found.");
+  }
+
+  if (approval.origin !== senderOrigin(sender)) {
+    throw new Error("Approval request origin does not match the caller.");
+  }
+
+  if (approval.expiresAt <= Date.now() && approval.status === "pending") {
+    await failExtensionApproval(approval.id, "Approval request expired before it was confirmed.");
+    return {
+      approvalRequestId: approval.id,
+      status: "failed",
+      error: "Approval request expired before it was confirmed.",
+    };
+  }
+
+  if (approval.status === "pending") {
+    return {
+      approvalRequestId: approval.id,
+      status: "pending",
+    };
+  }
+
+  if (approval.status === "rejected") {
+    return {
+      approvalRequestId: approval.id,
+      status: "rejected",
+      error: approval.error ?? "Request rejected by user.",
+    };
+  }
+
+  if (approval.status === "failed") {
+    return {
+      approvalRequestId: approval.id,
+      status: "failed",
+      error: approval.error ?? "Approval request failed.",
+    };
+  }
+
+  if (approval.status === "completed") {
+    return {
+      approvalRequestId: approval.id,
+      status: "completed",
+      result: approval.result,
+    };
+  }
+
+  if (approval.accountPublicKey && providerState.publicKey !== approval.accountPublicKey) {
+    const error = "The active vault changed after this approval request was created.";
+    await failExtensionApproval(approval.id, error);
+    return {
+      approvalRequestId: approval.id,
+      status: "failed",
+      error,
+    };
+  }
+
   try {
-    const decision = await waitForExtensionApproval(request.id);
-    if (decision !== "approved") {
-      throw new Error("Request rejected by user.");
+    let result: unknown;
+
+    switch (approval.method) {
+      case "connect":
+        await approveOrigin(approval.origin, approval.accountPublicKey);
+        result = providerState;
+        break;
+      case "signTransaction": {
+        const params = approval.requestPayload as Partial<SignTransactionParams> | undefined;
+        if (
+          !providerState.publicKey ||
+          !params?.serializedTransaction ||
+          (params.kind !== "legacy" && params.kind !== "versioned")
+        ) {
+          throw new Error("Stored transaction approval payload is incomplete.");
+        }
+        const signed = await signSerializedTransaction(
+          params.serializedTransaction,
+          providerState.publicKey,
+          params.kind,
+        );
+        result = {
+          signedTransaction: signed.signedTransactionBase64,
+          kind: signed.kind,
+        } satisfies SignTransactionResult;
+        break;
+      }
+      case "signMessage": {
+        const params = approval.requestPayload as Partial<SignMessageParams> | undefined;
+        if (!providerState.publicKey || !params?.message) {
+          throw new Error("Stored message approval payload is incomplete.");
+        }
+        const signature = await signMessageBytes(
+          providerState.publicKey,
+          Buffer.from(params.message, "base64"),
+        );
+        result = {
+          signature: Buffer.from(signature).toString("base64"),
+          publicKey: providerState.publicKey,
+        } satisfies SignMessageResult;
+        break;
+      }
+      default:
+        throw new Error(`Unsupported approval method: ${approval.method}`);
     }
-    if (method === "connect") {
-      await approveOrigin(origin, accountPublicKey);
-    }
-  } finally {
-    await removeExtensionApproval(request.id);
+
+    await completeExtensionApproval(approval.id, result);
+    return {
+      approvalRequestId: approval.id,
+      status: "completed",
+      result,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await failExtensionApproval(approval.id, message);
+    return {
+      approvalRequestId: approval.id,
+      status: "failed",
+      error: message,
+    };
   }
 }
 
@@ -163,7 +293,7 @@ async function handleRpcRequest(
         throw new Error("No active Vaulkyrie account found. Open the wallet and create or import one first.");
       }
       if (!(await isOriginApproved(senderOrigin(sender), providerState.publicKey))) {
-        await requestApproval(sender, "connect", providerState.publicKey);
+        return beginApprovalRequest(sender, "connect", providerState.publicKey);
       } else {
         await markOriginUsed(senderOrigin(sender), providerState.publicKey);
       }
@@ -217,22 +347,13 @@ async function handleRpcRequest(
         if (!preview.walletSignerRequired) {
           throw new Error("Vaulkyrie rejected this transaction because the active vault is not a required signer.");
         }
-        await requestApproval(
+        return beginApprovalRequest(
           sender,
           "signTransaction",
           providerState.publicKey,
           preview,
+          params as unknown as Record<string, unknown>,
         );
-        const result = await signSerializedTransaction(
-          params.serializedTransaction,
-          providerState.publicKey,
-          params.kind,
-        );
-        const response: SignTransactionResult = {
-          signedTransaction: result.signedTransactionBase64,
-          kind: result.kind,
-        };
-        return response;
       }
     case "signMessage":
       if (providerState.isLocked) {
@@ -249,22 +370,21 @@ async function handleRpcRequest(
         if (!params.message) {
           throw new Error("Message payload is incomplete.");
         }
-        await requestApproval(
+        return beginApprovalRequest(
           sender,
           "signMessage",
           providerState.publicKey,
           buildMessageApprovalPreview(params),
+          params as unknown as Record<string, unknown>,
         );
-        const signature = await signMessageBytes(
-          providerState.publicKey,
-          Buffer.from(params.message, "base64"),
-        );
-        const response: SignMessageResult = {
-          signature: Buffer.from(signature).toString("base64"),
-          publicKey: providerState.publicKey,
-        };
-        return response;
       }
+    case "getApprovalStatus": {
+      const params = message.params as Partial<ApprovalStatusParams> | undefined;
+      if (!params?.approvalRequestId) {
+        throw new Error("Missing approval request identifier.");
+      }
+      return executeApprovedRequest(params.approvalRequestId, providerState, sender);
+    }
     default:
       throw new Error(`Unsupported extension RPC method: ${message.method}`);
   }

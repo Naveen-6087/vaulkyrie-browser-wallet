@@ -1,5 +1,9 @@
 import { Buffer } from "buffer";
 import { Transaction, VersionedTransaction } from "@solana/web3.js";
+import type {
+  ApprovalPendingResult,
+  ApprovalStatusResult,
+} from "@/extension/messages";
 
 type ProviderEventName = "connect" | "disconnect" | "accountChanged";
 type ProviderMethod =
@@ -9,7 +13,8 @@ type ProviderMethod =
   | "getBalance"
   | "getTransactions"
   | "signTransaction"
-  | "signMessage";
+  | "signMessage"
+  | "getApprovalStatus";
 
 interface ProviderState {
   connected: boolean;
@@ -32,6 +37,17 @@ interface SignTransactionResult {
 interface SignMessageResult {
   signature: string;
   publicKey: string;
+}
+
+function isApprovalPendingResult(value: unknown): value is ApprovalPendingResult {
+  return Boolean(
+    value &&
+    typeof value === "object" &&
+    "approvalRequestId" in value &&
+    typeof (value as ApprovalPendingResult).approvalRequestId === "string" &&
+    "status" in value &&
+    (value as ApprovalPendingResult).status === "pending",
+  );
 }
 
 class InjectedPublicKey {
@@ -87,7 +103,10 @@ class VaulkyrieProvider {
   }
 
   async connect(): Promise<{ publicKey: InjectedPublicKey | null }> {
-    const state = await this.postRequest<ProviderState>("connect");
+    const initial = await this.postRequest<ProviderState | ApprovalPendingResult>("connect");
+    const state = isApprovalPendingResult(initial)
+      ? await this.waitForApproval<ProviderState>(initial.approvalRequestId)
+      : initial;
     this.applyState(state);
     if (this.publicKey) {
       this.emit("connect", this.publicKey);
@@ -119,13 +138,16 @@ class VaulkyrieProvider {
           verifySignatures: false,
         });
 
-    const result = await this.postRequest<SignTransactionResult>("signTransaction", {
+    const result = await this.postRequest<SignTransactionResult | ApprovalPendingResult>("signTransaction", {
       serializedTransaction: Buffer.from(serializedBytes).toString("base64"),
       kind: isVersioned ? "versioned" : "legacy",
     });
+    const resolved = isApprovalPendingResult(result)
+      ? await this.waitForApproval<SignTransactionResult>(result.approvalRequestId)
+      : result;
 
-    const signedBytes = Buffer.from(result.signedTransaction, "base64");
-    return result.kind === "versioned"
+    const signedBytes = Buffer.from(resolved.signedTransaction, "base64");
+    return resolved.kind === "versioned"
       ? VersionedTransaction.deserialize(signedBytes)
       : Transaction.from(signedBytes);
   }
@@ -140,13 +162,16 @@ class VaulkyrieProvider {
     const messageBytes =
       typeof message === "string" ? new TextEncoder().encode(message) : new Uint8Array(message);
 
-    const result = await this.postRequest<SignMessageResult>("signMessage", {
+    const result = await this.postRequest<SignMessageResult | ApprovalPendingResult>("signMessage", {
       message: Buffer.from(messageBytes).toString("base64"),
     });
+    const resolved = isApprovalPendingResult(result)
+      ? await this.waitForApproval<SignMessageResult>(result.approvalRequestId)
+      : result;
 
     return {
-      publicKey: result.publicKey ? new InjectedPublicKey(result.publicKey) : this.publicKey,
-      signature: Uint8Array.from(Buffer.from(result.signature, "base64")),
+      publicKey: resolved.publicKey ? new InjectedPublicKey(resolved.publicKey) : this.publicKey,
+      signature: Uint8Array.from(Buffer.from(resolved.signature, "base64")),
     };
   }
 
@@ -202,6 +227,29 @@ class VaulkyrieProvider {
     );
 
     return response;
+  }
+
+  private async waitForApproval<T>(approvalRequestId: string): Promise<T> {
+    const startedAt = Date.now();
+    const timeoutMs = 5 * 60 * 1000;
+
+    while (Date.now() - startedAt < timeoutMs) {
+      const status = await this.postRequest<ApprovalStatusResult<T>>("getApprovalStatus", {
+        approvalRequestId,
+      });
+
+      if (status.status === "completed") {
+        return status.result as T;
+      }
+
+      if (status.status === "failed" || status.status === "rejected") {
+        throw new Error(status.error ?? "Approval request was rejected.");
+      }
+
+      await new Promise((resolve) => window.setTimeout(resolve, 1000));
+    }
+
+    throw new Error("Approval request timed out.");
   }
 
   private readonly handleWindowMessage = (event: MessageEvent) => {

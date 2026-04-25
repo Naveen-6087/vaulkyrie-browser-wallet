@@ -1,5 +1,5 @@
 export type ExtensionApprovalMethod = "connect" | "signTransaction" | "signMessage";
-export type ExtensionApprovalStatus = "pending" | "approved" | "rejected";
+export type ExtensionApprovalStatus = "pending" | "approved" | "rejected" | "completed" | "failed";
 
 export interface ApprovedOriginRecord {
   origin: string;
@@ -27,9 +27,15 @@ export interface ExtensionApprovalRequest {
   method: ExtensionApprovalMethod;
   createdAt: number;
   status: ExtensionApprovalStatus;
+  expiresAt: number;
   accountPublicKey: string | null;
   summary: string;
   details?: ExtensionApprovalDetails;
+  requestPayload?: Record<string, unknown>;
+  result?: unknown;
+  error?: string;
+  resolvedAt?: number;
+  completedAt?: number;
 }
 
 const APPROVALS_KEY = "vaulkyrie-extension-approvals";
@@ -147,6 +153,7 @@ function normalizeApprovalRequests(value: unknown): ExtensionApprovalRequest[] {
       typeof candidate.origin !== "string" ||
       typeof candidate.method !== "string" ||
       typeof candidate.createdAt !== "number" ||
+      typeof candidate.expiresAt !== "number" ||
       typeof candidate.status !== "string" ||
       typeof candidate.summary !== "string"
     ) {
@@ -194,6 +201,7 @@ function normalizeApprovalRequests(value: unknown): ExtensionApprovalRequest[] {
       origin: candidate.origin,
       method: candidate.method as ExtensionApprovalMethod,
       createdAt: candidate.createdAt,
+      expiresAt: candidate.expiresAt,
       status: candidate.status as ExtensionApprovalStatus,
       accountPublicKey:
         typeof candidate.accountPublicKey === "string"
@@ -201,6 +209,14 @@ function normalizeApprovalRequests(value: unknown): ExtensionApprovalRequest[] {
           : null,
       summary: candidate.summary,
       details,
+      requestPayload:
+        candidate.requestPayload && typeof candidate.requestPayload === "object"
+          ? candidate.requestPayload as Record<string, unknown>
+          : undefined,
+      result: candidate.result,
+      error: typeof candidate.error === "string" ? candidate.error : undefined,
+      resolvedAt: typeof candidate.resolvedAt === "number" ? candidate.resolvedAt : undefined,
+      completedAt: typeof candidate.completedAt === "number" ? candidate.completedAt : undefined,
     }];
   });
 }
@@ -213,7 +229,7 @@ export async function listExtensionApprovals(): Promise<ExtensionApprovalRequest
 export async function listPendingExtensionApprovals(): Promise<ExtensionApprovalRequest[]> {
   const approvals = await listExtensionApprovals();
   return approvals
-    .filter((approval) => approval.status === "pending")
+    .filter((approval) => approval.status === "pending" && approval.expiresAt > Date.now())
     .sort((a, b) => b.createdAt - a.createdAt);
 }
 
@@ -231,13 +247,60 @@ export async function enqueueExtensionApproval(
 
 export async function resolveExtensionApproval(
   id: string,
-  status: Exclude<ExtensionApprovalStatus, "pending">,
+  status: "approved" | "rejected",
 ): Promise<void> {
   const approvals = await listExtensionApprovals();
   await setStorageValue(
     APPROVALS_KEY,
     approvals.map((approval) =>
-      approval.id === id ? { ...approval, status } : approval,
+      approval.id === id
+        ? {
+            ...approval,
+            status,
+            resolvedAt: Date.now(),
+            error: status === "rejected" ? "Request rejected by user." : undefined,
+          }
+        : approval,
+    ),
+  );
+}
+
+export async function getExtensionApproval(id: string): Promise<ExtensionApprovalRequest | null> {
+  const approvals = await listExtensionApprovals();
+  return approvals.find((approval) => approval.id === id) ?? null;
+}
+
+export async function completeExtensionApproval(id: string, result: unknown): Promise<void> {
+  const approvals = await listExtensionApprovals();
+  await setStorageValue(
+    APPROVALS_KEY,
+    approvals.map((approval) =>
+      approval.id === id
+        ? {
+            ...approval,
+            status: "completed" as const,
+            result,
+            completedAt: Date.now(),
+            error: undefined,
+          }
+        : approval,
+    ),
+  );
+}
+
+export async function failExtensionApproval(id: string, error: string): Promise<void> {
+  const approvals = await listExtensionApprovals();
+  await setStorageValue(
+    APPROVALS_KEY,
+    approvals.map((approval) =>
+      approval.id === id
+        ? {
+            ...approval,
+            status: "failed" as const,
+            error,
+            completedAt: Date.now(),
+          }
+        : approval,
     ),
   );
 }

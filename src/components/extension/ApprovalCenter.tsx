@@ -30,6 +30,14 @@ function formatMethodLabel(method: ExtensionApprovalRequest["method"]): string {
   }
 }
 
+function formatExpiresIn(expiresAt: number): string {
+  const remainingMs = Math.max(0, expiresAt - Date.now());
+  const totalSeconds = Math.ceil(remainingMs / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+}
+
 export function ApprovalCenter({ onNavigate }: ApprovalCenterProps) {
   const activeAccount = useWalletStore((state) => state.activeAccount);
   const [approvals, setApprovals] = useState<ExtensionApprovalRequest[]>([]);
@@ -180,6 +188,11 @@ export function ApprovalCenter({ onNavigate }: ApprovalCenterProps) {
 
                 <div className="rounded-lg border border-border bg-background/60 px-3 py-2 text-[11px] text-muted-foreground">
                   {approval.summary}
+                </div>
+
+                <div className="flex items-center justify-between rounded-lg border border-border/70 bg-background/40 px-3 py-2 text-[11px]">
+                  <span className="text-muted-foreground">Request expires in</span>
+                  <span className="font-mono text-foreground">{formatExpiresIn(approval.expiresAt)}</span>
                 </div>
 
                 {approval.details && (
