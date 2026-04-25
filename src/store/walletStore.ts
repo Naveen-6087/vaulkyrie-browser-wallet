@@ -460,7 +460,7 @@ export const useWalletStore = create<WalletState>()(
       },
 
       refreshVaultState: async () => {
-        const { activeAccount, network } = get();
+        const { activeAccount, network, vaultConfigs, dkgResults } = get();
         if (!activeAccount) return;
 
         try {
@@ -472,20 +472,26 @@ export const useWalletStore = create<WalletState>()(
             const result = await client.getVaultRegistry(pubkey);
             if (result) {
               const { account } = result;
+              const authority = await client.getQuantumAuthority(result.address);
+              const localVaultConfig = vaultConfigs[activeAccount.publicKey];
+              const localDkg = dkgResults[activeAccount.publicKey];
               set({
                 vaultState: {
                   address: activeAccount.publicKey,
-                  threshold: 0,
-                  participants: 0,
-                  policyConfigHash: Array.from(account.currentAuthorityHash).map(b => b.toString(16).padStart(2, "0")).join(""),
-                  authorityLeafIndex: 0,
+                  threshold: localVaultConfig?.threshold ?? localDkg?.threshold ?? 0,
+                  participants: localVaultConfig?.totalParticipants ?? localDkg?.participants ?? 0,
+                  policyConfigHash: Array.from(account.policyMxeProgram.toBytes()).map((b) => b.toString(16).padStart(2, "0")).join(""),
+                  authorityLeafIndex: authority?.account.nextLeafIndex ?? 0,
                   pendingSessions: 0,
                 },
               });
+              return;
             }
           }
+          set({ vaultState: null });
         } catch (err) {
           console.warn("No vault found on-chain (expected for new wallets):", err);
+          set({ vaultState: null });
         }
       },
 

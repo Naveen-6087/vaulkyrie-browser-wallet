@@ -75,7 +75,7 @@ export interface WotsKeyPair {
 export interface XmssTree {
   /** All WOTS+ key pairs (one per leaf) */
   keys: WotsKeyPair[];
-  /** Merkle tree root hash (the "authority hash") */
+  /** Merkle tree root hash stored as the on-chain authority root */
   root: Uint8Array;
   /** Tree depth (log2 of leaf count) */
   depth: number;
@@ -264,7 +264,8 @@ export async function wotsVerifyMessage(
  * Generate an XMSS tree with 2^depth WOTS+ key pairs.
  *
  * Default depth = 8 → 256 leaves → 256 one-time signatures.
- * The root hash serves as the "authority hash" on-chain.
+ * Leaf 0 becomes the initial authority hash and the root becomes the
+ * authority root on-chain.
  */
 export async function generateXmssTree(depth: number = 8): Promise<XmssTree> {
   const leafCount = 1 << depth;
@@ -293,6 +294,15 @@ export async function generateXmssTree(depth: number = 8): Promise<XmssTree> {
  */
 export async function generateSmallXmssTree(): Promise<XmssTree> {
   return generateXmssTree(3);
+}
+
+export function getInitialXmssAuthorityHash(tree: XmssTree): Uint8Array {
+  const initialKey = tree.keys[0];
+  if (!initialKey) {
+    throw new Error("XMSS tree has no leaves.");
+  }
+
+  return new Uint8Array(initialKey.publicKeyHash);
 }
 
 /**

@@ -11,7 +11,12 @@ import type { SignRequestPayload } from "@/services/relay/channelRelay";
 import { useWalletStore } from "@/store/walletStore";
 import { createConnection, SOL_ICON } from "@/services/solanaRpc";
 import { buildSplTransferTransaction } from "@/services/splToken";
-import { deserializeXmssTree } from "@/services/quantum/wots";
+import {
+  deserializeXmssTree,
+  generateXmssTree,
+  getInitialXmssAuthorityHash,
+  serializeXmssTree,
+} from "@/services/quantum/wots";
 import { shortenAddress } from "@/lib/utils";
 import type { WalletView, Token } from "@/types";
 import { VaulkyrieClient } from "@/sdk/client";
@@ -19,11 +24,12 @@ import { PolicyMxeClient } from "@/sdk/policyClient";
 import {
   createCommitSpendOrchestrationInstruction,
   createCompleteSpendOrchestrationInstruction,
+  createInitAuthorityInstruction,
   createInitSpendOrchestrationInstruction,
   createInitVaultInstruction,
 } from "@/sdk/instructions";
 import { PolicyEvaluationStatus, VAULKYRIE_POLICY_MXE_PROGRAM_ID } from "@/sdk/constants";
-import { findSpendOrchestrationPda, findVaultRegistryPda } from "@/sdk/pda";
+import { findQuantumAuthorityPda, findSpendOrchestrationPda, findVaultRegistryPda } from "@/sdk/pda";
 import {
   buildSpendActionHash,
   buildSpendOrchestrationBindings,
@@ -141,6 +147,20 @@ function TokenIconSmall({ symbol, icon }: { symbol: string; icon?: string }) {
   );
 }
 
+function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 async function canReachRelay(url: string): Promise<boolean> {
   return probeRelayAvailability(url, 1500);
 }
@@ -170,6 +190,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
     pendingPolicyRequest,
     setPendingPolicyRequest,
     getXmssTree,
+    storeXmssTree,
     refreshBalances,
     refreshTransactions,
     refreshVaultState,
@@ -407,6 +428,10 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
       const policyClient = new PolicyMxeClient(connection);
       const existingVault = await client.getVaultRegistry(fromPubkey);
       const [vaultRegistryPda, vaultBump] = findVaultRegistryPda(fromPubkey);
+      const [authorityPda, authorityBump] = findQuantumAuthorityPda(vaultRegistryPda);
+      const existingAuthority = existingVault
+        ? await client.getQuantumAuthority(vaultRegistryPda)
+        : null;
       let reviewedActionHash: Uint8Array | null = null;
       let policyVersion = existingVault?.account.policyVersion ?? 1n;
 
@@ -446,22 +471,45 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
         reviewedActionHash = reviewActionHash;
       }
 
-      const authorityHash = (() => {
-        if (existingVault) {
-          return existingVault.account.currentAuthorityHash;
-        }
+      let authorityHash = existingVault?.account.currentAuthorityHash ?? null;
+      let authorityRoot = existingAuthority?.account.currentAuthorityRoot ?? null;
 
+      if (!existingVault || !existingAuthority) {
         const serializedTree = getXmssTree(activeAccount!.publicKey);
-        if (!serializedTree) {
-          return new Uint8Array(32);
+        let xmssTree = serializedTree
+          ? (() => {
+              try {
+                return deserializeXmssTree(serializedTree);
+              } catch {
+                return null;
+              }
+            })()
+          : null;
+
+        if (!xmssTree) {
+          setSigningMessage("Generating Vaulkyrie XMSS authority tree...");
+          xmssTree = await generateXmssTree();
+          storeXmssTree(activeAccount!.publicKey, serializeXmssTree(xmssTree));
         }
 
-        try {
-          return deserializeXmssTree(serializedTree).root;
-        } catch {
-          return new Uint8Array(32);
+        const initialAuthorityHash = getInitialXmssAuthorityHash(xmssTree);
+        if (
+          existingVault &&
+          !equalBytes(existingVault.account.currentAuthorityHash, initialAuthorityHash)
+        ) {
+          throw new Error(
+            "The stored XMSS authority tree does not match this vault's on-chain authority hash. " +
+              "Recover or re-create the vault before submitting authority-bound spends.",
+          );
         }
-      })();
+
+        authorityHash = authorityHash ?? initialAuthorityHash;
+        authorityRoot = authorityRoot ?? new Uint8Array(xmssTree.root);
+      }
+
+      if (!authorityHash) {
+        throw new Error("Missing post-quantum authority hash for this vault.");
+      }
 
       const sessionNonce = generateSpendSessionNonce();
       const actionHash = reviewedActionHash ?? await buildSpendActionHash({
@@ -507,6 +555,17 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
             policyVersion,
             bump: vaultBump,
             policyMxeProgram: VAULKYRIE_POLICY_MXE_PROGRAM_ID,
+          }));
+        }
+        if (!existingAuthority) {
+          if (!authorityRoot) {
+            throw new Error("Missing XMSS authority root for quantum authority initialization.");
+          }
+
+          tx.add(createInitAuthorityInstruction(authorityPda, vaultRegistryPda, fromPubkey, {
+            currentAuthorityHash: authorityHash,
+            currentAuthorityRoot: authorityRoot,
+            bump: authorityBump,
           }));
         }
         tx.add(createInitSpendOrchestrationInstruction(orchPda, vaultRegistryPda, fromPubkey, {
