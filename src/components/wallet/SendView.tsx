@@ -24,6 +24,11 @@ import {
   getInitialXmssAuthorityHash,
   serializeXmssTree,
 } from "@/services/quantum/wots";
+import {
+  createWinterAuthoritySignerState,
+  deserializeWinterAuthoritySignerState,
+  serializeWinterAuthoritySignerState,
+} from "@/services/quantum/winterAuthority";
 import { shortenAddress } from "@/lib/utils";
 import type { WalletView, Token } from "@/types";
 import { VaulkyrieClient } from "@/sdk/client";
@@ -253,6 +258,8 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
     setPendingPolicyRequest,
     getXmssTree,
     storeXmssTree,
+    getWinterAuthorityState,
+    storeWinterAuthorityState,
     refreshBalances,
     refreshTransactions,
     refreshVaultState,
@@ -547,7 +554,43 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
     let authorityRoot = existingAuthority?.account.currentAuthorityRoot ?? null;
 
     if (!existingVault || !existingAuthority) {
-      const serializedTree = getXmssTree(activeAccount!.publicKey);
+      const serializedWinterAuthority = getWinterAuthorityState(activeAccount!.publicKey);
+      let winterAuthority = serializedWinterAuthority
+        ? await (async () => {
+            try {
+              return await deserializeWinterAuthoritySignerState(serializedWinterAuthority);
+            } catch {
+              return null;
+            }
+          })()
+        : null;
+
+      if (!winterAuthority && !existingVault) {
+        options.onStatus?.("Generating Vaulkyrie Winter authority state...");
+        winterAuthority = await createWinterAuthoritySignerState();
+        storeWinterAuthorityState(
+          activeAccount!.publicKey,
+          serializeWinterAuthoritySignerState(winterAuthority),
+        );
+      }
+
+      if (winterAuthority) {
+        const initialAuthorityRoot = winterAuthority.current.root;
+        if (
+          existingVault &&
+          !equalBytes(existingVault.account.currentAuthorityHash, initialAuthorityRoot)
+        ) {
+          throw new Error(
+            "The stored Winter authority state does not match this vault's on-chain authority root. " +
+              "Recover or re-create the vault before submitting authority-bound spends.",
+          );
+        }
+
+        authorityHash = authorityHash ?? initialAuthorityRoot;
+        authorityRoot = authorityRoot ?? initialAuthorityRoot;
+      }
+
+      const serializedTree = !authorityRoot ? getXmssTree(activeAccount!.publicKey) : null;
       let xmssTree = serializedTree
         ? (() => {
             try {
@@ -558,25 +601,27 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
           })()
         : null;
 
-      if (!xmssTree) {
+      if (!authorityRoot && !authorityHash && !xmssTree) {
         options.onStatus?.("Generating Vaulkyrie XMSS authority tree...");
         xmssTree = await generateXmssTree();
         storeXmssTree(activeAccount!.publicKey, serializeXmssTree(xmssTree));
       }
 
-      const initialAuthorityHash = getInitialXmssAuthorityHash(xmssTree);
-      if (
-        existingVault &&
-        !equalBytes(existingVault.account.currentAuthorityHash, initialAuthorityHash)
-      ) {
-        throw new Error(
-          "The stored XMSS authority tree does not match this vault's on-chain authority hash. " +
-            "Recover or re-create the vault before submitting authority-bound spends.",
-        );
-      }
+      if (xmssTree) {
+        const initialAuthorityHash = getInitialXmssAuthorityHash(xmssTree);
+        if (
+          existingVault &&
+          !equalBytes(existingVault.account.currentAuthorityHash, initialAuthorityHash)
+        ) {
+          throw new Error(
+            "The stored XMSS authority tree does not match this vault's on-chain authority hash. " +
+              "Recover or re-create the vault before submitting authority-bound spends.",
+          );
+        }
 
-      authorityHash = authorityHash ?? initialAuthorityHash;
-      authorityRoot = authorityRoot ?? new Uint8Array(xmssTree.root);
+        authorityHash = authorityHash ?? initialAuthorityHash;
+        authorityRoot = authorityRoot ?? new Uint8Array(xmssTree.root);
+      }
     }
 
     if (!authorityHash) {
@@ -623,7 +668,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
     }
     if (!existingAuthority) {
       if (!authorityRoot) {
-        throw new Error("Missing XMSS authority root for quantum authority initialization.");
+        throw new Error("Missing quantum authority root for initialization.");
       }
 
       tx.add(createInitAuthorityInstruction(authorityPda, vaultRegistryPda, fromPubkey, {
@@ -667,6 +712,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
     };
   }, [
     activeAccount,
+    getWinterAuthorityState,
     getXmssTree,
     network,
     needsPolicyReview,
@@ -674,6 +720,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
     recipient,
     selectedPolicyProfile,
     selectedToken,
+    storeWinterAuthorityState,
     storeXmssTree,
     loadDkgState,
     tokens,

@@ -25,11 +25,17 @@ import {
   getInitialXmssAuthorityHash,
   serializeXmssTree,
 } from "@/services/quantum/wots";
+import {
+  createWinterAuthoritySignerState,
+  deserializeWinterAuthoritySignerState,
+  serializeWinterAuthoritySignerState,
+} from "@/services/quantum/winterAuthority";
 
 export interface PreparedVaultBootstrap {
   transaction: Transaction | null;
   actions: string[];
   generatedXmssTree: string | null;
+  generatedWinterAuthorityState: string | null;
   requiredFundingLamports: number;
 }
 
@@ -119,12 +125,14 @@ export async function prepareVaultBootstrapTransaction(params: {
   connection: Connection;
   walletPubkey: PublicKey;
   existingXmssTree: string | null;
+  existingWinterAuthorityState?: string | null;
   defaultPolicyVersion?: bigint;
 }): Promise<PreparedVaultBootstrap> {
   const {
     connection,
     walletPubkey,
     existingXmssTree,
+    existingWinterAuthorityState = null,
     defaultPolicyVersion = 1n,
   } = params;
 
@@ -142,9 +150,40 @@ export async function prepareVaultBootstrapTransaction(params: {
   let authorityHash = existingVault?.account.currentAuthorityHash ?? null;
   let authorityRoot = existingAuthority?.account.currentAuthorityRoot ?? null;
   let generatedXmssTree: string | null = null;
+  let generatedWinterAuthorityState: string | null = null;
 
   if (!existingVault || !existingAuthority) {
-    let xmssTree = existingXmssTree
+    let winterAuthorityState = existingWinterAuthorityState
+      ? await (async () => {
+          try {
+            return await deserializeWinterAuthoritySignerState(existingWinterAuthorityState);
+          } catch {
+            return null;
+          }
+        })()
+      : null;
+
+    if (!winterAuthorityState && !existingVault) {
+      winterAuthorityState = await createWinterAuthoritySignerState();
+      generatedWinterAuthorityState = serializeWinterAuthoritySignerState(winterAuthorityState);
+    }
+
+    if (winterAuthorityState) {
+      const initialAuthorityRoot = winterAuthorityState.current.root;
+      if (
+        existingVault &&
+        !equalBytes(existingVault.account.currentAuthorityHash, initialAuthorityRoot)
+      ) {
+        throw new Error(
+          "The stored Winter authority state does not match this vault's on-chain authority root.",
+        );
+      }
+
+      authorityHash = authorityHash ?? initialAuthorityRoot;
+      authorityRoot = authorityRoot ?? initialAuthorityRoot;
+    }
+
+    let xmssTree = !authorityRoot && existingXmssTree
       ? (() => {
           try {
             return deserializeXmssTree(existingXmssTree);
@@ -154,23 +193,25 @@ export async function prepareVaultBootstrapTransaction(params: {
         })()
       : null;
 
-    if (!xmssTree) {
+    if (!authorityRoot && !authorityHash && !xmssTree) {
       xmssTree = await generateXmssTree();
       generatedXmssTree = serializeXmssTree(xmssTree);
     }
 
-    const initialAuthorityHash = getInitialXmssAuthorityHash(xmssTree);
-    if (
-      existingVault &&
-      !equalBytes(existingVault.account.currentAuthorityHash, initialAuthorityHash)
-    ) {
-      throw new Error(
-        "The stored XMSS authority tree does not match this vault's on-chain authority hash.",
-      );
-    }
+    if (xmssTree) {
+      const initialAuthorityHash = getInitialXmssAuthorityHash(xmssTree);
+      if (
+        existingVault &&
+        !equalBytes(existingVault.account.currentAuthorityHash, initialAuthorityHash)
+      ) {
+        throw new Error(
+          "The stored XMSS authority tree does not match this vault's on-chain authority hash.",
+        );
+      }
 
-    authorityHash = authorityHash ?? initialAuthorityHash;
-    authorityRoot = authorityRoot ?? new Uint8Array(xmssTree.root);
+      authorityHash = authorityHash ?? initialAuthorityHash;
+      authorityRoot = authorityRoot ?? new Uint8Array(xmssTree.root);
+    }
   }
 
   const actions: string[] = [];
@@ -232,6 +273,7 @@ export async function prepareVaultBootstrapTransaction(params: {
       transaction: null,
       actions,
       generatedXmssTree,
+      generatedWinterAuthorityState,
       requiredFundingLamports: 0,
     };
   }
@@ -246,6 +288,7 @@ export async function prepareVaultBootstrapTransaction(params: {
     transaction,
     actions,
     generatedXmssTree,
+    generatedWinterAuthorityState,
     requiredFundingLamports,
   };
 }

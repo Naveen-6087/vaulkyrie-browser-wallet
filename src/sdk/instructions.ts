@@ -7,6 +7,7 @@ import { Instruction, VAULKYRIE_CORE_PROGRAM_ID } from "./constants";
 import type {
   PolicyReceipt,
   AuthorityRotationStatement,
+  WinterAuthorityAdvanceStatement,
   WotsAuthProof,
   InitVaultParams,
   InitAuthorityParams,
@@ -19,6 +20,7 @@ import type {
   InitAuthorityProofParams,
   WriteAuthorityProofChunkParams,
   RotateAuthorityStagedParams,
+  AdvanceWinterAuthorityParams,
   SplitQuantumVaultParams,
   CloseQuantumVaultParams,
   InitSpendOrchestrationParams,
@@ -90,6 +92,19 @@ function encodeStatement(stmt: AuthorityRotationStatement): Uint8Array {
   let off = 0;
   off = writeBytes(buf, off, stmt.actionHash);
   off = writeBytes(buf, off, stmt.nextAuthorityHash);
+  off = writeU64LE(buf, off, stmt.sequence);
+  writeU64LE(buf, off, stmt.expirySlot);
+  return buf;
+}
+
+function encodeWinterAuthorityAdvanceStatement(
+  stmt: WinterAuthorityAdvanceStatement
+): Uint8Array {
+  const buf = new Uint8Array(112);
+  let off = 0;
+  off = writeBytes(buf, off, stmt.actionHash);
+  off = writeBytes(buf, off, stmt.currentRoot);
+  off = writeBytes(buf, off, stmt.nextRoot);
   off = writeU64LE(buf, off, stmt.sequence);
   writeU64LE(buf, off, stmt.expirySlot);
   return buf;
@@ -424,6 +439,29 @@ export function createRotateAuthorityStagedInstruction(
       { pubkey: vault, isSigner: false, isWritable: true },
       { pubkey: authority, isSigner: false, isWritable: true },
       { pubkey: proofAccount, isSigner: false, isWritable: true },
+      { pubkey: walletSigner, isSigner: true, isWritable: false },
+    ],
+    programId
+  );
+}
+
+export function createAdvanceWinterAuthorityInstruction(
+  vault: PublicKey,
+  authority: PublicKey,
+  walletSigner: PublicKey,
+  params: AdvanceWinterAuthorityParams,
+  programId: PublicKey = VAULKYRIE_CORE_PROGRAM_ID
+): TransactionInstruction {
+  const statement = encodeWinterAuthorityAdvanceStatement(params.statement);
+  const buf = new Uint8Array(statement.length + params.signature.length);
+  buf.set(statement, 0);
+  buf.set(params.signature, statement.length);
+  return makeIx(
+    Instruction.AdvanceWinterAuthority,
+    buf,
+    [
+      { pubkey: vault, isSigner: false, isWritable: true },
+      { pubkey: authority, isSigner: false, isWritable: true },
       { pubkey: walletSigner, isSigner: true, isWritable: false },
     ],
     programId

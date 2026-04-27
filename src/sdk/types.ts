@@ -25,6 +25,14 @@ export interface AuthorityRotationStatement {
   expirySlot: bigint; // u64
 }
 
+export interface WinterAuthorityAdvanceStatement {
+  actionHash: Uint8Array; // 32 bytes
+  currentRoot: Uint8Array; // 32 bytes
+  nextRoot: Uint8Array; // 32 bytes
+  sequence: bigint; // u64
+  expirySlot: bigint; // u64
+}
+
 export interface WotsAuthProof {
   publicKey: Uint8Array; // 512 bytes
   signature: Uint8Array; // 512 bytes
@@ -182,6 +190,11 @@ export interface WriteAuthorityProofChunkParams {
 
 export interface RotateAuthorityStagedParams {
   statement: AuthorityRotationStatement;
+}
+
+export interface AdvanceWinterAuthorityParams {
+  statement: WinterAuthorityAdvanceStatement;
+  signature: Uint8Array; // 768 bytes
 }
 
 export interface SplitQuantumVaultParams {

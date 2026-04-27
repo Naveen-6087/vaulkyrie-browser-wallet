@@ -236,6 +236,24 @@ export async function winterAuthorityAdvanceDigest(
   ]);
 }
 
+export async function winterAuthorityAdvanceReplayDigest(
+  statement: WinterAuthorityAdvanceStatement,
+): Promise<Uint8Array> {
+  assertByteLength(statement.actionHash, 32, "Winter authority action hash");
+  assertByteLength(statement.currentRoot, 32, "Winter authority current root");
+  assertByteLength(statement.nextRoot, 32, "Winter authority next root");
+
+  return sha256(concatBytes([
+    WINTER_AUTHORITY_DOMAIN,
+    WINTER_AUTHORITY_ADVANCE_DOMAIN,
+    statement.actionHash,
+    statement.currentRoot,
+    statement.nextRoot,
+    u64Le(statement.sequence),
+    u64Le(statement.expirySlot),
+  ]));
+}
+
 export async function signWinterAuthorityAdvance(
   state: WinterAuthoritySignerState,
   statement: WinterAuthorityAdvanceStatement,

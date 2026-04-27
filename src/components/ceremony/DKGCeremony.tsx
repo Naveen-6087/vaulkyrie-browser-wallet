@@ -116,6 +116,8 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
   const network = useWalletStore((state) => state.network);
   const getXmssTree = useWalletStore((state) => state.getXmssTree);
   const storeXmssTree = useWalletStore((state) => state.storeXmssTree);
+  const getWinterAuthorityState = useWalletStore((state) => state.getWinterAuthorityState);
+  const storeWinterAuthorityState = useWalletStore((state) => state.storeWinterAuthorityState);
   const [phase, setPhase] = useState<CeremonyPhase>("pairing");
   const [sessionCode, setSessionCode] = useState(generateSessionCode);
   const [relaySessionInfo, setRelaySessionInfo] = useState(() => createRelaySessionMetadata(sessionCode));
@@ -349,6 +351,7 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
           connection,
           walletPubkey,
           existingXmssTree: getXmssTree(walletAddress),
+          existingWinterAuthorityState: getWinterAuthorityState(walletAddress),
         });
         const balanceLamports = await connection.getBalance(walletPubkey, "confirmed");
         return {
@@ -356,9 +359,13 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
           balanceLamports,
           requiredFundingLamports: prepared.requiredFundingLamports,
           alreadyInitialized: prepared.transaction === null,
+          generatedWinterAuthorityState: prepared.generatedWinterAuthorityState,
         };
       });
 
+      if (result.generatedWinterAuthorityState) {
+        storeWinterAuthorityState(walletAddress, result.generatedWinterAuthorityState);
+      }
       setBootstrapPendingActions(result.actions);
       setBootstrapBalanceLamports(result.balanceLamports);
       setBootstrapRequiredLamports(result.requiredFundingLamports);
@@ -381,7 +388,14 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
     } finally {
       setIsCheckingBootstrapFunding(false);
     }
-  }, [bootstrapRequiredLamports, getXmssTree, groupPublicKey, network]);
+  }, [
+    bootstrapRequiredLamports,
+    getWinterAuthorityState,
+    getXmssTree,
+    groupPublicKey,
+    network,
+    storeWinterAuthorityState,
+  ]);
 
   const requestDevnetFunding = useCallback(async () => {
     if (network !== "devnet" || !bootstrapWalletAddress || bootstrapRequiredLamports === null) {
@@ -469,13 +483,18 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
           connection,
           walletPubkey,
           existingXmssTree: getXmssTree(walletAddress),
+          existingWinterAuthorityState: getWinterAuthorityState(walletAddress),
         });
 
         if (!prepared.transaction) {
           if (relay && isMultiDevice) {
             relay.broadcastSignComplete("already-initialized", true);
           }
-          return { signature: null, generatedXmssTree: prepared.generatedXmssTree };
+          return {
+            signature: null,
+            generatedXmssTree: prepared.generatedXmssTree,
+            generatedWinterAuthorityState: prepared.generatedWinterAuthorityState,
+          };
         }
 
         const currentBalance = await connection.getBalance(walletPubkey, "confirmed");
@@ -551,7 +570,11 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
           });
           await connection.confirmTransaction(signature, "confirmed");
           relay.broadcastSignComplete(signature, true);
-          return { signature, generatedXmssTree: prepared.generatedXmssTree };
+          return {
+            signature,
+            generatedXmssTree: prepared.generatedXmssTree,
+            generatedWinterAuthorityState: prepared.generatedWinterAuthorityState,
+          };
         }
 
         const signature = await signAndSendTransaction(
@@ -561,11 +584,18 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
           setBootstrapMessage,
         );
         await connection.confirmTransaction(signature, "confirmed");
-        return { signature, generatedXmssTree: prepared.generatedXmssTree };
+        return {
+          signature,
+          generatedXmssTree: prepared.generatedXmssTree,
+          generatedWinterAuthorityState: prepared.generatedWinterAuthorityState,
+        };
       });
 
       if (result.generatedXmssTree) {
         storeXmssTree(walletAddress, result.generatedXmssTree);
+      }
+      if (result.generatedWinterAuthorityState) {
+        storeWinterAuthorityState(walletAddress, result.generatedWinterAuthorityState);
       }
 
       setBootstrapMessage(
@@ -593,6 +623,7 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
   }, [
     config.vaultName,
     getXmssTree,
+    getWinterAuthorityState,
     groupPublicKey,
     isCheckingBootstrapFunding,
     isBootstrapping,
@@ -600,6 +631,7 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
     onComplete,
     runSigningOrchestrator,
     storeXmssTree,
+    storeWinterAuthorityState,
     bootstrapFundingReady,
     bootstrapRequiredLamports,
   ]);

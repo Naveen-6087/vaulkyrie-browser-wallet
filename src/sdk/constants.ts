@@ -37,6 +37,7 @@ export const Instruction = {
   CompleteRecovery: 23,
   MigrateAuthority: 24,
   AdvancePolicyVersion: 25,
+  AdvanceWinterAuthority: 26,
 } as const;
 
 // ── Account discriminators (8-byte ASCII) ────────────────────────────
@@ -143,5 +144,8 @@ export const XMSS_TREE_HEIGHT = 8;
 export const XMSS_AUTH_PATH_BYTES = 256; // 8 * 32
 export const XMSS_LEAF_COUNT = 256; // 2^8
 export const WOTS_AUTH_PROOF_LEN = 1284; // 512*2 + 4 + 256
+export const WINTER_AUTHORITY_MESSAGE_SCALARS = 22;
+export const WINTER_AUTHORITY_TOTAL_SCALARS = 24;
+export const WINTER_AUTHORITY_SIGNATURE_BYTES = 768; // 24 * 32
 export const WINTERNITZ_SIG_BYTES = 1417;
 export const AUTHORITY_PROOF_CHUNK_MAX = 256;
