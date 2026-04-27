@@ -1,8 +1,8 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
-import { PublicKey, Transaction } from "@solana/web3.js";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { PublicKey, Transaction, type Connection } from "@solana/web3.js";
 import {
   Shield, ShieldCheck, ShieldAlert, ShieldX,
-  Loader2, RefreshCw, Clock, Plus, XCircle, AlertCircle, Check, ExternalLink,
+  Loader2, RefreshCw, Clock, Plus, XCircle, AlertCircle, Check, ExternalLink, Radio,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -28,7 +28,22 @@ import {
   encryptPolicyEvaluateInput,
   nextPolicyComputationOffset,
 } from "@/sdk/arciumPolicy";
-import { signAndSendTransaction } from "@/services/frost/signTransaction";
+import { hexToBytes } from "@/services/frost/frostService";
+import { SigningOrchestrator } from "@/services/frost/signingOrchestrator";
+import {
+  loadDkgResult,
+  prepareLegacyVaultTransaction,
+  sendSignedLegacyVaultTransaction,
+  signAndSendTransaction,
+} from "@/services/frost/signTransaction";
+import {
+  createRelay,
+  generateSessionCode,
+  probeRelayAvailability,
+  type RelayAdapter,
+} from "@/services/relay/relayAdapter";
+import type { SignRequestPayload } from "@/services/relay/channelRelay";
+import { createRelaySessionMetadata } from "@/services/relay/sessionInvite";
 import { NETWORKS } from "@/lib/constants";
 import { withRpcFallback } from "@/services/solanaRpc";
 import type { WalletView, PolicyProfile, PendingPolicyRequest } from "@/types";
@@ -50,8 +65,13 @@ type PolicyPhase =
   | "create-profile"
   | "open-eval"
   | "submitting"
+  | "coordinate"
   | "success"
   | "error";
+
+type BufferedSigningMessage =
+  | { type: "round1"; fromId: number; commitments: number[] }
+  | { type: "round2"; fromId: number; share: number[] };
 
 function statusIcon(status: PolicyEvaluationStatus) {
   switch (status) {
@@ -110,12 +130,17 @@ function normalizeRecipients(input: string): string[] {
     .filter(Boolean);
 }
 
+async function canReachRelay(url: string): Promise<boolean> {
+  return probeRelayAvailability(url, 1500);
+}
+
 export function PolicyView({ onNavigate }: PolicyViewProps) {
   const {
     activeAccount,
     network,
+    relayUrl,
     vaultConfigs,
-    getPolicyProfiles,
+    policyProfiles,
     upsertPolicyProfile,
     deletePolicyProfile,
     pendingPolicyRequest,
@@ -131,6 +156,8 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
   const [phase, setPhase] = useState<PolicyPhase>("dashboard");
   const [actionMsg, setActionMsg] = useState("");
   const [txSignature, setTxSignature] = useState("");
+  const [signingSessionCode, setSigningSessionCode] = useState("");
+  const [relaySessionInfo, setRelaySessionInfo] = useState(() => createRelaySessionMetadata("------"));
   const [abortingEval, setAbortingEval] = useState<string | null>(null);
   const [queueingEval, setQueueingEval] = useState<string | null>(null);
   const [finalizingEval, setFinalizingEval] = useState<string | null>(null);
@@ -153,10 +180,14 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
   const [evalAmount, setEvalAmount] = useState("");
   const [evalToken, setEvalToken] = useState("SOL");
   const [selectedProfileId, setSelectedProfileId] = useState("");
+  const relayRef = useRef<RelayAdapter | null>(null);
+  const orchestratorRef = useRef<SigningOrchestrator | null>(null);
+  const pendingSigningMessagesRef = useRef<BufferedSigningMessage[]>([]);
+  const signingTimeoutRef = useRef<number | null>(null);
 
   const savedProfiles = useMemo(
-    () => (activeAccount?.publicKey ? getPolicyProfiles(activeAccount.publicKey) : []),
-    [activeAccount?.publicKey, getPolicyProfiles],
+    () => (activeAccount?.publicKey ? policyProfiles[activeAccount.publicKey] ?? [] : []),
+    [activeAccount?.publicKey, policyProfiles],
   );
   const selectedProfile = savedProfiles.find((profile) => profile.id === selectedProfileId) ?? null;
 
@@ -218,6 +249,267 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
   useEffect(() => {
     fetchPolicyData();
   }, [fetchPolicyData]);
+
+  const clearSigningTimeout = useCallback(() => {
+    if (signingTimeoutRef.current !== null) {
+      window.clearTimeout(signingTimeoutRef.current);
+      signingTimeoutRef.current = null;
+    }
+  }, []);
+
+  const cleanupRelayState = useCallback((resetInvite = true) => {
+    clearSigningTimeout();
+    relayRef.current?.disconnect();
+    relayRef.current = null;
+    orchestratorRef.current = null;
+    pendingSigningMessagesRef.current = [];
+    if (resetInvite) {
+      setSigningSessionCode("");
+      setRelaySessionInfo(createRelaySessionMetadata("------"));
+    }
+  }, [clearSigningTimeout]);
+
+  useEffect(() => () => cleanupRelayState(), [cleanupRelayState]);
+
+  const queueOrHandleSigningMessage = useCallback((message: BufferedSigningMessage) => {
+    const orchestrator = orchestratorRef.current;
+    if (!orchestrator) {
+      pendingSigningMessagesRef.current.push(message);
+      return;
+    }
+
+    if (message.type === "round1") {
+      orchestrator.handleSignRound1(message.fromId, message.commitments);
+      return;
+    }
+
+    orchestrator.handleSignRound2(message.fromId, message.share);
+  }, []);
+
+  const runSigningOrchestrator = useCallback(async (params: {
+    relay: RelayAdapter;
+    participantId: number;
+    keyPackageJson: string;
+    publicKeyPackageJson: string;
+    message: Uint8Array;
+    signerIds: number[];
+    onStatus: (message: string) => void;
+  }) => {
+    const orchestrator = new SigningOrchestrator({
+      relay: params.relay,
+      participantId: params.participantId,
+      keyPackageJson: params.keyPackageJson,
+      publicKeyPackageJson: params.publicKeyPackageJson,
+      message: params.message,
+      signerIds: params.signerIds,
+      onProgress: (progress) => params.onStatus(progress.message),
+    });
+    orchestratorRef.current = orchestrator;
+
+    const bufferedMessages = pendingSigningMessagesRef.current.splice(0);
+    for (const buffered of bufferedMessages) {
+      if (buffered.type === "round1") {
+        orchestrator.handleSignRound1(buffered.fromId, buffered.commitments);
+      } else {
+        orchestrator.handleSignRound2(buffered.fromId, buffered.share);
+      }
+    }
+
+    return orchestrator.run();
+  }, []);
+
+  const runMultiDevicePolicySigning = useCallback(async (params: {
+    participantId: number;
+    keyPackageJson: string;
+    publicKeyPackageJson: string;
+    threshold: number;
+    prepareMessage: () => Promise<Uint8Array>;
+    summary: string;
+  }) => {
+    cleanupRelayState();
+    const relayMode = await canReachRelay(relayUrl) ? "remote" : "local";
+    const requestedSessionCode = generateSessionCode();
+
+    setPhase("coordinate");
+    setSigningSessionCode(requestedSessionCode);
+    setRelaySessionInfo(createRelaySessionMetadata(requestedSessionCode));
+
+    return new Promise<{ signatureHex: string; verified: boolean }>((resolve, reject) => {
+      let settled = false;
+      let signingStarted = false;
+
+      const settle = (callback: () => void) => {
+        if (settled) return;
+        settled = true;
+        cleanupRelayState(false);
+        callback();
+      };
+
+      const relay = createRelay({
+        mode: relayMode,
+        participantId: params.participantId,
+        isCoordinator: true,
+        deviceName: `Policy signer ${params.participantId}`,
+        relayUrl,
+        sessionId: requestedSessionCode,
+        events: {
+          onParticipantJoined: () => {
+            const connectedIds = relay
+              .getParticipants()
+              .map((candidate) => candidate.participantId)
+              .filter((candidateId, index, ids) => candidateId > 0 && ids.indexOf(candidateId) === index);
+
+            setActionMsg(`Connected signers: ${connectedIds.length}/${params.threshold}`);
+            if (signingStarted || connectedIds.length < params.threshold) {
+              return;
+            }
+
+            const signerIds = [
+              params.participantId,
+              ...connectedIds
+                .filter((candidateId) => candidateId !== params.participantId)
+                .sort((left, right) => left - right),
+            ].slice(0, params.threshold);
+
+            if (signerIds.length < params.threshold) {
+              return;
+            }
+
+            signingStarted = true;
+            void (async () => {
+              try {
+                setActionMsg("Preparing policy transaction...");
+                const message = await params.prepareMessage();
+                const request: SignRequestPayload = {
+                  requestId: crypto.randomUUID(),
+                  message: Array.from(message),
+                  signerIds,
+                  amount: 0,
+                  token: "POLICY",
+                  recipient: activeAccount?.publicKey ?? "",
+                  initiator: activeAccount?.name ?? `Policy signer ${params.participantId}`,
+                  network,
+                  createdAt: Date.now(),
+                  purpose: "policy",
+                  summary: params.summary,
+                };
+
+                relay.broadcastSignRequest(request);
+                setActionMsg("Policy signing request sent. Waiting for signer approvals...");
+                const result = await runSigningOrchestrator({
+                  relay,
+                  participantId: params.participantId,
+                  keyPackageJson: params.keyPackageJson,
+                  publicKeyPackageJson: params.publicKeyPackageJson,
+                  message,
+                  signerIds,
+                  onStatus: setActionMsg,
+                });
+                settle(() => resolve(result));
+              } catch (err) {
+                settle(() => reject(err));
+              }
+            })();
+          },
+          onParticipantLeft: () => {
+            setActionMsg(`A signer disconnected. Connected: ${relay.participantCount}/${params.threshold}`);
+          },
+          onSignRequest: () => {},
+          onSignRound1: (fromId, commitments) => queueOrHandleSigningMessage({ type: "round1", fromId, commitments }),
+          onSignRound2: (fromId, share) => queueOrHandleSigningMessage({ type: "round2", fromId, share }),
+          onError: (_fromId, relayError) => {
+            settle(() => reject(new Error(`Signing relay error: ${relayError}`)));
+          },
+          onDkgRound1: () => {},
+          onDkgRound2: () => {},
+          onDkgRound3Done: () => {},
+          onStartDkg: () => {},
+          onSignComplete: () => {},
+        },
+        onConnectionStateChange: (state) => {
+          if (state === "connected") {
+            setActionMsg("Connected to relay. Waiting for another signer...");
+            relay.createSession(params.threshold, params.threshold, requestedSessionCode);
+          } else if (state === "failed") {
+            settle(() => reject(new Error("Relay connection failed")));
+          }
+        },
+        onSessionCreated: (session) => {
+          setActionMsg(`Policy signing session created: ${session.invite}. Share with another signer.`);
+          setSigningSessionCode(session.invite);
+          setRelaySessionInfo(session);
+        },
+      });
+
+      relayRef.current = relay;
+      relay.connect();
+
+      if (relayMode === "local") {
+        setActionMsg(`Policy signing session ${requestedSessionCode} ready. Ask another signer to join from Send > Join Signing Session.`);
+      }
+
+      signingTimeoutRef.current = window.setTimeout(() => {
+        settle(() => reject(new Error("Policy signing timed out. Not enough signers connected within 2 minutes.")));
+      }, 120_000);
+    });
+  }, [
+    activeAccount?.name,
+    activeAccount?.publicKey,
+    cleanupRelayState,
+    network,
+    queueOrHandleSigningMessage,
+    relayUrl,
+    runSigningOrchestrator,
+  ]);
+
+  const signAndSendPolicyTransaction = useCallback(async (
+    connection: Connection,
+    tx: Transaction,
+    summary: string,
+  ): Promise<string> => {
+    if (!activeAccount?.publicKey) {
+      throw new Error("No active vault selected.");
+    }
+
+    const dkg = loadDkgResult(activeAccount.publicKey);
+    const availableKeyIds = Object.keys(dkg.keyPackages).map(Number);
+    const hasLocalThreshold = availableKeyIds.length >= dkg.threshold;
+    const isMultiDevice = dkg.isMultiDevice === true;
+
+    if (hasLocalThreshold && !isMultiDevice) {
+      return signAndSendTransaction(connection, tx, activeAccount.publicKey, setActionMsg);
+    }
+
+    const participantId = dkg.participantId ?? availableKeyIds[0] ?? 1;
+    const keyPackageJson = dkg.keyPackages[participantId];
+    if (!keyPackageJson) {
+      throw new Error(`No key package found for participant ${participantId}.`);
+    }
+
+    const result = await runMultiDevicePolicySigning({
+      participantId,
+      keyPackageJson,
+      publicKeyPackageJson: dkg.publicKeyPackage,
+      threshold: dkg.threshold,
+      prepareMessage: async () => {
+        await prepareLegacyVaultTransaction(connection, tx, activeAccount.publicKey);
+        return tx.serializeMessage();
+      },
+      summary,
+    });
+
+    if (!result.verified) {
+      throw new Error("FROST signature verification failed");
+    }
+
+    setActionMsg("Signature verified! Submitting to Solana...");
+    return sendSignedLegacyVaultTransaction(
+      connection,
+      tx,
+      activeAccount.publicKey,
+      hexToBytes(result.signatureHex),
+    );
+  }, [activeAccount?.publicKey, runMultiDevicePolicySigning]);
 
   const resetProfileForm = useCallback(() => {
     setProfileName("");
@@ -289,11 +581,10 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
 
         const tx = new Transaction().add(ix);
 
-        return signAndSendTransaction(
+        return signAndSendPolicyTransaction(
           connection,
           tx,
-          activeAccount.publicKey,
-          (msg) => setActionMsg(msg),
+          "Initialize the policy bridge for this vault.",
         );
       });
 
@@ -355,11 +646,10 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
 
         const tx = new Transaction().add(ix);
 
-        return signAndSendTransaction(
+        return signAndSendPolicyTransaction(
           connection,
           tx,
-          activeAccount.publicKey,
-          (msg) => setActionMsg(msg),
+          `Open policy evaluation for ${evalActionType} ${evalAmount || "0"} ${evalToken}.`,
         );
       });
 
@@ -371,7 +661,7 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
       setError(e instanceof Error ? e.message : "Failed to open evaluation");
       setPhase("error");
     }
-  }, [activeAccount?.publicKey, config, evalActionType, evalAmount, evalExpirySlots, evalRecipient, evalToken, fetchPolicyData, network, selectedProfile, setPendingPolicyRequest]);
+  }, [activeAccount?.publicKey, config, evalActionType, evalAmount, evalExpirySlots, evalRecipient, evalToken, fetchPolicyData, network, selectedProfile, setPendingPolicyRequest, signAndSendPolicyTransaction]);
 
   const handleAbortEvaluation = async (evalAddress: PublicKey) => {
     if (!activeAccount?.publicKey) return;
@@ -388,10 +678,10 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
 
         const tx = new Transaction().add(ix);
 
-        return signAndSendTransaction(
+        return signAndSendPolicyTransaction(
           connection,
           tx,
-          activeAccount.publicKey,
+          "Abort this pending policy evaluation.",
         );
       });
 
@@ -445,11 +735,10 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
 
         const tx = new Transaction().add(ix);
 
-        return signAndSendTransaction(
+        return signAndSendPolicyTransaction(
           connection,
           tx,
-          activeAccount.publicKey,
-          (msg) => setActionMsg(msg),
+          "Queue this policy evaluation for Arcium processing.",
         );
       });
 
@@ -493,11 +782,10 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
 
           const tx = new Transaction().add(ix);
 
-          return signAndSendTransaction(
+          return signAndSendPolicyTransaction(
             connection,
             tx,
-            activeAccount.publicKey,
-            (msg) => setActionMsg(msg),
+            "Finalize this policy evaluation as blocked.",
           );
         });
 
@@ -533,11 +821,10 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
 
         const tx = new Transaction().add(ix);
 
-        return signAndSendTransaction(
+        return signAndSendPolicyTransaction(
           connection,
           tx,
-          activeAccount.publicKey,
-          (msg) => setActionMsg(msg),
+          `Finalize this policy evaluation as ${mode}.`,
         );
       });
 
@@ -606,6 +893,41 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
     );
   }
 
+  if (phase === "coordinate") {
+    return (
+      <div className="flex flex-col items-center justify-center gap-4 p-6 flex-1">
+        <div className="relative mb-2">
+          <div className="absolute -inset-4 bg-orange-500/20 rounded-full blur-xl animate-pulse" />
+          <div className="relative h-16 w-16 rounded-full bg-orange-500/15 border-2 border-orange-500/40 flex items-center justify-center">
+            <Radio className="h-8 w-8 text-orange-400 animate-pulse" />
+          </div>
+        </div>
+        <h3 className="text-base font-semibold">Policy Signing</h3>
+        {signingSessionCode && (
+          <div className="flex flex-col items-center gap-1">
+            <p className="text-[10px] text-muted-foreground uppercase tracking-wider">
+              {relaySessionInfo.authToken ? "Session Invite" : "Session Code"}
+            </p>
+            <code className={`font-mono font-bold text-primary bg-primary/10 px-4 py-1.5 rounded-lg select-all ${
+              relaySessionInfo.authToken ? "text-xs tracking-wide" : "text-lg tracking-[.3em]"
+            }`}>
+              {signingSessionCode}
+            </code>
+            <p className="text-[10px] text-muted-foreground mt-1">
+              Share this {relaySessionInfo.authToken ? "invite" : "code"} with another vault signer
+            </p>
+            <p className="text-[11px] text-muted-foreground">
+              Verify phrase: <span className="font-mono text-foreground">{relaySessionInfo.verificationPhrase}</span>
+            </p>
+          </div>
+        )}
+        <p className="text-xs text-muted-foreground text-center max-w-[280px]">
+          {actionMsg}
+        </p>
+      </div>
+    );
+  }
+
   if (phase === "create-profile") {
     return (
       <div className="flex flex-col gap-4 p-4 flex-1">
@@ -622,8 +944,10 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
         <Card>
           <CardContent className="pt-4 space-y-4">
             <div>
-              <label className="text-xs text-muted-foreground mb-1 block">Policy name</label>
+              <label htmlFor="policy-profile-name" className="text-xs text-muted-foreground mb-1 block">Policy name</label>
               <Input
+                id="policy-profile-name"
+                name="policyProfileName"
                 value={profileName}
                 onChange={(event) => setProfileName(event.target.value)}
                 placeholder="Daily transfers under 1 SOL"
@@ -632,8 +956,10 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
 
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="text-xs text-muted-foreground mb-1 block">Action type</label>
+                <label htmlFor="policy-profile-action-type" className="text-xs text-muted-foreground mb-1 block">Action type</label>
                 <select
+                  id="policy-profile-action-type"
+                  name="policyProfileActionType"
                   value={profileActionType}
                   onChange={(event) => setProfileActionType(event.target.value as PolicyProfile["actionType"])}
                   className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
@@ -643,8 +969,10 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
                 </select>
               </div>
               <div>
-                <label className="text-xs text-muted-foreground mb-1 block">Decision</label>
+                <label htmlFor="policy-profile-decision" className="text-xs text-muted-foreground mb-1 block">Decision</label>
                 <select
+                  id="policy-profile-decision"
+                  name="policyProfileDecision"
                   value={profileApprovalMode}
                   onChange={(event) => setProfileApprovalMode(event.target.value as PolicyProfile["approvalMode"])}
                   className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
@@ -658,28 +986,36 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
 
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="text-xs text-muted-foreground mb-1 block">Token</label>
+                <label htmlFor="policy-profile-token" className="text-xs text-muted-foreground mb-1 block">Token</label>
                 <Input
+                  id="policy-profile-token"
+                  name="policyProfileToken"
                   value={profileTokenSymbol}
                   onChange={(event) => setProfileTokenSymbol(event.target.value.toUpperCase())}
                   placeholder="SOL"
                 />
               </div>
               <div>
-                <label className="text-xs text-muted-foreground mb-1 block">Max amount</label>
+                <label htmlFor="policy-profile-max-amount" className="text-xs text-muted-foreground mb-1 block">Max amount</label>
                 <Input
+                  id="policy-profile-max-amount"
+                  name="policyProfileMaxAmount"
                   type="number"
                   value={profileMaxAmount}
                   onChange={(event) => setProfileMaxAmount(event.target.value)}
                   placeholder="1.0"
                   min="0"
+                  max="1000000000"
+                  step="any"
                 />
               </div>
             </div>
 
             <div>
-              <label className="text-xs text-muted-foreground mb-1 block">Allowed recipients</label>
+              <label htmlFor="policy-profile-recipients" className="text-xs text-muted-foreground mb-1 block">Allowed recipients</label>
               <textarea
+                id="policy-profile-recipients"
+                name="policyProfileRecipients"
                 value={profileRecipients}
                 onChange={(event) => setProfileRecipients(event.target.value)}
                 placeholder="One address per line or comma-separated"
@@ -688,8 +1024,10 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
             </div>
 
             <div>
-              <label className="text-xs text-muted-foreground mb-1 block">Notes</label>
+              <label htmlFor="policy-profile-notes" className="text-xs text-muted-foreground mb-1 block">Notes</label>
               <textarea
+                id="policy-profile-notes"
+                name="policyProfileNotes"
                 value={profileNotes}
                 onChange={(event) => setProfileNotes(event.target.value)}
                 placeholder="Describe why this rule exists or what it protects."
@@ -732,13 +1070,16 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
         <Card>
           <CardContent className="pt-4 space-y-4">
             <div>
-              <label className="text-xs text-muted-foreground mb-1 block">Policy version</label>
+              <label htmlFor="policy-init-version" className="text-xs text-muted-foreground mb-1 block">Policy version</label>
               <Input
+                id="policy-init-version"
+                name="policyInitVersion"
                 type="number"
                 value={initVersion}
                 onChange={(event) => setInitVersion(event.target.value)}
                 placeholder="1"
                 min="1"
+                max="1000000"
               />
             </div>
 
@@ -800,8 +1141,10 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
             )}
 
             <div>
-              <label className="text-xs text-muted-foreground mb-1 block">Policy profile</label>
+              <label htmlFor="policy-eval-profile" className="text-xs text-muted-foreground mb-1 block">Policy profile</label>
               <select
+                id="policy-eval-profile"
+                name="policyEvalProfile"
                 value={selectedProfileId}
                 onChange={(event) => {
                   const nextId = event.target.value;
@@ -825,8 +1168,10 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
 
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="text-xs text-muted-foreground mb-1 block">Action type</label>
+                <label htmlFor="policy-eval-action-type" className="text-xs text-muted-foreground mb-1 block">Action type</label>
                 <select
+                  id="policy-eval-action-type"
+                  name="policyEvalActionType"
                   value={evalActionType}
                   onChange={(event) => setEvalActionType(event.target.value as PolicyProfile["actionType"])}
                   className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
@@ -836,41 +1181,52 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
                 </select>
               </div>
               <div>
-                <label className="text-xs text-muted-foreground mb-1 block">Expiry (slots)</label>
+                <label htmlFor="policy-eval-expiry-slots" className="text-xs text-muted-foreground mb-1 block">Expiry (slots)</label>
                 <Input
+                  id="policy-eval-expiry-slots"
+                  name="policyEvalExpirySlots"
                   type="number"
                   value={evalExpirySlots}
                   onChange={(event) => setEvalExpirySlots(event.target.value)}
                   placeholder="200"
                   min="10"
+                  max="1000000"
                 />
               </div>
             </div>
 
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="text-xs text-muted-foreground mb-1 block">Token</label>
+                <label htmlFor="policy-eval-token" className="text-xs text-muted-foreground mb-1 block">Token</label>
                 <Input
+                  id="policy-eval-token"
+                  name="policyEvalToken"
                   value={evalToken}
                   onChange={(event) => setEvalToken(event.target.value.toUpperCase())}
                   placeholder="SOL"
                 />
               </div>
               <div>
-                <label className="text-xs text-muted-foreground mb-1 block">Amount</label>
+                <label htmlFor="policy-eval-amount" className="text-xs text-muted-foreground mb-1 block">Amount</label>
                 <Input
+                  id="policy-eval-amount"
+                  name="policyEvalAmount"
                   type="number"
                   value={evalAmount}
                   onChange={(event) => setEvalAmount(event.target.value)}
                   placeholder="0.5"
                   min="0"
+                  max="1000000000"
+                  step="any"
                 />
               </div>
             </div>
 
             <div>
-              <label className="text-xs text-muted-foreground mb-1 block">Recipient / target</label>
+              <label htmlFor="policy-eval-recipient" className="text-xs text-muted-foreground mb-1 block">Recipient / target</label>
               <Input
+                id="policy-eval-recipient"
+                name="policyEvalRecipient"
                 value={evalRecipient}
                 onChange={(event) => setEvalRecipient(event.target.value)}
                 placeholder="Recipient address or admin target"
@@ -1224,8 +1580,10 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
                     </div>
                     <div className="grid grid-cols-2 gap-2">
                       <div>
-                        <label className="text-[10px] text-muted-foreground mb-1 block">Decision mode</label>
+                        <label htmlFor={`policy-finalize-mode-${ev.address.toBase58()}`} className="text-[10px] text-muted-foreground mb-1 block">Decision mode</label>
                         <select
+                          id={`policy-finalize-mode-${ev.address.toBase58()}`}
+                          name={`policyFinalizeMode-${ev.address.toBase58()}`}
                           value={finalizeModes[ev.address.toBase58()] ?? "allow"}
                           onChange={(event) =>
                             setFinalizeModes((prev) => ({
@@ -1241,10 +1599,13 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
                         </select>
                       </div>
                       <div>
-                        <label className="text-[10px] text-muted-foreground mb-1 block">Delay slots</label>
+                        <label htmlFor={`policy-finalize-delay-${ev.address.toBase58()}`} className="text-[10px] text-muted-foreground mb-1 block">Delay slots</label>
                         <Input
+                          id={`policy-finalize-delay-${ev.address.toBase58()}`}
+                          name={`policyFinalizeDelay-${ev.address.toBase58()}`}
                           type="number"
                           min="0"
+                          max="1000000"
                           value={finalizeDelaySlots[ev.address.toBase58()] ?? "0"}
                           onChange={(event) =>
                             setFinalizeDelaySlots((prev) => ({

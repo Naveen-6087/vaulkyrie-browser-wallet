@@ -234,7 +234,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
     relayUrl,
     tokens,
     contacts,
-    getPolicyProfiles,
+    policyProfiles,
     pendingPolicyRequest,
     setPendingPolicyRequest,
     getXmssTree,
@@ -258,9 +258,9 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
     recipient.length >= 32 && parsedAmount > 0 && parsedAmount <= tokenBalance;
   const savedPolicyProfiles = useMemo(
     () => (activeAccount?.publicKey
-      ? getPolicyProfiles(activeAccount.publicKey).filter((profile) => profile.actionType === "send")
+      ? (policyProfiles[activeAccount.publicKey] ?? []).filter((profile) => profile.actionType === "send")
       : []),
-    [activeAccount?.publicKey, getPolicyProfiles],
+    [activeAccount?.publicKey, policyProfiles],
   );
   const selectedPolicyProfile = savedPolicyProfiles.find((profile) => profile.id === selectedPolicyProfileId) ?? null;
   const policyMismatch = useMemo(() => {
@@ -1035,7 +1035,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
             }
 
             setPendingSignRequest(request);
-            setSigningMessage(`Review the ${request.token} transfer request before signing.`);
+            setSigningMessage(request.summary ?? `Review the ${request.token} transfer request before signing.`);
             setPhase("join-review");
           },
           onSignRound1: (fromId, commitments) => queueOrHandleSigningMessage({ type: "round1", fromId, commitments }),
@@ -1239,7 +1239,9 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
         </div>
         <h3 className="text-base font-semibold">{isJoinSuccess ? "Signature Completed" : "Transaction Sent!"}</h3>
         <p className="text-xs text-muted-foreground text-center">
-          {isJoinSuccess
+          {isJoinSuccess && pendingSignRequest?.summary
+            ? pendingSignRequest.summary
+            : isJoinSuccess
             ? `You approved ${successAmount} ${successToken} to ${shortenAddress(successRecipient, 6)}.`
             : `${successAmount} ${successToken} sent to ${successRecipient.substring(0, 8)}...`}
         </p>
@@ -1311,6 +1313,11 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
 
         <Card>
           <CardContent className="pt-4 space-y-3">
+            {pendingSignRequest.summary && (
+              <div className="rounded-xl border border-primary/20 bg-primary/5 px-3 py-2 text-xs text-muted-foreground">
+                {pendingSignRequest.summary}
+              </div>
+            )}
             <div className="flex justify-between">
               <span className="text-xs text-muted-foreground">Amount</span>
               <span className="text-sm font-bold">{pendingSignRequest.amount} {pendingSignRequest.token}</span>
@@ -1358,7 +1365,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
         </Card>
 
         <p className="text-[10px] text-muted-foreground text-center">
-          Approve only if you trust the recipient and amount on this device.
+          Approve only if this request matches the coordinator's action on this device.
         </p>
 
         <div className="mt-auto flex flex-col gap-2">

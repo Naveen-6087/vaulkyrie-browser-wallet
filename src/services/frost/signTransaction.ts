@@ -57,7 +57,7 @@ export function loadDkgResult(publicKey: string): DkgResult {
 
 export type SerializedTransactionKind = "legacy" | "versioned";
 
-function assertLegacyWalletSigner(transaction: Transaction, walletPubkey: PublicKey) {
+export function assertLegacyWalletSigner(transaction: Transaction, walletPubkey: PublicKey) {
   const message = transaction.compileMessage();
   const signerMatched = message.accountKeys
     .slice(0, message.header.numRequiredSignatures)
@@ -76,7 +76,7 @@ function assertVersionedWalletSigner(transaction: VersionedTransaction, walletPu
   }
 }
 
-async function signThresholdMessage(
+export async function signThresholdMessage(
   walletPubkey: string,
   messageBytes: Uint8Array,
 ): Promise<Uint8Array> {
@@ -105,6 +105,34 @@ async function signThresholdMessage(
   }
 
   return hexToBytes(result.signatureHex);
+}
+
+export async function prepareLegacyVaultTransaction(
+  connection: Connection,
+  tx: Transaction,
+  walletPubkey: string,
+): Promise<PublicKey> {
+  const fromPubkey = new PublicKey(walletPubkey);
+  const { blockhash } = await connection.getLatestBlockhash();
+  tx.recentBlockhash = blockhash;
+  tx.feePayer = fromPubkey;
+  assertLegacyWalletSigner(tx, fromPubkey);
+  return fromPubkey;
+}
+
+export async function sendSignedLegacyVaultTransaction(
+  connection: Connection,
+  tx: Transaction,
+  walletPubkey: string,
+  signatureBytes: Uint8Array,
+): Promise<string> {
+  const fromPubkey = new PublicKey(walletPubkey);
+  tx.addSignature(fromPubkey, Buffer.from(signatureBytes));
+  const rawTx = tx.serialize();
+  return connection.sendRawTransaction(rawTx, {
+    skipPreflight: false,
+    preflightCommitment: "confirmed",
+  });
 }
 
 export async function signSerializedTransaction(
@@ -167,27 +195,14 @@ export async function signAndSendTransaction(
   walletPubkey: string,
   onProgress?: (msg: string) => void,
 ): Promise<string> {
-  const fromPubkey = new PublicKey(walletPubkey);
-  const { blockhash } = await connection.getLatestBlockhash();
-  tx.recentBlockhash = blockhash;
-  tx.feePayer = fromPubkey;
-  assertLegacyWalletSigner(tx, fromPubkey);
-
   onProgress?.("Signing with FROST threshold key...");
 
+  const fromPubkey = await prepareLegacyVaultTransaction(connection, tx, walletPubkey);
   const messageBytes = tx.serializeMessage();
   const signatureBytes = await signThresholdMessage(walletPubkey, messageBytes);
 
   onProgress?.("Submitting to Solana...");
-  tx.addSignature(fromPubkey, Buffer.from(signatureBytes));
-
-  const rawTx = tx.serialize();
-  const signature = await connection.sendRawTransaction(rawTx, {
-    skipPreflight: false,
-    preflightCommitment: "confirmed",
-  });
-
-  return signature;
+  return sendSignedLegacyVaultTransaction(connection, tx, fromPubkey.toBase58(), signatureBytes);
 }
 
 export async function signAndSendVersionedTransaction(

@@ -54,6 +54,12 @@ export function createConnection(network: NetworkId, rpcUrl?: string): Connectio
 
 function isRetryableRpcError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
+  if (
+    message.toLowerCase().includes("airdrop limit") ||
+    message.toLowerCase().includes("faucet has run dry")
+  ) {
+    return false;
+  }
   return (
     message.includes("403") ||
     message.includes("429") ||

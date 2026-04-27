@@ -14,7 +14,6 @@ export const NETWORKS = {
     rpcUrl: "https://api.devnet.solana.com",
     rpcUrls: [
       "https://api.devnet.solana.com",
-      "https://rpc.ankr.com/solana_devnet",
     ],
     explorerUrl: "https://explorer.solana.com/?cluster=devnet",
     color: "#9945FF",

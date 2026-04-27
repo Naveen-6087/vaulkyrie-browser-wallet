@@ -55,6 +55,7 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
   const signingOrchestratorRef = useRef<SigningOrchestrator | null>(null);
   const dkgStartedRef = useRef(false);
   const dkgStartTimeRef = useRef<number>(0);
+  const phaseRef = useRef<JoinPhase>("enter-code");
   const pendingSigningMessagesRef = useRef<BufferedSigningMessage[]>([]);
   const pendingBootstrapRequestRef = useRef<SignRequestPayload | null>(null);
   const activeBootstrapRequestIdRef = useRef<string | null>(null);
@@ -78,6 +79,10 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
       setRelayMode(available ? "remote" : "local");
     });
   }, [relayUrl]);
+
+  useEffect(() => {
+    phaseRef.current = phase;
+  }, [phase]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -248,6 +253,14 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
             }
           },
           onError: (_fromId: number, error: string) => {
+            if (phaseRef.current === "complete") {
+              activeBootstrapRequestIdRef.current = null;
+              setBootstrapComplete(false);
+              setBootstrapError(error);
+              setStatusMessage("Vault bootstrap failed. The coordinator can retry after fixing the issue.");
+              return;
+            }
+
             setPhase("error");
             setErrorMessage(error);
           },
@@ -266,6 +279,14 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
           },
           onSignComplete: (signatureHex, verified) => {
             if (!verified) {
+              if (phaseRef.current === "complete") {
+                setBootstrapComplete(false);
+                setBootstrapError("Vault bootstrap signature verification failed.");
+                setStatusMessage("Vault bootstrap failed. Waiting for the coordinator to retry.");
+                activeBootstrapRequestIdRef.current = null;
+                return;
+              }
+
               setBootstrapError("Vault bootstrap signature verification failed.");
               setPhase("error");
               return;
@@ -274,7 +295,11 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
             pendingBootstrapRequestRef.current = null;
             setPendingBootstrapRequestId(null);
             activeBootstrapRequestIdRef.current = null;
-            setStatusMessage(`Vault bootstrap finalized: ${signatureHex.slice(0, 12)}...`);
+            setStatusMessage(
+              signatureHex === "already-initialized"
+                ? "Vault bootstrap already existed on-chain."
+                : `Vault bootstrap finalized: ${signatureHex.slice(0, 12)}...`,
+            );
           },
         },
         onConnectionStateChange: (state) => {
@@ -354,7 +379,7 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
           const finish = () => {
             setPhase("complete");
             setProgress(100);
-            setStatusMessage("Ceremony complete — waiting for vault bootstrap...");
+            setStatusMessage("Ceremony complete — waiting for the coordinator to fund and finalize the vault bootstrap...");
 
             try {
               sessionStorage.setItem(

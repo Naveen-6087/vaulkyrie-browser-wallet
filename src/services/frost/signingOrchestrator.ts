@@ -184,11 +184,6 @@ export class SigningOrchestrator {
         hexToBytes(signatureHex),
       );
 
-      // Broadcast result if coordinator
-      if (this.relay.isCoordinator) {
-        this.relay.broadcastSignComplete(signatureHex, verified);
-      }
-
       this.onProgress({
         phase: "complete",
         progress: 100,
