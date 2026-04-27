@@ -267,8 +267,8 @@ export function RecoveryView({ onNavigate }: RecoveryViewProps) {
     const requestedSessionCode = generateSessionCode();
 
     setPhase("coordinate");
-    setSigningSessionCode(requestedSessionCode);
-    setRelaySessionInfo(createRelaySessionMetadata(requestedSessionCode));
+    setSigningSessionCode("");
+    setRelaySessionInfo(createRelaySessionMetadata("------"));
 
     return new Promise<{ signatureHex: string; verified: boolean }>((resolve, reject) => {
       let settled = false;
@@ -363,7 +363,11 @@ export function RecoveryView({ onNavigate }: RecoveryViewProps) {
         },
         onConnectionStateChange: (state) => {
           if (state === "connected") {
-            setActionMsg("Connected to relay. Waiting for another signer...");
+            setActionMsg(
+              relayMode === "remote"
+                ? "Connected to relay. Creating secure recovery signing invite..."
+                : "Connected to relay. Waiting for another signer...",
+            );
             relay.createSession(params.threshold, params.threshold, requestedSessionCode);
           } else if (state === "failed") {
             settle(() => reject(new Error("Relay connection failed")));
@@ -380,6 +384,8 @@ export function RecoveryView({ onNavigate }: RecoveryViewProps) {
       relay.connect();
 
       if (relayMode === "local") {
+        setSigningSessionCode(requestedSessionCode);
+        setRelaySessionInfo(createRelaySessionMetadata(requestedSessionCode));
         setActionMsg(`Recovery session ${requestedSessionCode} ready. Ask another signer to join from Send > Join Signing Session.`);
       }
 

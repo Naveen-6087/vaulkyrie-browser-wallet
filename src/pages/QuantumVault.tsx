@@ -65,6 +65,7 @@ import {
   type RelayAdapter,
 } from "@/services/relay/relayAdapter";
 import type { SignRequestPayload } from "@/services/relay/channelRelay";
+import { createRelaySessionMetadata } from "@/services/relay/sessionInvite";
 
 type BufferedSigningMessage =
   | { type: "round1"; fromId: number; commitments: number[] }
@@ -135,6 +136,7 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
   const [copied, setCopied] = useState(false);
   const [copiedAddress, setCopiedAddress] = useState(false);
   const [signingSessionCode, setSigningSessionCode] = useState("");
+  const [relaySessionInfo, setRelaySessionInfo] = useState(() => createRelaySessionMetadata("------"));
   const relayRef = useRef<RelayAdapter | null>(null);
   const orchestratorRef = useRef<SigningOrchestrator | null>(null);
   const pendingSigningMessagesRef = useRef<BufferedSigningMessage[]>([]);
@@ -153,6 +155,7 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
     relayRef.current = null;
     orchestratorRef.current = null;
     pendingSigningMessagesRef.current = [];
+    setRelaySessionInfo(createRelaySessionMetadata("------"));
   }, [clearSigningTimeout]);
 
   useEffect(() => () => cleanupRelayState(), [cleanupRelayState]);
@@ -233,7 +236,8 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
     cleanupRelayState();
     const relayMode = await canReachRelay(relayUrl) ? "remote" : "local";
     const requestedSessionCode = generateSessionCode();
-    setSigningSessionCode(requestedSessionCode);
+    setSigningSessionCode("");
+    setRelaySessionInfo(createRelaySessionMetadata(requestedSessionCode));
 
     const result = await new Promise<{ signatureHex: string; verified: boolean }>((resolve, reject) => {
       let settled = false;
@@ -330,7 +334,11 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
         },
         onConnectionStateChange: (state) => {
           if (state === "connected") {
-            setStatusMessage("Connected to relay. Waiting for another signer...");
+            setStatusMessage(
+              relayMode === "remote"
+                ? "Connected to relay. Creating secure quantum vault signing invite..."
+                : "Connected to relay. Waiting for another signer...",
+            );
             relay.createSession(dkg.threshold, dkg.threshold, requestedSessionCode);
           } else if (state === "failed") {
             settle(() => reject(new Error("Relay connection failed")));
@@ -338,6 +346,7 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
         },
         onSessionCreated: (session) => {
           setSigningSessionCode(session.invite);
+          setRelaySessionInfo(session);
           setStatusMessage(`Signing session created: ${session.invite}. Share it with another signer.`);
         },
       });
@@ -346,6 +355,8 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
       relay.connect();
 
       if (relayMode === "local") {
+        setSigningSessionCode(requestedSessionCode);
+        setRelaySessionInfo(createRelaySessionMetadata(requestedSessionCode));
         setStatusMessage(
           `Signing session ${requestedSessionCode} ready. Ask another signer to join from Send > Join Signing Session.`,
         );
@@ -1073,21 +1084,32 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
         )}
       </AnimatePresence>
 
-      {signingSessionCode && isProcessing && (
+      {isProcessing && relaySessionInfo.code !== "------" && (
         <Card>
           <CardHeader>
             <CardTitle className="text-sm">Signing Session Invite</CardTitle>
           </CardHeader>
           <CardContent className="space-y-2">
-            <Input
-              value={signingSessionCode}
-              readOnly
-              className="font-mono text-xs"
-              onFocus={(event) => event.currentTarget.select()}
-            />
-            <p className="text-[10px] text-muted-foreground">
-              Open Send &gt; Join Signing Session on another signer device and paste this invite.
-            </p>
+            {signingSessionCode ? (
+              <>
+                <Input
+                  value={signingSessionCode}
+                  readOnly
+                  className="font-mono text-xs"
+                  onFocus={(event) => event.currentTarget.select()}
+                />
+                <p className="text-[10px] text-muted-foreground">
+                  Open Send &gt; Join Signing Session on another signer device and paste this invite.
+                </p>
+                <p className="text-[11px] text-muted-foreground">
+                  Verify phrase: <span className="font-mono text-foreground">{relaySessionInfo.verificationPhrase}</span>
+                </p>
+              </>
+            ) : (
+              <div className="rounded-xl border border-border bg-muted/20 px-3 py-3 text-[11px] text-muted-foreground">
+                Creating the secure cross-device invite. Wait for the full invite to appear before copying it to the next signer.
+              </div>
+            )}
           </CardContent>
         </Card>
       )}

@@ -946,8 +946,8 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
     const relayMode = await canReachRelay(relayUrl) ? "remote" : "local";
     const requestedSessionCode = generateSessionCode();
 
-    setSigningSessionCode(requestedSessionCode);
-    setRelaySessionInfo(createRelaySessionMetadata(requestedSessionCode));
+    setSigningSessionCode("");
+    setRelaySessionInfo(createRelaySessionMetadata("------"));
     return new Promise<{
       signatureHex: string;
       publicKeyHex: string;
@@ -1051,7 +1051,11 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
         },
         onConnectionStateChange: (state) => {
           if (state === "connected") {
-            onStatus("Connected to relay. Waiting for the other signer...");
+            onStatus(
+              relayMode === "remote"
+                ? "Connected to relay. Creating secure signing invite..."
+                : "Connected to relay. Waiting for the other signer...",
+            );
             relay.createSession(requiredSigners, requiredSigners, requestedSessionCode);
           } else if (state === "failed") {
             settle(() => reject(new Error("Relay connection failed")));
@@ -1068,6 +1072,8 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
       relay.connect();
 
       if (relayMode === "local") {
+        setSigningSessionCode(requestedSessionCode);
+        setRelaySessionInfo(createRelaySessionMetadata(requestedSessionCode));
         onStatus(`Signing session ${requestedSessionCode} ready. Ask another signer to join from Send > Join Signing Session.`);
       }
 

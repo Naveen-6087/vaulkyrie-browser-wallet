@@ -331,8 +331,8 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
     const requestedSessionCode = generateSessionCode();
 
     setPhase("coordinate");
-    setSigningSessionCode(requestedSessionCode);
-    setRelaySessionInfo(createRelaySessionMetadata(requestedSessionCode));
+    setSigningSessionCode("");
+    setRelaySessionInfo(createRelaySessionMetadata("------"));
 
     return new Promise<{ signatureHex: string; verified: boolean }>((resolve, reject) => {
       let settled = false;
@@ -428,7 +428,11 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
         },
         onConnectionStateChange: (state) => {
           if (state === "connected") {
-            setActionMsg("Connected to relay. Waiting for another signer...");
+            setActionMsg(
+              relayMode === "remote"
+                ? "Connected to relay. Creating secure policy signing invite..."
+                : "Connected to relay. Waiting for another signer...",
+            );
             relay.createSession(params.threshold, params.threshold, requestedSessionCode);
           } else if (state === "failed") {
             settle(() => reject(new Error("Relay connection failed")));
@@ -445,6 +449,8 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
       relay.connect();
 
       if (relayMode === "local") {
+        setSigningSessionCode(requestedSessionCode);
+        setRelaySessionInfo(createRelaySessionMetadata(requestedSessionCode));
         setActionMsg(`Policy signing session ${requestedSessionCode} ready. Ask another signer to join from Send > Join Signing Session.`);
       }
 
