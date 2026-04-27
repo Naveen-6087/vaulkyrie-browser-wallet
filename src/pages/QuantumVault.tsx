@@ -10,7 +10,7 @@
  * This is separate from the root-rolling Winter/XMSS authority account.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Shield,
@@ -25,7 +25,7 @@ import {
   Atom,
   ExternalLink,
 } from "lucide-react";
-import { LAMPORTS_PER_SOL, PublicKey, Transaction } from "@solana/web3.js";
+import { LAMPORTS_PER_SOL, PublicKey, Transaction, type Connection } from "@solana/web3.js";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -51,6 +51,28 @@ import {
 import { findQuantumVaultPda } from "@/sdk/pda";
 import { signAndSendTransaction } from "@/services/frost/signTransaction";
 import { VaulkyrieClient } from "@/sdk/client";
+import { SigningOrchestrator } from "@/services/frost/signingOrchestrator";
+import { hexToBytes } from "@/services/frost/frostService";
+import {
+  loadDkgResult,
+  prepareLegacyVaultTransaction,
+  sendSignedLegacyVaultTransaction,
+} from "@/services/frost/signTransaction";
+import {
+  createRelay,
+  generateSessionCode,
+  probeRelayAvailability,
+  type RelayAdapter,
+} from "@/services/relay/relayAdapter";
+import type { SignRequestPayload } from "@/services/relay/channelRelay";
+
+type BufferedSigningMessage =
+  | { type: "round1"; fromId: number; commitments: number[] }
+  | { type: "round2"; fromId: number; share: number[] };
+
+async function canReachRelay(url: string): Promise<boolean> {
+  return probeRelayAvailability(url, 1500);
+}
 
 // ── Vault Status ─────────────────────────────────────────────────────
 
@@ -82,6 +104,7 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
   const {
     activeAccount,
     network,
+    relayUrl,
     getQuantumVaultKey,
     storeQuantumVaultKey,
     clearQuantumVaultKey,
@@ -111,6 +134,247 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
   const [lastProofHex, setLastProofHex] = useState("");
   const [copied, setCopied] = useState(false);
   const [copiedAddress, setCopiedAddress] = useState(false);
+  const [signingSessionCode, setSigningSessionCode] = useState("");
+  const relayRef = useRef<RelayAdapter | null>(null);
+  const orchestratorRef = useRef<SigningOrchestrator | null>(null);
+  const pendingSigningMessagesRef = useRef<BufferedSigningMessage[]>([]);
+  const signingTimeoutRef = useRef<number | null>(null);
+
+  const clearSigningTimeout = useCallback(() => {
+    if (signingTimeoutRef.current !== null) {
+      window.clearTimeout(signingTimeoutRef.current);
+      signingTimeoutRef.current = null;
+    }
+  }, []);
+
+  const cleanupRelayState = useCallback(() => {
+    clearSigningTimeout();
+    relayRef.current?.disconnect();
+    relayRef.current = null;
+    orchestratorRef.current = null;
+    pendingSigningMessagesRef.current = [];
+  }, [clearSigningTimeout]);
+
+  useEffect(() => () => cleanupRelayState(), [cleanupRelayState]);
+
+  const queueOrHandleSigningMessage = useCallback((message: BufferedSigningMessage) => {
+    const orchestrator = orchestratorRef.current;
+    if (!orchestrator) {
+      pendingSigningMessagesRef.current.push(message);
+      return;
+    }
+
+    if (message.type === "round1") {
+      orchestrator.handleSignRound1(message.fromId, message.commitments);
+      return;
+    }
+
+    orchestrator.handleSignRound2(message.fromId, message.share);
+  }, []);
+
+  const runSigningOrchestrator = useCallback(async (params: {
+    relay: RelayAdapter;
+    participantId: number;
+    keyPackageJson: string;
+    publicKeyPackageJson: string;
+    message: Uint8Array;
+    signerIds: number[];
+    onStatus: (message: string) => void;
+  }) => {
+    const orchestrator = new SigningOrchestrator({
+      relay: params.relay,
+      participantId: params.participantId,
+      keyPackageJson: params.keyPackageJson,
+      publicKeyPackageJson: params.publicKeyPackageJson,
+      message: params.message,
+      signerIds: params.signerIds,
+      onProgress: (progress) => params.onStatus(progress.message),
+    });
+    orchestratorRef.current = orchestrator;
+
+    const bufferedMessages = pendingSigningMessagesRef.current.splice(0);
+    for (const buffered of bufferedMessages) {
+      if (buffered.type === "round1") {
+        orchestrator.handleSignRound1(buffered.fromId, buffered.commitments);
+      } else {
+        orchestrator.handleSignRound2(buffered.fromId, buffered.share);
+      }
+    }
+
+    return orchestrator.run();
+  }, []);
+
+  const signAndSendQuantumTransaction = useCallback(async (
+    connection: Connection,
+    tx: Transaction,
+    summary: string,
+    request: { amount: number; token: string; recipient: string },
+  ): Promise<string> => {
+    if (!activeAccount?.publicKey) {
+      throw new Error("No active vault selected.");
+    }
+
+    setSigningSessionCode("");
+    const dkg = loadDkgResult(activeAccount.publicKey);
+    const availableKeyIds = Object.keys(dkg.keyPackages).map(Number);
+    const hasLocalThreshold = availableKeyIds.length >= dkg.threshold;
+    const isMultiDevice = dkg.isMultiDevice === true;
+
+    if (hasLocalThreshold && !isMultiDevice) {
+      return signAndSendTransaction(connection, tx, activeAccount.publicKey, setStatusMessage);
+    }
+
+    const participantId = dkg.participantId ?? availableKeyIds[0] ?? 1;
+    const keyPackageJson = dkg.keyPackages[participantId];
+    if (!keyPackageJson) {
+      throw new Error(`No key package found for participant ${participantId}.`);
+    }
+
+    cleanupRelayState();
+    const relayMode = await canReachRelay(relayUrl) ? "remote" : "local";
+    const requestedSessionCode = generateSessionCode();
+    setSigningSessionCode(requestedSessionCode);
+
+    const result = await new Promise<{ signatureHex: string; verified: boolean }>((resolve, reject) => {
+      let settled = false;
+      let signingStarted = false;
+
+      const settle = (callback: () => void) => {
+        if (settled) return;
+        settled = true;
+        cleanupRelayState();
+        callback();
+      };
+
+      const relay = createRelay({
+        mode: relayMode,
+        participantId,
+        isCoordinator: true,
+        deviceName: `Quantum signer ${participantId}`,
+        relayUrl,
+        sessionId: requestedSessionCode,
+        events: {
+          onParticipantJoined: () => {
+            const connectedIds = relay
+              .getParticipants()
+              .map((candidate) => candidate.participantId)
+              .filter((candidateId, index, ids) => candidateId > 0 && ids.indexOf(candidateId) === index);
+
+            setStatusMessage(`Connected signers: ${connectedIds.length}/${dkg.threshold}`);
+            if (signingStarted || connectedIds.length < dkg.threshold) {
+              return;
+            }
+
+            const signerIds = [
+              participantId,
+              ...connectedIds
+                .filter((candidateId) => candidateId !== participantId)
+                .sort((left, right) => left - right),
+            ].slice(0, dkg.threshold);
+
+            if (signerIds.length < dkg.threshold) {
+              return;
+            }
+
+            signingStarted = true;
+            void (async () => {
+              try {
+                setStatusMessage("Preparing quantum vault transaction for threshold signing...");
+                await prepareLegacyVaultTransaction(connection, tx, activeAccount.publicKey);
+                const message = tx.serializeMessage();
+                const signRequest: SignRequestPayload = {
+                  requestId: crypto.randomUUID(),
+                  message: Array.from(message),
+                  signerIds,
+                  amount: request.amount,
+                  token: request.token,
+                  recipient: request.recipient,
+                  initiator: activeAccount.name ?? `Quantum signer ${participantId}`,
+                  network,
+                  createdAt: Date.now(),
+                  purpose: "bootstrap",
+                  summary,
+                };
+
+                relay.broadcastSignRequest(signRequest);
+                setStatusMessage("Quantum vault signing request sent. Waiting for signer approvals...");
+                const signed = await runSigningOrchestrator({
+                  relay,
+                  participantId,
+                  keyPackageJson,
+                  publicKeyPackageJson: dkg.publicKeyPackage,
+                  message,
+                  signerIds,
+                  onStatus: setStatusMessage,
+                });
+                settle(() => resolve(signed));
+              } catch (error) {
+                settle(() => reject(error));
+              }
+            })();
+          },
+          onParticipantLeft: () => {
+            setStatusMessage(`A signer disconnected. Connected: ${relay.participantCount}/${dkg.threshold}`);
+          },
+          onSignRequest: () => {},
+          onSignRound1: (fromId, commitments) => queueOrHandleSigningMessage({ type: "round1", fromId, commitments }),
+          onSignRound2: (fromId, share) => queueOrHandleSigningMessage({ type: "round2", fromId, share }),
+          onError: (_fromId, relayError) => {
+            settle(() => reject(new Error(`Signing relay error: ${relayError}`)));
+          },
+          onDkgRound1: () => {},
+          onDkgRound2: () => {},
+          onDkgRound3Done: () => {},
+          onStartDkg: () => {},
+          onSignComplete: () => {},
+        },
+        onConnectionStateChange: (state) => {
+          if (state === "connected") {
+            setStatusMessage("Connected to relay. Waiting for another signer...");
+            relay.createSession(dkg.threshold, dkg.threshold, requestedSessionCode);
+          } else if (state === "failed") {
+            settle(() => reject(new Error("Relay connection failed")));
+          }
+        },
+        onSessionCreated: (session) => {
+          setSigningSessionCode(session.invite);
+          setStatusMessage(`Signing session created: ${session.invite}. Share it with another signer.`);
+        },
+      });
+
+      relayRef.current = relay;
+      relay.connect();
+
+      if (relayMode === "local") {
+        setStatusMessage(
+          `Signing session ${requestedSessionCode} ready. Ask another signer to join from Send > Join Signing Session.`,
+        );
+      }
+
+      signingTimeoutRef.current = window.setTimeout(() => {
+        settle(() => reject(new Error("Quantum vault signing timed out. Not enough signers connected within 2 minutes.")));
+      }, 120_000);
+    });
+
+    if (!result.verified) {
+      throw new Error("FROST signature verification failed.");
+    }
+
+    return sendSignedLegacyVaultTransaction(
+      connection,
+      tx,
+      activeAccount.publicKey,
+      hexToBytes(result.signatureHex),
+    );
+  }, [
+    activeAccount?.name,
+    activeAccount?.publicKey,
+    cleanupRelayState,
+    network,
+    queueOrHandleSigningMessage,
+    relayUrl,
+    runSigningOrchestrator,
+  ]);
 
   const refreshQuantumVault = useCallback(async () => {
     if (!walletAddress) return;
@@ -207,11 +471,15 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
           bump,
         });
         const tx = new Transaction().add(ix);
-        return signAndSendTransaction(
+        return signAndSendQuantumTransaction(
           connection,
           tx,
-          activeAccount.publicKey,
-          (msg) => setStatusMessage(msg),
+          `Initialize quantum vault ${vaultPda.toBase58()}`,
+          {
+            amount: 0,
+            token: "QUANTUM",
+            recipient: vaultPda.toBase58(),
+          },
         );
       });
 
@@ -282,11 +550,15 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
         );
 
         const tx = new Transaction().add(ix);
-        return signAndSendTransaction(
+        return signAndSendQuantumTransaction(
           connection,
           tx,
-          activeAccount.publicKey,
-          (msg) => setStatusMessage(msg),
+          `Split ${amount} SOL from quantum vault to ${destination.toBase58()}`,
+          {
+            amount,
+            token: "SOL",
+            recipient: destination.toBase58(),
+          },
         );
       });
 
@@ -344,11 +616,15 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
         );
 
         const tx = new Transaction().add(ix);
-        return signAndSendTransaction(
+        return signAndSendQuantumTransaction(
           connection,
           tx,
-          activeAccount.publicKey,
-          (msg) => setStatusMessage(msg),
+          `Close quantum vault and refund ${refund.toBase58()}`,
+          {
+            amount: vault.balanceLamports / LAMPORTS_PER_SOL,
+            token: "SOL",
+            recipient: refund.toBase58(),
+          },
         );
       });
 
@@ -796,6 +1072,25 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {signingSessionCode && isProcessing && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm">Signing Session Invite</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            <Input
+              value={signingSessionCode}
+              readOnly
+              className="font-mono text-xs"
+              onFocus={(event) => event.currentTarget.select()}
+            />
+            <p className="text-[10px] text-muted-foreground">
+              Open Send &gt; Join Signing Session on another signer device and paste this invite.
+            </p>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Status message */}
       {statusMessage && (
