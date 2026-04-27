@@ -975,20 +975,21 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
         sessionId: requestedSessionCode,
         events: {
           onParticipantJoined: () => {
-            const connectedIds = relay
+            const connectedSignerIds = [
+              participantId,
+              ...relay
               .getParticipants()
               .map((candidate) => candidate.participantId)
-              .filter((candidateId, index, ids) => candidateId > 0 && ids.indexOf(candidateId) === index);
-            onStatus(`Connected signers: ${connectedIds.length}/${requiredSigners}`);
+              .filter((candidateId, index, ids) => candidateId > 0 && ids.indexOf(candidateId) === index),
+            ]
+              .filter((candidateId, index, ids) => ids.indexOf(candidateId) === index)
+              .sort((left, right) => left - right);
+            const signerIds = connectedSignerIds.slice(0, requiredSigners);
+            onStatus(`Connected signers: ${Math.min(connectedSignerIds.length, requiredSigners)}/${requiredSigners}`);
 
-            if (signingStarted || connectedIds.length < requiredSigners) {
+            if (signingStarted || connectedSignerIds.length < requiredSigners) {
               return;
             }
-
-            const signerIds = [participantId, ...connectedIds
-              .filter((candidateId) => candidateId !== participantId)
-              .sort((left, right) => left - right)]
-              .slice(0, requiredSigners);
 
             if (signerIds.length < requiredSigners) {
               return;

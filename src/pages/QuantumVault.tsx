@@ -259,22 +259,21 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
         sessionId: requestedSessionCode,
         events: {
           onParticipantJoined: () => {
-            const connectedIds = relay
-              .getParticipants()
-              .map((candidate) => candidate.participantId)
-              .filter((candidateId, index, ids) => candidateId > 0 && ids.indexOf(candidateId) === index);
+            const connectedSignerIds = [
+              participantId,
+              ...relay
+                .getParticipants()
+                .map((candidate) => candidate.participantId)
+                .filter((candidateId, index, ids) => candidateId > 0 && ids.indexOf(candidateId) === index),
+            ]
+              .filter((candidateId, index, ids) => ids.indexOf(candidateId) === index)
+              .sort((left, right) => left - right);
+            const signerIds = connectedSignerIds.slice(0, dkg.threshold);
 
-            setStatusMessage(`Connected signers: ${connectedIds.length}/${dkg.threshold}`);
-            if (signingStarted || connectedIds.length < dkg.threshold) {
+            setStatusMessage(`Connected signers: ${Math.min(connectedSignerIds.length, dkg.threshold)}/${dkg.threshold}`);
+            if (signingStarted || connectedSignerIds.length < dkg.threshold) {
               return;
             }
-
-            const signerIds = [
-              participantId,
-              ...connectedIds
-                .filter((candidateId) => candidateId !== participantId)
-                .sort((left, right) => left - right),
-            ].slice(0, dkg.threshold);
 
             if (signerIds.length < dkg.threshold) {
               return;

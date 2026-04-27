@@ -354,22 +354,21 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
         sessionId: requestedSessionCode,
         events: {
           onParticipantJoined: () => {
-            const connectedIds = relay
-              .getParticipants()
-              .map((candidate) => candidate.participantId)
-              .filter((candidateId, index, ids) => candidateId > 0 && ids.indexOf(candidateId) === index);
+            const connectedSignerIds = [
+              params.participantId,
+              ...relay
+                .getParticipants()
+                .map((candidate) => candidate.participantId)
+                .filter((candidateId, index, ids) => candidateId > 0 && ids.indexOf(candidateId) === index),
+            ]
+              .filter((candidateId, index, ids) => ids.indexOf(candidateId) === index)
+              .sort((left, right) => left - right);
+            const signerIds = connectedSignerIds.slice(0, params.threshold);
 
-            setActionMsg(`Connected signers: ${connectedIds.length}/${params.threshold}`);
-            if (signingStarted || connectedIds.length < params.threshold) {
+            setActionMsg(`Connected signers: ${Math.min(connectedSignerIds.length, params.threshold)}/${params.threshold}`);
+            if (signingStarted || connectedSignerIds.length < params.threshold) {
               return;
             }
-
-            const signerIds = [
-              params.participantId,
-              ...connectedIds
-                .filter((candidateId) => candidateId !== params.participantId)
-                .sort((left, right) => left - right),
-            ].slice(0, params.threshold);
 
             if (signerIds.length < params.threshold) {
               return;
