@@ -10,6 +10,7 @@ import type {
   WalletView,
   PolicyProfile,
   PendingPolicyRequest,
+  SpendOrchestrationActivity,
 } from "../types";
 import { DEFAULT_NETWORK, type NetworkId } from "../lib/constants";
 import {
@@ -72,6 +73,7 @@ export interface PersistedWalletState {
   xmssTrees: Record<string, string>;
   quantumVaultKeys: Record<string, string>;
   policyProfiles: Record<string, PolicyProfile[]>;
+  orchestrationHistory: Record<string, SpendOrchestrationActivity[]>;
 }
 
 interface WalletState extends PersistedWalletState {
@@ -151,6 +153,8 @@ interface WalletState extends PersistedWalletState {
   deletePolicyProfile: (publicKey: string, profileId: string) => void;
   getPolicyProfiles: (publicKey: string) => PolicyProfile[];
   setPendingPolicyRequest: (request: PendingPolicyRequest | null) => void;
+  recordOrchestrationActivity: (publicKey: string, activity: SpendOrchestrationActivity) => void;
+  getOrchestrationHistory: (publicKey: string) => SpendOrchestrationActivity[];
 
   // Async actions — real Solana RPC calls
   refreshBalances: () => Promise<void>;
@@ -180,6 +184,7 @@ export function pickPersistedWalletState(state: WalletState): PersistedWalletSta
     xmssTrees: state.xmssTrees,
     quantumVaultKeys: state.quantumVaultKeys,
     policyProfiles: state.policyProfiles,
+    orchestrationHistory: state.orchestrationHistory,
   };
 }
 
@@ -206,6 +211,7 @@ export const useWalletStore = create<WalletState>()(
       xmssTrees: {},
       quantumVaultKeys: {},
       policyProfiles: {},
+      orchestrationHistory: {},
       pendingPolicyRequest: null,
       tokens: [],
       transactions: [],
@@ -239,11 +245,13 @@ export const useWalletStore = create<WalletState>()(
           delete dkgResults[publicKey];
           const vaultConfigs = { ...state.vaultConfigs };
           delete vaultConfigs[publicKey];
+          const orchestrationHistory = { ...state.orchestrationHistory };
+          delete orchestrationHistory[publicKey];
           const activeAccount =
             state.activeAccount?.publicKey === publicKey
               ? accounts[0] ?? null
               : state.activeAccount;
-          return { accounts, dkgResults, vaultConfigs, activeAccount };
+          return { accounts, dkgResults, vaultConfigs, orchestrationHistory, activeAccount };
         }),
       switchVault: (publicKey) => {
         const { accounts } = get();
@@ -391,6 +399,19 @@ export const useWalletStore = create<WalletState>()(
         })),
       getPolicyProfiles: (publicKey) => get().policyProfiles[publicKey] ?? [],
       setPendingPolicyRequest: (pendingPolicyRequest) => set({ pendingPolicyRequest }),
+      recordOrchestrationActivity: (publicKey, activity) =>
+        set((state) => ({
+          orchestrationHistory: {
+            ...state.orchestrationHistory,
+            [publicKey]: [
+              activity,
+              ...(state.orchestrationHistory[publicKey] ?? []).filter(
+                (existing) => existing.id !== activity.id && existing.signature !== activity.signature,
+              ),
+            ].slice(0, 100),
+          },
+        })),
+      getOrchestrationHistory: (publicKey) => get().orchestrationHistory[publicKey] ?? [],
 
       refreshBalances: async () => {
         const { activeAccount, network } = get();

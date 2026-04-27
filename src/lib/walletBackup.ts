@@ -83,6 +83,7 @@ function validatePersistedWalletState(value: unknown): PersistedWalletState {
     xmssTrees: candidate.xmssTrees ?? {},
     quantumVaultKeys: candidate.quantumVaultKeys ?? {},
     policyProfiles: candidate.policyProfiles ?? {},
+    orchestrationHistory: candidate.orchestrationHistory ?? {},
   });
 }
 

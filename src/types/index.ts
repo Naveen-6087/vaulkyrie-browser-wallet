@@ -1,3 +1,5 @@
+import type { NetworkId } from "@/lib/constants";
+
 export type { NetworkId } from "@/lib/constants";
 
 export interface WalletAccount {
@@ -29,6 +31,52 @@ export interface Transaction {
   timestamp: number;
   status: "confirmed" | "pending" | "failed";
   fee?: number;
+}
+
+export interface SpendOrchestrationPolicySnapshot {
+  evaluationAddress: string;
+  receiptCommitment: string;
+  decisionCommitment: string;
+  reasonCode: number;
+  delayUntilSlot: string;
+}
+
+export interface SpendOrchestrationActivity {
+  id: string;
+  kind: "spend-orchestration";
+  accountPublicKey: string;
+  signature: string;
+  amount: number;
+  token: string;
+  recipient: string;
+  timestamp: number;
+  network: NetworkId;
+  actionHash: string;
+  orchestrationAddress: string;
+  policy?: SpendOrchestrationPolicySnapshot | null;
+}
+
+export interface SpendOrchestrationPolicySnapshot {
+  evaluationAddress: string;
+  receiptCommitment: string;
+  decisionCommitment: string;
+  reasonCode: number;
+  delayUntilSlot: string;
+}
+
+export interface SpendOrchestrationActivity {
+  id: string;
+  kind: "spend-orchestration";
+  accountPublicKey: string;
+  signature: string;
+  amount: number;
+  token: string;
+  recipient: string;
+  timestamp: number;
+  network: NetworkId;
+  actionHash: string;
+  orchestrationAddress: string;
+  policy?: SpendOrchestrationPolicySnapshot | null;
 }
 
 export interface Collectible {

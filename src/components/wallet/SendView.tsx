@@ -4,7 +4,7 @@ import { PublicKey, SystemProgram, Transaction, LAMPORTS_PER_SOL } from "@solana
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
-import { signLocal, hexToBytes } from "@/services/frost/frostService";
+import { signLocal, hexToBytes, bytesToHex } from "@/services/frost/frostService";
 import { SigningOrchestrator } from "@/services/frost/signingOrchestrator";
 import {
   createRelay,
@@ -67,6 +67,20 @@ type ReviewAnalysisState =
   | { status: "idle" | "loading" }
   | { status: "ready"; data: TransactionAnalysis }
   | { status: "error"; error: string };
+
+interface PreparedPolicySnapshot {
+  evaluationAddress: string;
+  receiptCommitment: string;
+  decisionCommitment: string;
+  reasonCode: number;
+  delayUntilSlot: string;
+}
+
+interface PreparedSpendActivityContext {
+  actionHash: string;
+  orchestrationAddress: string;
+  policy: PreparedPolicySnapshot | null;
+}
 
 // ── Custom token dropdown with icons ────────────────────────────────
 function TokenDropdown({
@@ -242,6 +256,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
     refreshBalances,
     refreshTransactions,
     refreshVaultState,
+    recordOrchestrationActivity,
   } = useWalletStore();
   const relayRef = useRef<RelayAdapter | null>(null);
   const orchestratorRef = useRef<SigningOrchestrator | null>(null);
@@ -478,6 +493,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
       ? await client.getQuantumAuthority(vaultRegistryPda)
       : null;
     let reviewedActionHash: Uint8Array | null = null;
+    let finalizedPolicySnapshot: PreparedPolicySnapshot | null = null;
     let policyVersion = existingVault?.account.policyVersion ?? 1n;
 
     if (needsPolicyReview) {
@@ -514,6 +530,14 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
             `This policy approval is time-locked until slot ${evaluation.account.delayUntilSlot.toString()}.`,
           );
         }
+
+        finalizedPolicySnapshot = {
+          evaluationAddress: evaluation.address.toBase58(),
+          receiptCommitment: bytesToHex(evaluation.account.receiptCommitment),
+          decisionCommitment: bytesToHex(evaluation.account.decisionCommitment),
+          reasonCode: evaluation.account.reasonCode,
+          delayUntilSlot: evaluation.account.delayUntilSlot.toString(),
+        };
       }
 
       reviewedActionHash = reviewActionHash;
@@ -635,6 +659,11 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
       fromPubkey,
       tx,
       orchestrationAddress: orchPda.toBase58(),
+      activityContext: {
+        actionHash: bytesToHex(actionHash),
+        orchestrationAddress: orchPda.toBase58(),
+        policy: finalizedPolicySnapshot,
+      } satisfies PreparedSpendActivityContext,
     };
   }, [
     activeAccount,
@@ -733,6 +762,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
 
       let signatureHex: string;
       let verified: boolean;
+      let activityContext: PreparedSpendActivityContext | null = null;
 
       if (hasAllKeys && !isMultiDevice) {
         // Single-device (local DKG): sign locally with all key packages
@@ -745,6 +775,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
         });
         finalTx = prepared.tx;
         setOrchestrationAddress(prepared.orchestrationAddress);
+        activityContext = prepared.activityContext;
         const result = await signLocal(
           prepared.tx.serializeMessage(),
           dkg.keyPackages,
@@ -790,11 +821,13 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
               tx: prepared.tx,
               analysis,
               orchestrationAddress: prepared.orchestrationAddress,
+              activityContext: prepared.activityContext,
             };
           },
         );
         finalTx = result.preparedTx;
         setOrchestrationAddress(result.orchestrationAddress);
+        activityContext = result.activityContext;
         signatureHex = result.signatureHex;
         verified = result.verified;
       }
@@ -820,6 +853,22 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
 
       cleanupRelayState();
       setTxSignature(signature);
+      if (activityContext) {
+        recordOrchestrationActivity(activeAccount!.publicKey, {
+          id: `${signature}:${activityContext.actionHash}`,
+          kind: "spend-orchestration",
+          accountPublicKey: activeAccount!.publicKey,
+          signature,
+          amount: parsedAmount,
+          token: selectedToken,
+          recipient: recipient.trim(),
+          timestamp: Date.now(),
+          network,
+          actionHash: activityContext.actionHash,
+          orchestrationAddress: activityContext.orchestrationAddress,
+          policy: activityContext.policy,
+        });
+      }
       setPhase("success");
       setPendingPolicyRequest(null);
       await Promise.all([refreshBalances(), refreshTransactions(), refreshVaultState()]);
@@ -843,6 +892,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
       tx: Transaction;
       analysis: TransactionAnalysis;
       orchestrationAddress: string;
+      activityContext: PreparedSpendActivityContext;
     }>,
   ) => {
     cleanupRelayState();
@@ -857,6 +907,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
       verified: boolean;
       preparedTx: Transaction;
       orchestrationAddress: string;
+      activityContext: PreparedSpendActivityContext;
     }>((resolve, reject) => {
       let settled = false;
       let signingStarted = false;
@@ -900,7 +951,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
             void (async () => {
               try {
                 onStatus("Preparing orchestrated spend transaction...");
-                const { message, tx, analysis, orchestrationAddress } = await prepareMessage(signerIds);
+                const { message, tx, analysis, orchestrationAddress, activityContext } = await prepareMessage(signerIds);
                 const request: SignRequestPayload = {
                   requestId: crypto.randomUUID(),
                   message: Array.from(message),
@@ -930,7 +981,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
                   signerIds,
                   onStatus,
                 });
-                settle(() => resolve({ ...result, preparedTx: tx, orchestrationAddress }));
+                settle(() => resolve({ ...result, preparedTx: tx, orchestrationAddress, activityContext }));
               } catch (err) {
                 settle(() => reject(err));
               }
