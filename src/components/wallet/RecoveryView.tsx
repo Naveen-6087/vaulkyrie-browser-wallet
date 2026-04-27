@@ -121,6 +121,10 @@ async function canReachRelay(url: string): Promise<boolean> {
   return probeRelayAvailability(url, 1500);
 }
 
+function crossDeviceRelayUnavailableMessage(): string {
+  return "Cross-device relay is unavailable. Configure a reachable relay in Settings > Cross-device Relay before starting a recovery signing session.";
+}
+
 async function buildRecoveryCommitment(payload: Record<string, unknown>): Promise<Uint8Array> {
   const encoded = new TextEncoder().encode(JSON.stringify(payload));
   const digest = await crypto.subtle.digest("SHA-256", encoded);
@@ -263,7 +267,11 @@ export function RecoveryView({ onNavigate }: RecoveryViewProps) {
     summary: string;
   }) => {
     cleanupRelayState();
-    const relayMode = (await canReachRelay(relayUrl)) ? "remote" : "local";
+    const relayAvailable = await canReachRelay(relayUrl);
+    if (!relayAvailable) {
+      throw new Error(crossDeviceRelayUnavailableMessage());
+    }
+    const relayMode = "remote";
     const requestedSessionCode = generateSessionCode();
 
     setPhase("coordinate");
@@ -381,12 +389,6 @@ export function RecoveryView({ onNavigate }: RecoveryViewProps) {
 
       relayRef.current = relay;
       relay.connect();
-
-      if (relayMode === "local") {
-        setSigningSessionCode(requestedSessionCode);
-        setRelaySessionInfo(createRelaySessionMetadata(requestedSessionCode));
-        setActionMsg(`Recovery session ${requestedSessionCode} ready. Ask another signer to join from Send > Join Signing Session.`);
-      }
 
       signingTimeoutRef.current = window.setTimeout(() => {
         settle(() => reject(new Error("Recovery signing timed out. Not enough signers connected within 2 minutes.")));

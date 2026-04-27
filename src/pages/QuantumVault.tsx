@@ -75,6 +75,10 @@ async function canReachRelay(url: string): Promise<boolean> {
   return probeRelayAvailability(url, 1500);
 }
 
+function crossDeviceRelayUnavailableMessage(): string {
+  return "Cross-device relay is unavailable. Configure a reachable relay in Settings > Cross-device Relay before starting a quantum vault signing session.";
+}
+
 // ── Vault Status ─────────────────────────────────────────────────────
 
 const VaultStatus = {
@@ -234,7 +238,11 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
     }
 
     cleanupRelayState();
-    const relayMode = await canReachRelay(relayUrl) ? "remote" : "local";
+    const relayAvailable = await canReachRelay(relayUrl);
+    if (!relayAvailable) {
+      throw new Error(crossDeviceRelayUnavailableMessage());
+    }
+    const relayMode = "remote";
     const requestedSessionCode = generateSessionCode();
     setSigningSessionCode("");
     setRelaySessionInfo(createRelaySessionMetadata(requestedSessionCode));
@@ -352,14 +360,6 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
 
       relayRef.current = relay;
       relay.connect();
-
-      if (relayMode === "local") {
-        setSigningSessionCode(requestedSessionCode);
-        setRelaySessionInfo(createRelaySessionMetadata(requestedSessionCode));
-        setStatusMessage(
-          `Signing session ${requestedSessionCode} ready. Ask another signer to join from Send > Join Signing Session.`,
-        );
-      }
 
       signingTimeoutRef.current = window.setTimeout(() => {
         settle(() => reject(new Error("Quantum vault signing timed out. Not enough signers connected within 2 minutes.")));

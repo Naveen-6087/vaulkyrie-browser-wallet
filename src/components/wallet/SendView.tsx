@@ -200,6 +200,10 @@ async function canReachRelay(url: string): Promise<boolean> {
   return probeRelayAvailability(url, 1500);
 }
 
+function crossDeviceRelayUnavailableMessage(): string {
+  return "Cross-device relay is unavailable. Configure a reachable relay in Settings > Cross-device Relay before starting or joining a multi-device signing session.";
+}
+
 function buildPreviewSignerIds(
   threshold: number,
   participants: number,
@@ -943,7 +947,11 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
     }>,
   ) => {
     cleanupRelayState();
-    const relayMode = await canReachRelay(relayUrl) ? "remote" : "local";
+    const relayAvailable = await canReachRelay(relayUrl);
+    if (!relayAvailable) {
+      throw new Error(crossDeviceRelayUnavailableMessage());
+    }
+    const relayMode = "remote";
     const requestedSessionCode = generateSessionCode();
 
     setSigningSessionCode("");
@@ -1072,12 +1080,6 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
       relayRef.current = relay;
       relay.connect();
 
-      if (relayMode === "local") {
-        setSigningSessionCode(requestedSessionCode);
-        setRelaySessionInfo(createRelaySessionMetadata(requestedSessionCode));
-        onStatus(`Signing session ${requestedSessionCode} ready. Ask another signer to join from Send > Join Signing Session.`);
-      }
-
       signingTimeoutRef.current = window.setTimeout(() => {
         settle(() => reject(new Error("Signing timed out. Not enough signers connected within 2 minutes.")));
       }, 120_000);
@@ -1116,8 +1118,12 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
 
       const availableKeyIds = Object.keys(dkg.keyPackages).map(Number);
       const myParticipantId = dkg.participantId ?? availableKeyIds[0] ?? 1;
-      const relayMode = await canReachRelay(relayUrl) ? "remote" : "local";
-      if (relayMode === "remote" && !parsedJoinSession.authToken) {
+      const relayAvailable = await canReachRelay(relayUrl);
+      if (!relayAvailable) {
+        throw new Error(crossDeviceRelayUnavailableMessage());
+      }
+      const relayMode = "remote";
+      if (!parsedJoinSession.authToken) {
         throw new Error("Paste the full signing session invite from the coordinator.");
       }
       const relay = createRelay({
@@ -1159,9 +1165,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
         onConnectionStateChange: (state) => {
           if (state === "connected") {
             setSigningMessage("Connected. Joining signing session...");
-            if (relayMode === "remote") {
-              relay.joinSession(parsedJoinSession.invite);
-            }
+            relay.joinSession(parsedJoinSession.invite);
           } else if (state === "failed") {
             cleanupRelayState();
             setError("Relay connection failed");
@@ -1171,12 +1175,8 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
       });
 
       relayRef.current = relay;
-      setSigningSessionCode(relayMode === "remote" ? parsedJoinSession.invite : sessionCode);
+      setSigningSessionCode(parsedJoinSession.invite);
       relay.connect();
-
-      if (relayMode === "local") {
-        setSigningMessage("Waiting for the coordinator to share a signing request...");
-      }
     } catch (err) {
       cleanupRelayState();
       setError(err instanceof Error ? err.message : String(err));
