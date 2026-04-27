@@ -92,6 +92,7 @@ function validatePersistedWalletState(value: unknown): PersistedWalletState {
     securityPreferences: candidate.securityPreferences ?? { autoLockMinutes: 5, lockOnHide: true },
     contacts: candidate.contacts ?? [],
     xmssTrees: candidate.xmssTrees ?? {},
+    winterAuthorityStates: candidate.winterAuthorityStates ?? {},
     quantumVaultKeys: candidate.quantumVaultKeys ?? {},
     policyProfiles: candidate.policyProfiles ?? {},
     orchestrationHistory: candidate.orchestrationHistory ?? {},

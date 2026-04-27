@@ -72,6 +72,7 @@ export interface PersistedWalletState {
   securityPreferences: SecurityPreferences;
   contacts: Contact[];
   xmssTrees: Record<string, string>;
+  winterAuthorityStates: Record<string, string>;
   quantumVaultKeys: Record<string, string>;
   policyProfiles: Record<string, PolicyProfile[]>;
   orchestrationHistory: Record<string, SpendOrchestrationActivity[]>;
@@ -146,6 +147,9 @@ interface WalletState extends PersistedWalletState {
   storeXmssTree: (publicKey: string, serialized: string) => void;
   getXmssTree: (publicKey: string) => string | null;
   clearXmssTree: (publicKey: string) => void;
+  storeWinterAuthorityState: (publicKey: string, serialized: string) => void;
+  getWinterAuthorityState: (publicKey: string) => string | null;
+  clearWinterAuthorityState: (publicKey: string) => void;
   storeQuantumVaultKey: (publicKey: string, serialized: string) => void;
   getQuantumVaultKey: (publicKey: string) => string | null;
   clearQuantumVaultKey: (publicKey: string) => void;
@@ -186,6 +190,7 @@ export function pickPersistedWalletState(state: WalletState): PersistedWalletSta
     securityPreferences: state.securityPreferences,
     contacts: state.contacts,
     xmssTrees: state.xmssTrees,
+    winterAuthorityStates: state.winterAuthorityStates,
     quantumVaultKeys: state.quantumVaultKeys,
     policyProfiles: state.policyProfiles,
     orchestrationHistory: state.orchestrationHistory,
@@ -214,6 +219,7 @@ export const useWalletStore = create<WalletState>()(
       vaultConfigs: {},
       contacts: [],
       xmssTrees: {},
+      winterAuthorityStates: {},
       quantumVaultKeys: {},
       policyProfiles: {},
       orchestrationHistory: {},
@@ -251,6 +257,12 @@ export const useWalletStore = create<WalletState>()(
           delete dkgResults[publicKey];
           const vaultConfigs = { ...state.vaultConfigs };
           delete vaultConfigs[publicKey];
+          const xmssTrees = { ...state.xmssTrees };
+          delete xmssTrees[publicKey];
+          const winterAuthorityStates = { ...state.winterAuthorityStates };
+          delete winterAuthorityStates[publicKey];
+          const quantumVaultKeys = { ...state.quantumVaultKeys };
+          delete quantumVaultKeys[publicKey];
           const orchestrationHistory = { ...state.orchestrationHistory };
           delete orchestrationHistory[publicKey];
           const recoverySessions = { ...state.recoverySessions };
@@ -259,7 +271,17 @@ export const useWalletStore = create<WalletState>()(
             state.activeAccount?.publicKey === publicKey
               ? accounts[0] ?? null
               : state.activeAccount;
-          return { accounts, dkgResults, vaultConfigs, orchestrationHistory, recoverySessions, activeAccount };
+          return {
+            accounts,
+            dkgResults,
+            vaultConfigs,
+            xmssTrees,
+            winterAuthorityStates,
+            quantumVaultKeys,
+            orchestrationHistory,
+            recoverySessions,
+            activeAccount,
+          };
         }),
       switchVault: (publicKey) => {
         const { accounts } = get();
@@ -372,6 +394,17 @@ export const useWalletStore = create<WalletState>()(
           const next = { ...state.xmssTrees };
           delete next[publicKey];
           return { xmssTrees: next };
+        }),
+      storeWinterAuthorityState: (publicKey, serialized) =>
+        set((state) => ({
+          winterAuthorityStates: { ...state.winterAuthorityStates, [publicKey]: serialized },
+        })),
+      getWinterAuthorityState: (publicKey) => get().winterAuthorityStates[publicKey] ?? null,
+      clearWinterAuthorityState: (publicKey) =>
+        set((state) => {
+          const next = { ...state.winterAuthorityStates };
+          delete next[publicKey];
+          return { winterAuthorityStates: next };
         }),
       storeQuantumVaultKey: (publicKey, serialized) =>
         set((state) => ({
