@@ -4,8 +4,10 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import {
   listPendingExtensionApprovals,
+  listExtensionApprovals,
   listApprovedOrigins,
   revokeOrigin,
+  revokeAllOrigins,
   type ApprovedOriginRecord,
   resolveExtensionApproval,
   type ExtensionApprovalRequest,
@@ -38,9 +40,60 @@ function formatExpiresIn(expiresAt: number): string {
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
 
+function formatPermissionLabel(permission: ApprovedOriginRecord["grantedPermissions"][number]): string {
+  switch (permission) {
+    case "connect":
+      return "Connect";
+    case "viewPublicKey":
+      return "Public key";
+    case "viewBalance":
+      return "Balance";
+    case "viewTransactions":
+      return "Activity";
+    case "requestTransactionSignatures":
+      return "Tx prompts";
+    case "requestMessageSignatures":
+      return "Message prompts";
+    default:
+      return permission;
+  }
+}
+
+function formatUsageMethod(method: ApprovedOriginRecord["lastUsedMethod"]): string {
+  switch (method) {
+    case "connect":
+      return "connect";
+    case "getBalance":
+      return "balance read";
+    case "getTransactions":
+      return "activity read";
+    case "signTransaction":
+      return "transaction signature";
+    case "signMessage":
+      return "message signature";
+    default:
+      return "unknown";
+  }
+}
+
+function approvalStatusTone(status: ExtensionApprovalRequest["status"]): string {
+  switch (status) {
+    case "completed":
+      return "text-emerald-400";
+    case "failed":
+    case "rejected":
+      return "text-destructive";
+    case "approved":
+      return "text-primary";
+    default:
+      return "text-muted-foreground";
+  }
+}
+
 export function ApprovalCenter({ onNavigate }: ApprovalCenterProps) {
   const activeAccount = useWalletStore((state) => state.activeAccount);
   const [approvals, setApprovals] = useState<ExtensionApprovalRequest[]>([]);
+  const [approvalHistory, setApprovalHistory] = useState<ExtensionApprovalRequest[]>([]);
   const [approvedOrigins, setApprovedOrigins] = useState<ApprovedOriginRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [actingOn, setActingOn] = useState<string | null>(null);
@@ -49,11 +102,13 @@ export function ApprovalCenter({ onNavigate }: ApprovalCenterProps) {
   const loadApprovals = useCallback(async () => {
     setLoading(true);
     try {
-      const [nextApprovals, nextApprovedOrigins] = await Promise.all([
+      const [nextApprovals, nextApprovalHistory, nextApprovedOrigins] = await Promise.all([
         listPendingExtensionApprovals(),
+        listExtensionApprovals(),
         listApprovedOrigins(activePublicKey),
       ]);
       setApprovals(nextApprovals);
+      setApprovalHistory(nextApprovalHistory);
       setApprovedOrigins(nextApprovedOrigins);
     } finally {
       setLoading(false);
@@ -91,6 +146,18 @@ export function ApprovalCenter({ onNavigate }: ApprovalCenterProps) {
     }
   };
 
+  const handleRevokeAllOrigins = async () => {
+    if (!activePublicKey) return;
+
+    setActingOn("revoke-all");
+    try {
+      await revokeAllOrigins(activePublicKey);
+      await loadApprovals();
+    } finally {
+      setActingOn(null);
+    }
+  };
+
   return (
     <div className="flex flex-col gap-4 p-4 flex-1 overflow-y-auto">
       <div className="flex items-center gap-2 mb-2">
@@ -116,11 +183,22 @@ export function ApprovalCenter({ onNavigate }: ApprovalCenterProps) {
       <Card>
         <CardContent className="pt-4 space-y-3">
           <div>
-            <p className="text-sm font-medium">Connected sites</p>
+            <p className="text-sm font-medium">Connected sites & permissions</p>
             <p className="text-[11px] text-muted-foreground">
-              Approvals are scoped to the active vault and can be revoked at any time.
+              Connect access is scoped to the active vault. Reads are covered by the connection grant, while each signature still requires its own approval.
             </p>
           </div>
+          {approvedOrigins.length > 1 && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void handleRevokeAllOrigins()}
+              disabled={actingOn === "revoke-all"}
+            >
+              <Trash2 className="mr-1 h-3.5 w-3.5" />
+              Revoke all
+            </Button>
+          )}
 
           {approvedOrigins.length === 0 ? (
             <div className="rounded-xl border border-dashed border-border px-3 py-4 text-center text-[11px] text-muted-foreground">
@@ -129,27 +207,94 @@ export function ApprovalCenter({ onNavigate }: ApprovalCenterProps) {
           ) : (
             <div className="space-y-2">
               {approvedOrigins.map((record) => (
-                <div
-                  key={`${record.origin}-${record.accountPublicKey ?? "none"}`}
-                  className="flex items-center gap-3 rounded-xl border border-border px-3 py-3"
-                >
-                  <Shield className="h-4 w-4 text-primary shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <p className="truncate text-sm font-medium">{record.origin}</p>
-                    <p className="text-[11px] text-muted-foreground">
-                      Last used {record.lastUsedAt ? new Date(record.lastUsedAt).toLocaleString() : "recently"}
-                    </p>
-                  </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => void handleRevokeOrigin(record.origin)}
-                    disabled={actingOn === record.origin}
-                  >
-                    <Trash2 className="mr-1 h-3.5 w-3.5" />
-                    Revoke
-                  </Button>
-                </div>
+                (() => {
+                  const requestHistory = approvalHistory
+                    .filter((approval) =>
+                      approval.origin === record.origin && approval.accountPublicKey === record.accountPublicKey,
+                    )
+                    .slice(0, 3);
+
+                  return (
+                    <div
+                      key={`${record.origin}-${record.accountPublicKey ?? "none"}`}
+                      className="rounded-xl border border-border px-3 py-3 space-y-3"
+                    >
+                      <div className="flex items-center gap-3">
+                        <Shield className="h-4 w-4 text-primary shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <p className="truncate text-sm font-medium">{record.origin}</p>
+                          <p className="text-[11px] text-muted-foreground">
+                            Last used {record.lastUsedAt ? new Date(record.lastUsedAt).toLocaleString() : "recently"}
+                            {record.lastUsedMethod ? ` via ${formatUsageMethod(record.lastUsedMethod)}` : ""}
+                          </p>
+                        </div>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => void handleRevokeOrigin(record.origin)}
+                          disabled={actingOn === record.origin}
+                        >
+                          <Trash2 className="mr-1 h-3.5 w-3.5" />
+                          Revoke
+                        </Button>
+                      </div>
+
+                      <div className="flex flex-wrap gap-1.5">
+                        {record.grantedPermissions.map((permission) => (
+                          <span
+                            key={`${record.origin}-${permission}`}
+                            className="rounded-full border border-border bg-background/70 px-2 py-1 text-[10px] text-muted-foreground"
+                          >
+                            {formatPermissionLabel(permission)}
+                          </span>
+                        ))}
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2 text-[11px]">
+                        <div className="rounded-lg border border-border/70 bg-background/60 px-2.5 py-2">
+                          <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Reads</p>
+                          <p className="mt-1 text-foreground">
+                            {record.requestCounts.getBalance} balance · {record.requestCounts.getTransactions} activity
+                          </p>
+                        </div>
+                        <div className="rounded-lg border border-border/70 bg-background/60 px-2.5 py-2">
+                          <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Signature prompts</p>
+                          <p className="mt-1 text-foreground">
+                            {record.requestCounts.signTransaction} tx · {record.requestCounts.signMessage} message
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="rounded-lg border border-border/70 bg-background/40 px-3 py-3">
+                        <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Recent requests</p>
+                        {requestHistory.length === 0 ? (
+                          <p className="mt-2 text-[11px] text-muted-foreground">
+                            No connect or signing prompts recorded for this origin yet.
+                          </p>
+                        ) : (
+                          <div className="mt-2 space-y-2">
+                            {requestHistory.map((approval) => (
+                              <div
+                                key={approval.id}
+                                className="flex items-center justify-between gap-3 text-[11px]"
+                              >
+                                <div>
+                                  <p className="text-foreground">{formatMethodLabel(approval.method)}</p>
+                                  <p className="text-muted-foreground">
+                                    {new Date(approval.createdAt).toLocaleString()}
+                                  </p>
+                                </div>
+                                <span className={approvalStatusTone(approval.status)}>
+                                  {approval.status}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()
               ))}
             </div>
           )}

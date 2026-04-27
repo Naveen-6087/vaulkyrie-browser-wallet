@@ -1,11 +1,35 @@
 export type ExtensionApprovalMethod = "connect" | "signTransaction" | "signMessage";
 export type ExtensionApprovalStatus = "pending" | "approved" | "rejected" | "completed" | "failed";
+export type ApprovedOriginUsageMethod =
+  | "connect"
+  | "getBalance"
+  | "getTransactions"
+  | "signTransaction"
+  | "signMessage";
+export type ApprovedSitePermission =
+  | "connect"
+  | "viewPublicKey"
+  | "viewBalance"
+  | "viewTransactions"
+  | "requestTransactionSignatures"
+  | "requestMessageSignatures";
+
+export interface ApprovedOriginRequestCounts {
+  connect: number;
+  getBalance: number;
+  getTransactions: number;
+  signTransaction: number;
+  signMessage: number;
+}
 
 export interface ApprovedOriginRecord {
   origin: string;
   accountPublicKey: string | null;
   approvedAt: number;
   lastUsedAt: number;
+  lastUsedMethod: ApprovedOriginUsageMethod | null;
+  grantedPermissions: ApprovedSitePermission[];
+  requestCounts: ApprovedOriginRequestCounts;
 }
 
 export interface ExtensionApprovalDetailField {
@@ -40,6 +64,71 @@ export interface ExtensionApprovalRequest {
 
 const APPROVALS_KEY = "vaulkyrie-extension-approvals";
 const APPROVED_ORIGINS_KEY = "vaulkyrie-extension-approved-origins";
+const DEFAULT_GRANTED_PERMISSIONS: ApprovedSitePermission[] = [
+  "connect",
+  "viewPublicKey",
+  "viewBalance",
+  "viewTransactions",
+  "requestTransactionSignatures",
+  "requestMessageSignatures",
+];
+const EMPTY_REQUEST_COUNTS: ApprovedOriginRequestCounts = {
+  connect: 0,
+  getBalance: 0,
+  getTransactions: 0,
+  signTransaction: 0,
+  signMessage: 0,
+};
+
+function isApprovedOriginUsageMethod(value: unknown): value is ApprovedOriginUsageMethod {
+  return value === "connect"
+    || value === "getBalance"
+    || value === "getTransactions"
+    || value === "signTransaction"
+    || value === "signMessage";
+}
+
+function normalizeGrantedPermissions(value: unknown): ApprovedSitePermission[] {
+  if (!Array.isArray(value)) {
+    return [...DEFAULT_GRANTED_PERMISSIONS];
+  }
+
+  const permissions = value.filter((entry): entry is ApprovedSitePermission =>
+    entry === "connect"
+      || entry === "viewPublicKey"
+      || entry === "viewBalance"
+      || entry === "viewTransactions"
+      || entry === "requestTransactionSignatures"
+      || entry === "requestMessageSignatures",
+  );
+
+  return permissions.length > 0 ? permissions : [...DEFAULT_GRANTED_PERMISSIONS];
+}
+
+function normalizeRequestCounts(value: unknown): ApprovedOriginRequestCounts {
+  if (!value || typeof value !== "object") {
+    return { ...EMPTY_REQUEST_COUNTS };
+  }
+
+  const candidate = value as Partial<ApprovedOriginRequestCounts>;
+  return {
+    connect: typeof candidate.connect === "number" ? candidate.connect : 0,
+    getBalance: typeof candidate.getBalance === "number" ? candidate.getBalance : 0,
+    getTransactions: typeof candidate.getTransactions === "number" ? candidate.getTransactions : 0,
+    signTransaction: typeof candidate.signTransaction === "number" ? candidate.signTransaction : 0,
+    signMessage: typeof candidate.signMessage === "number" ? candidate.signMessage : 0,
+  };
+}
+
+function incrementRequestCount(
+  counts: ApprovedOriginRequestCounts,
+  method: ApprovedOriginUsageMethod,
+): ApprovedOriginRequestCounts {
+  return {
+    ...counts,
+    [method]: counts[method] + 1,
+  };
+}
 
 function canUseChromeStorage(): boolean {
   return typeof chrome !== "undefined" && typeof chrome.storage?.local !== "undefined";
@@ -104,6 +193,9 @@ function normalizeApprovedOriginRecords(
         accountPublicKey: null,
         approvedAt: 0,
         lastUsedAt: 0,
+        lastUsedMethod: null,
+        grantedPermissions: [...DEFAULT_GRANTED_PERMISSIONS],
+        requestCounts: { ...EMPTY_REQUEST_COUNTS },
       }];
     }
 
@@ -113,8 +205,8 @@ function normalizeApprovedOriginRecords(
       "origin" in entry &&
       typeof entry.origin === "string"
     ) {
-      return [{
-        origin: entry.origin,
+        return [{
+          origin: entry.origin,
         accountPublicKey:
           "accountPublicKey" in entry && typeof entry.accountPublicKey === "string"
             ? entry.accountPublicKey
@@ -123,12 +215,24 @@ function normalizeApprovedOriginRecords(
           "approvedAt" in entry && typeof entry.approvedAt === "number"
             ? entry.approvedAt
             : 0,
-        lastUsedAt:
-          "lastUsedAt" in entry && typeof entry.lastUsedAt === "number"
-            ? entry.lastUsedAt
-            : 0,
-      }];
-    }
+          lastUsedAt:
+            "lastUsedAt" in entry && typeof entry.lastUsedAt === "number"
+              ? entry.lastUsedAt
+              : 0,
+          lastUsedMethod:
+            "lastUsedMethod" in entry && isApprovedOriginUsageMethod(entry.lastUsedMethod)
+              ? entry.lastUsedMethod
+              : null,
+          grantedPermissions:
+            "grantedPermissions" in entry
+              ? normalizeGrantedPermissions(entry.grantedPermissions)
+              : [...DEFAULT_GRANTED_PERMISSIONS],
+          requestCounts:
+            "requestCounts" in entry
+              ? normalizeRequestCounts(entry.requestCounts)
+              : { ...EMPTY_REQUEST_COUNTS },
+        }];
+      }
 
     return [];
   });
@@ -367,7 +471,17 @@ export async function approveOrigin(
   if (existingIndex >= 0) {
     approvedOrigins[existingIndex] = {
       ...approvedOrigins[existingIndex],
+      approvedAt: approvedOrigins[existingIndex].approvedAt || now,
       lastUsedAt: now,
+      lastUsedMethod: "connect",
+      grantedPermissions:
+        approvedOrigins[existingIndex].grantedPermissions.length > 0
+          ? approvedOrigins[existingIndex].grantedPermissions
+          : [...DEFAULT_GRANTED_PERMISSIONS],
+      requestCounts: incrementRequestCount(
+        approvedOrigins[existingIndex].requestCounts ?? { ...EMPTY_REQUEST_COUNTS },
+        "connect",
+      ),
     };
     await setStorageValue(APPROVED_ORIGINS_KEY, approvedOrigins);
     return;
@@ -379,6 +493,9 @@ export async function approveOrigin(
       accountPublicKey,
       approvedAt: now,
       lastUsedAt: now,
+      lastUsedMethod: "connect",
+      grantedPermissions: [...DEFAULT_GRANTED_PERMISSIONS],
+      requestCounts: incrementRequestCount({ ...EMPTY_REQUEST_COUNTS }, "connect"),
     },
     ...approvedOrigins,
   ]);
@@ -387,12 +504,18 @@ export async function approveOrigin(
 export async function markOriginUsed(
   origin: string,
   accountPublicKey: string | null,
+  method: ApprovedOriginUsageMethod = "connect",
 ): Promise<void> {
   const approvedOrigins = await readApprovedOriginRecords();
   const now = Date.now();
   const nextOrigins = approvedOrigins.map((record) =>
     record.origin === origin && record.accountPublicKey === accountPublicKey
-      ? { ...record, lastUsedAt: now }
+      ? {
+          ...record,
+          lastUsedAt: now,
+          lastUsedMethod: method,
+          requestCounts: incrementRequestCount(record.requestCounts ?? { ...EMPTY_REQUEST_COUNTS }, method),
+        }
       : record,
   );
   await setStorageValue(APPROVED_ORIGINS_KEY, nextOrigins);
@@ -409,4 +532,27 @@ export async function revokeOrigin(
       (record) => !(record.origin === origin && record.accountPublicKey === accountPublicKey),
     ),
   );
+}
+
+export async function revokeAllOrigins(
+  accountPublicKey: string | null,
+): Promise<void> {
+  const approvedOrigins = await readApprovedOriginRecords();
+  await setStorageValue(
+    APPROVED_ORIGINS_KEY,
+    approvedOrigins.filter((record) => record.accountPublicKey !== accountPublicKey),
+  );
+}
+
+export async function listExtensionApprovalsForOrigin(
+  origin: string,
+  accountPublicKey?: string | null,
+): Promise<ExtensionApprovalRequest[]> {
+  const approvals = await listExtensionApprovals();
+  return approvals
+    .filter((approval) =>
+      approval.origin === origin
+        && (accountPublicKey === undefined || approval.accountPublicKey === accountPublicKey),
+    )
+    .sort((left, right) => right.createdAt - left.createdAt);
 }
