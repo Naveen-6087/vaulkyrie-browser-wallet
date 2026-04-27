@@ -7,7 +7,7 @@
  *   - fund that PDA like a receive address
  *   - spend it exactly once via split or close
  *
- * This is separate from the multi-use XMSS-backed authority rotation account.
+ * This is separate from the root-rolling Winter/XMSS authority account.
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -70,6 +70,7 @@ interface QuantumVaultState {
   authorityRootHex: string;
   authorityNextLeafIndex: number | null;
   authorityNextSequence: bigint | null;
+  hasWinterAuthorityState: boolean;
 }
 
 interface QuantumVaultProps {
@@ -84,6 +85,7 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
     getQuantumVaultKey,
     storeQuantumVaultKey,
     clearQuantumVaultKey,
+    getWinterAuthorityState,
     refreshBalances,
     refreshTransactions,
   } = useWalletStore();
@@ -96,6 +98,7 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
     authorityRootHex: "",
     authorityNextLeafIndex: null,
     authorityNextSequence: null,
+    hasWinterAuthorityState: false,
   });
 
   const [activePanel, setActivePanel] = useState<
@@ -142,6 +145,7 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
     let authorityRootHex = "";
     let authorityNextLeafIndex: number | null = null;
     let authorityNextSequence: bigint | null = null;
+    const hasWinterAuthorityState = getWinterAuthorityState(walletAddress) !== null;
 
     try {
       await withRpcFallback(network, async (connection) => {
@@ -170,8 +174,9 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
       authorityRootHex,
       authorityNextLeafIndex,
       authorityNextSequence,
+      hasWinterAuthorityState,
     });
-  }, [getQuantumVaultKey, network, walletAddress]);
+  }, [getQuantumVaultKey, getWinterAuthorityState, network, walletAddress]);
 
   useEffect(() => {
     void refreshQuantumVault();
@@ -574,7 +579,7 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
                 </CardHeader>
                 <CardContent className="space-y-3">
                   <p className="text-xs text-muted-foreground">
-                    This separate onchain account tracks the multi-use authority rotation state for
+                    This separate onchain account tracks the post-quantum authority state for
                     Vaulkyrie admin actions.
                   </p>
                   {vault.authorityRootHex && (
@@ -599,16 +604,23 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
                   )}
                   <div className="grid grid-cols-2 gap-2">
                     <div className="p-2 rounded-lg bg-muted text-center">
-                      <p className="text-sm font-bold">{vault.authorityNextLeafIndex ?? 0}</p>
-                      <p className="text-[10px] text-muted-foreground">Next authority leaf</p>
+                      <p className="text-sm font-bold">
+                        {vault.hasWinterAuthorityState ? "Winter" : "XMSS"}
+                      </p>
+                      <p className="text-[10px] text-muted-foreground">Authority mode</p>
                     </div>
                     <div className="p-2 rounded-lg bg-muted text-center">
                       <p className="text-sm font-bold">
                         {vault.authorityNextSequence?.toString() ?? "0"}
                       </p>
-                      <p className="text-[10px] text-muted-foreground">Rotation sequence</p>
+                      <p className="text-[10px] text-muted-foreground">Authority sequence</p>
                     </div>
                   </div>
+                  <p className="text-[10px] text-muted-foreground">
+                    {vault.hasWinterAuthorityState
+                      ? "Local Winter signer state is loaded. Authority advances roll to a fresh root after each high-risk admin authorization."
+                      : `Legacy XMSS authority tree. Next leaf: ${vault.authorityNextLeafIndex ?? 0}.`}
+                  </p>
                 </CardContent>
               </Card>
             )}

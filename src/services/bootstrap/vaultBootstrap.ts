@@ -241,7 +241,7 @@ export async function prepareVaultBootstrapTransaction(params: {
       ACCOUNT_SIZE.QuantumAuthorityState,
     );
     if (!authorityHash || !authorityRoot) {
-      throw new Error("Missing XMSS authority material for bootstrap.");
+      throw new Error("Missing post-quantum authority material for bootstrap.");
     }
 
     const [authorityPda, authorityBump] = findQuantumAuthorityPda(vaultRegistryPda);
