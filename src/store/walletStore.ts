@@ -11,6 +11,7 @@ import type {
   PolicyProfile,
   PendingPolicyRequest,
   SpendOrchestrationActivity,
+  RecoverySessionRecord,
 } from "../types";
 import { DEFAULT_NETWORK, type NetworkId } from "../lib/constants";
 import {
@@ -74,6 +75,7 @@ export interface PersistedWalletState {
   quantumVaultKeys: Record<string, string>;
   policyProfiles: Record<string, PolicyProfile[]>;
   orchestrationHistory: Record<string, SpendOrchestrationActivity[]>;
+  recoverySessions: Record<string, RecoverySessionRecord[]>;
 }
 
 interface WalletState extends PersistedWalletState {
@@ -155,6 +157,8 @@ interface WalletState extends PersistedWalletState {
   setPendingPolicyRequest: (request: PendingPolicyRequest | null) => void;
   recordOrchestrationActivity: (publicKey: string, activity: SpendOrchestrationActivity) => void;
   getOrchestrationHistory: (publicKey: string) => SpendOrchestrationActivity[];
+  upsertRecoverySession: (publicKey: string, session: RecoverySessionRecord) => void;
+  getRecoverySessions: (publicKey: string) => RecoverySessionRecord[];
 
   // Async actions — real Solana RPC calls
   refreshBalances: () => Promise<void>;
@@ -185,6 +189,7 @@ export function pickPersistedWalletState(state: WalletState): PersistedWalletSta
     quantumVaultKeys: state.quantumVaultKeys,
     policyProfiles: state.policyProfiles,
     orchestrationHistory: state.orchestrationHistory,
+    recoverySessions: state.recoverySessions,
   };
 }
 
@@ -212,6 +217,7 @@ export const useWalletStore = create<WalletState>()(
       quantumVaultKeys: {},
       policyProfiles: {},
       orchestrationHistory: {},
+      recoverySessions: {},
       pendingPolicyRequest: null,
       tokens: [],
       transactions: [],
@@ -247,11 +253,13 @@ export const useWalletStore = create<WalletState>()(
           delete vaultConfigs[publicKey];
           const orchestrationHistory = { ...state.orchestrationHistory };
           delete orchestrationHistory[publicKey];
+          const recoverySessions = { ...state.recoverySessions };
+          delete recoverySessions[publicKey];
           const activeAccount =
             state.activeAccount?.publicKey === publicKey
               ? accounts[0] ?? null
               : state.activeAccount;
-          return { accounts, dkgResults, vaultConfigs, orchestrationHistory, activeAccount };
+          return { accounts, dkgResults, vaultConfigs, orchestrationHistory, recoverySessions, activeAccount };
         }),
       switchVault: (publicKey) => {
         const { accounts } = get();
@@ -412,6 +420,21 @@ export const useWalletStore = create<WalletState>()(
           },
         })),
       getOrchestrationHistory: (publicKey) => get().orchestrationHistory[publicKey] ?? [],
+      upsertRecoverySession: (publicKey, session) =>
+        set((state) => ({
+          recoverySessions: {
+            ...state.recoverySessions,
+            [publicKey]: [
+              session,
+              ...(state.recoverySessions[publicKey] ?? []).filter(
+                (existing) => existing.id !== session.id && existing.recoveryAccount !== session.recoveryAccount,
+              ),
+            ]
+              .sort((left, right) => right.updatedAt - left.updatedAt)
+              .slice(0, 32),
+          },
+        })),
+      getRecoverySessions: (publicKey) => get().recoverySessions[publicKey] ?? [],
 
       refreshBalances: async () => {
         const { activeAccount, network } = get();

@@ -1,4 +1,4 @@
-import { Shield, ChevronRight, Globe, Key, Bell, Info, Wallet, Trash2, Users, Lock } from "lucide-react";
+import { Shield, ChevronRight, Globe, Key, Bell, Info, Wallet, Trash2, Users, Lock, LifeBuoy } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -255,6 +255,12 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
           onClick={() => onNavigate("approval")}
         />
         <SettingRow
+          icon={LifeBuoy}
+          label="Recovery & Restore"
+          value="Encrypted backup import/export and onchain recovery coordination"
+          onClick={() => onNavigate("recovery")}
+        />
+        <SettingRow
           icon={Globe}
           label="Connected Sites"
           value={activeAccount ? "Manage approved extension origins" : "Unlock a vault to view site access"}
@@ -489,7 +495,7 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
         </div>
         <div className="space-y-3 p-4">
           <p className="text-xs text-muted-foreground">
-            Export an encrypted local backup of this browser wallet. You can restore it later from the onboarding screen using <span className="font-medium text-foreground">Import Existing Vault</span>.
+            Export an encrypted local backup of this browser wallet. For restore previews, backup imports, and onchain recovery coordination, open <span className="font-medium text-foreground">Recovery &amp; Restore</span>.
           </p>
           <Input
             type="password"
@@ -520,8 +526,11 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
             {isExportingBackup ? "Exporting encrypted backup…" : "Download encrypted backup"}
           </Button>
           <p className="text-[11px] text-muted-foreground">
-            Onchain recovery and authority-migration flows are still separate from this local restore path.
+            This quick export stays here for convenience. The full restore and recovery workflow now lives in Recovery &amp; Restore.
           </p>
+          <Button variant="ghost" className="w-full" onClick={() => onNavigate("recovery")}>
+            Open Recovery &amp; Restore
+          </Button>
         </div>
       </Card>
 

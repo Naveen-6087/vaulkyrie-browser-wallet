@@ -9,6 +9,7 @@ import { SendView } from "@/components/wallet/SendView";
 import { ReceiveView } from "@/components/wallet/ReceiveView";
 import { SwapView } from "@/components/wallet/SwapView";
 import { PolicyView } from "@/components/wallet/PolicyView";
+import { RecoveryView } from "@/components/wallet/RecoveryView";
 import { ActivityList } from "@/components/wallet/ActivityList";
 import { AddressBook } from "@/components/wallet/AddressBook";
 import { SettingsView } from "@/components/settings/SettingsView";
@@ -318,6 +319,9 @@ function App() {
             onNavigate={setView}
           />
         );
+
+      case "recovery":
+        return <RecoveryView onNavigate={setView} />;
 
       case "contacts":
         return <AddressBook />;

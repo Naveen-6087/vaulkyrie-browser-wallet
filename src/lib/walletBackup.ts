@@ -14,6 +14,17 @@ export interface WalletBackupFile extends EncryptedPayload {
   exportedAt: number;
 }
 
+export interface WalletBackupPreview {
+  exportedAt: number;
+  network: PersistedWalletState["network"];
+  relayUrl: string;
+  accounts: Array<{ name: string; publicKey: string }>;
+  contactCount: number;
+  policyProfileCount: number;
+  orchestrationActivityCount: number;
+  recoverySessionCount: number;
+}
+
 function isWalletAccountArray(value: unknown): value is PersistedWalletState["accounts"] {
   return Array.isArray(value) && value.every((account) => {
     if (typeof account !== "object" || account === null) return false;
@@ -84,6 +95,7 @@ function validatePersistedWalletState(value: unknown): PersistedWalletState {
     quantumVaultKeys: candidate.quantumVaultKeys ?? {},
     policyProfiles: candidate.policyProfiles ?? {},
     orchestrationHistory: candidate.orchestrationHistory ?? {},
+    recoverySessions: candidate.recoverySessions ?? {},
   });
 }
 
@@ -136,10 +148,10 @@ function parseWalletBackupFile(backupJson: string): WalletBackupFile {
   return candidate as WalletBackupFile;
 }
 
-export async function importEncryptedWalletBackup(
+async function decodeEncryptedWalletBackup(
   backupJson: string,
   password: string,
-): Promise<PersistedWalletState> {
+): Promise<{ backup: WalletBackupFile; restoredState: PersistedWalletState }> {
   const backup = parseWalletBackupFile(backupJson);
 
   let plaintext = "";
@@ -156,7 +168,47 @@ export async function importEncryptedWalletBackup(
     throw new Error("Backup payload could not be decoded.");
   }
 
-  const restoredState = validatePersistedWalletState(envelope.state);
+  return {
+    backup,
+    restoredState: validatePersistedWalletState(envelope.state),
+  };
+}
+
+export async function previewEncryptedWalletBackup(
+  backupJson: string,
+  password: string,
+): Promise<WalletBackupPreview> {
+  const { backup, restoredState } = await decodeEncryptedWalletBackup(backupJson, password);
+
+  return {
+    exportedAt: backup.exportedAt,
+    network: restoredState.network,
+    relayUrl: restoredState.relayUrl,
+    accounts: restoredState.accounts.map((account) => ({
+      name: account.name,
+      publicKey: account.publicKey,
+    })),
+    contactCount: restoredState.contacts.length,
+    policyProfileCount: Object.values(restoredState.policyProfiles).reduce(
+      (sum, profiles) => sum + profiles.length,
+      0,
+    ),
+    orchestrationActivityCount: Object.values(restoredState.orchestrationHistory).reduce(
+      (sum, activities) => sum + activities.length,
+      0,
+    ),
+    recoverySessionCount: Object.values(restoredState.recoverySessions).reduce(
+      (sum, sessions) => sum + sessions.length,
+      0,
+    ),
+  };
+}
+
+export async function importEncryptedWalletBackup(
+  backupJson: string,
+  password: string,
+): Promise<PersistedWalletState> {
+  const { restoredState } = await decodeEncryptedWalletBackup(backupJson, password);
   useWalletStore.setState({
     ...restoredState,
     currentView: "dashboard",

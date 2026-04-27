@@ -56,27 +56,22 @@ export interface SpendOrchestrationActivity {
   policy?: SpendOrchestrationPolicySnapshot | null;
 }
 
-export interface SpendOrchestrationPolicySnapshot {
-  evaluationAddress: string;
-  receiptCommitment: string;
-  decisionCommitment: string;
-  reasonCode: number;
-  delayUntilSlot: string;
-}
-
-export interface SpendOrchestrationActivity {
+export interface RecoverySessionRecord {
   id: string;
-  kind: "spend-orchestration";
   accountPublicKey: string;
-  signature: string;
-  amount: number;
-  token: string;
-  recipient: string;
-  timestamp: number;
+  recoveryAccount: string;
   network: NetworkId;
-  actionHash: string;
-  orchestrationAddress: string;
-  policy?: SpendOrchestrationPolicySnapshot | null;
+  createdAt: number;
+  updatedAt: number;
+  status: "pending" | "complete" | "expired" | "unknown";
+  expirySlot: string;
+  newThreshold: number;
+  newParticipantCount: number;
+  recoveryCommitment: string;
+  initSignature?: string | null;
+  completeSignature?: string | null;
+  newGroupKey?: string | null;
+  newAuthorityHash?: string | null;
 }
 
 export interface Collectible {
@@ -132,6 +127,7 @@ export type WalletView =
   | "swap"
   | "activity"
   | "settings"
+  | "recovery"
   | "vault"
   | "quantum-vault"
   | "onboarding"

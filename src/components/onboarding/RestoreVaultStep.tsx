@@ -4,7 +4,12 @@ import { Download, FileUp, KeyRound, Loader2, Shield } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { importEncryptedWalletBackup } from "@/lib/walletBackup";
+import {
+  importEncryptedWalletBackup,
+  previewEncryptedWalletBackup,
+  type WalletBackupPreview,
+} from "@/lib/walletBackup";
+import { shortenAddress } from "@/lib/utils";
 
 interface RestoreVaultStepProps {
   onBack: () => void;
@@ -16,6 +21,8 @@ export function RestoreVaultStep({ onBack, onRestored }: RestoreVaultStepProps) 
   const [backupPassword, setBackupPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [preview, setPreview] = useState<WalletBackupPreview | null>(null);
+  const [previewing, setPreviewing] = useState(false);
 
   const handleFileImport = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -25,6 +32,7 @@ export function RestoreVaultStep({ onBack, onRestored }: RestoreVaultStepProps) 
       const text = await file.text();
       setBackupJson(text);
       setError("");
+      setPreview(null);
     } catch {
       setError("Failed to read the selected backup file.");
     } finally {
@@ -51,6 +59,29 @@ export function RestoreVaultStep({ onBack, onRestored }: RestoreVaultStepProps) 
       setError(restoreError instanceof Error ? restoreError.message : "Failed to restore wallet backup.");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handlePreview = async () => {
+    if (!backupJson.trim()) {
+      setError("Paste a backup JSON payload or choose a backup file first.");
+      return;
+    }
+    if (!backupPassword) {
+      setError("Enter the backup password used when exporting this wallet.");
+      return;
+    }
+
+    setPreviewing(true);
+    setError("");
+    try {
+      const nextPreview = await previewEncryptedWalletBackup(backupJson, backupPassword);
+      setPreview(nextPreview);
+    } catch (previewError) {
+      setPreview(null);
+      setError(previewError instanceof Error ? previewError.message : "Failed to preview wallet backup.");
+    } finally {
+      setPreviewing(false);
     }
   };
 
@@ -93,7 +124,7 @@ export function RestoreVaultStep({ onBack, onRestored }: RestoreVaultStepProps) 
             <div>
               <p className="text-sm font-semibold">Encrypted local restore</p>
               <p className="text-xs text-muted-foreground mt-1">
-                This restore path does not recreate onchain recovery state yet. It safely restores the wallet data you previously exported from this browser wallet.
+                Restore rehydrates your local vault state, saved DKG packages, activity history, and any staged recovery sessions from an encrypted Vaulkyrie backup.
               </p>
             </div>
           </div>
@@ -113,7 +144,10 @@ export function RestoreVaultStep({ onBack, onRestored }: RestoreVaultStepProps) 
             <p className="text-sm font-medium mb-2">Or paste backup JSON</p>
             <textarea
               value={backupJson}
-              onChange={(event) => setBackupJson(event.target.value)}
+              onChange={(event) => {
+                setBackupJson(event.target.value);
+                setPreview(null);
+              }}
               placeholder='{"kind":"vaulkyrie-wallet-backup", ...}'
               className="min-h-36 w-full rounded-xl border border-border bg-background px-3 py-3 text-xs font-mono text-foreground placeholder:text-muted-foreground/50"
             />
@@ -126,19 +160,40 @@ export function RestoreVaultStep({ onBack, onRestored }: RestoreVaultStepProps) 
               <Input
                 type="password"
                 value={backupPassword}
-                onChange={(event) => setBackupPassword(event.target.value)}
+                onChange={(event) => {
+                  setBackupPassword(event.target.value);
+                  setPreview(null);
+                }}
                 placeholder="Password used to encrypt this backup"
                 className="pl-10"
               />
             </div>
           </div>
 
+          {preview && (
+            <div className="rounded-xl border border-border bg-muted/20 px-3 py-3 text-xs text-muted-foreground space-y-2">
+              <p className="text-sm font-medium text-foreground">Backup preview</p>
+              <p>Exported: {new Date(preview.exportedAt).toLocaleString()}</p>
+              <p>Network: {preview.network}</p>
+              <p>Accounts: {preview.accounts.map((account) => `${account.name} (${shortenAddress(account.publicKey)})`).join(", ")}</p>
+              <p>
+                Contacts: {preview.contactCount} · Policies: {preview.policyProfileCount} · Activity: {preview.orchestrationActivityCount} · Recovery sessions: {preview.recoverySessionCount}
+              </p>
+            </div>
+          )}
+
           {error && <p className="text-xs text-destructive">{error}</p>}
 
-          <Button className="w-full gap-2" onClick={handleRestore} disabled={loading}>
-            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-            Restore vault backup
-          </Button>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <Button variant="outline" className="w-full gap-2" onClick={handlePreview} disabled={loading || previewing}>
+              {previewing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Shield className="h-4 w-4" />}
+              Preview backup
+            </Button>
+            <Button className="w-full gap-2" onClick={handleRestore} disabled={loading}>
+              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+              Restore vault backup
+            </Button>
+          </div>
         </Card>
       </div>
     </div>
