@@ -36,9 +36,12 @@ export default defineManifest({
   ],
   permissions: ["storage", "activeTab", "notifications"],
   content_security_policy: {
-    extension_pages: "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; base-uri 'self';",
+    extension_pages:
+      "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; base-uri 'self'; connect-src 'self' http://localhost:8765 http://127.0.0.1:8765 ws://localhost:8765 ws://127.0.0.1:8765 https://api.mainnet-beta.solana.com https://api.devnet.solana.com https://api.testnet.solana.com https://rpc.ankr.com;",
   },
   host_permissions: [
+    "http://localhost:8765/*",
+    "http://127.0.0.1:8765/*",
     "https://api.mainnet-beta.solana.com/*",
     "https://api.devnet.solana.com/*",
     "https://api.testnet.solana.com/*",

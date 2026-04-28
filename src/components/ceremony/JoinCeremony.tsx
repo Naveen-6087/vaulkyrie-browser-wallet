@@ -316,7 +316,9 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
             setStatusMessage(
               signatureHex === "already-initialized"
                 ? "Vault bootstrap already existed on-chain."
-                : `Vault bootstrap finalized: ${signatureHex.slice(0, 12)}...`,
+                : signatureHex === "bootstrap-skipped"
+                  ? "Wallet opened in off-chain mode. On-chain controls can be initialized later."
+                  : `Vault bootstrap finalized: ${signatureHex.slice(0, 12)}...`,
             );
           },
         },
@@ -397,7 +399,7 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
           const finish = () => {
             setPhase("complete");
             setProgress(100);
-            setStatusMessage("Ceremony complete — waiting for the coordinator to fund and finalize the vault bootstrap...");
+            setStatusMessage("Ceremony complete — waiting for the coordinator to open the wallet or finalize on-chain controls...");
 
             try {
               sessionStorage.setItem(
@@ -582,8 +584,8 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
           <p className="text-lg font-semibold">Ceremony Complete</p>
           <p className="text-sm text-muted-foreground text-center">
             {bootstrapComplete
-              ? "Your vault keys have been distributed and the on-chain vault bootstrap is complete."
-              : "Your vault keys have been distributed. Waiting for the coordinator to finalize the on-chain vault bootstrap."}
+              ? "Your vault keys have been distributed and the wallet is ready."
+              : "Your vault keys have been distributed. Waiting for the coordinator to open the wallet or finalize on-chain controls."}
           </p>
           <Card className="w-full p-4">
             <p className="text-xs text-muted-foreground">

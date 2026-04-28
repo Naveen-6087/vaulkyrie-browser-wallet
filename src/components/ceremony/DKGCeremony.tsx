@@ -762,6 +762,34 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
     bootstrapRequiredLamports,
   ]);
 
+  const handleOpenWithoutBootstrap = useCallback(async () => {
+    if (!groupPublicKey || isBootstrapping || isCheckingBootstrapFunding) {
+      return;
+    }
+
+    setBootstrapError(null);
+    setBootstrapMessage("Opening wallet in off-chain mode. Policy and quantum controls can be initialized later.");
+
+    try {
+      const dkgRaw = sessionStorage.getItem("vaulkyrie_dkg_result");
+      if (dkgRaw) {
+        const dkg = JSON.parse(dkgRaw) as { isMultiDevice?: boolean };
+        if (dkg.isMultiDevice === true) {
+          relayRef.current?.broadcastSignComplete("bootstrap-skipped", true);
+        }
+      }
+    } catch {
+      // Opening the local wallet should not be blocked by a stale session payload.
+    }
+
+    onComplete(groupPublicKey);
+  }, [
+    groupPublicKey,
+    isBootstrapping,
+    isCheckingBootstrapFunding,
+    onComplete,
+  ]);
+
   const startDKG = useCallback(() => {
     setPhase("dkg-round1");
     setDkgProgress(0);
@@ -1390,7 +1418,7 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
                   </p>
                 )}
                 <p className="text-xs text-muted-foreground mt-3 leading-relaxed">
-                  The derived Vaulkyrie vault address pays the rent and network fees for its registry, authority, and policy PDAs.
+                  You can open the wallet immediately after key generation. On-chain policy and quantum controls create Vaulkyrie PDAs and still need rent or a sponsor when enabled.
                 </p>
                 <div className="flex gap-2 mt-3">
                   <button
@@ -1474,32 +1502,44 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
         )}
 
         {phase === "complete" && (
-          <motion.button
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            whileHover={{ scale: 1.01 }}
-            whileTap={{ scale: 0.98 }}
-            onClick={handleFinalizeVault}
-            disabled={isBootstrapping || isCheckingBootstrapFunding || !bootstrapFundingReady}
-            className="w-full py-3.5 rounded-xl font-semibold text-sm cursor-pointer
-                       bg-primary text-primary-foreground
-                       disabled:opacity-60 disabled:cursor-not-allowed
-                       shadow-lg shadow-primary/20 hover:shadow-primary/35 transition-all
-                       flex items-center justify-center gap-2"
-          >
-            {isBootstrapping
-              ? "Finalizing Vault..."
-              : isCheckingBootstrapFunding
-                ? "Checking Vault Funding..."
-                : bootstrapAlreadyInitialized
-                  ? "Open Wallet"
-                  : bootstrapFundingReady
-                    ? "Finalize & Open Vault"
-                    : "Fund Vault Before Finalizing"}
-            {isBootstrapping || isCheckingBootstrapFunding
-              ? <Loader2 className="h-4 w-4 animate-spin" />
-              : <Shield className="h-4 w-4" />}
-          </motion.button>
+          <div className="space-y-2">
+            <motion.button
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              whileHover={{ scale: 1.01 }}
+              whileTap={{ scale: 0.98 }}
+              onClick={handleFinalizeVault}
+              disabled={isBootstrapping || isCheckingBootstrapFunding || !bootstrapFundingReady}
+              className="w-full py-3.5 rounded-xl font-semibold text-sm cursor-pointer
+                         bg-primary text-primary-foreground
+                         disabled:opacity-60 disabled:cursor-not-allowed
+                         shadow-lg shadow-primary/20 hover:shadow-primary/35 transition-all
+                         flex items-center justify-center gap-2"
+            >
+              {isBootstrapping
+                ? "Finalizing Vault..."
+                : isCheckingBootstrapFunding
+                  ? "Checking Vault Funding..."
+                  : bootstrapAlreadyInitialized
+                    ? "Open Wallet"
+                    : bootstrapFundingReady
+                      ? "Finalize & Open Vault"
+                      : "Fund Vault Before Finalizing"}
+              {isBootstrapping || isCheckingBootstrapFunding
+                ? <Loader2 className="h-4 w-4 animate-spin" />
+                : <Shield className="h-4 w-4" />}
+            </motion.button>
+
+            {!bootstrapAlreadyInitialized && !bootstrapFundingReady && (
+              <button
+                onClick={() => { void handleOpenWithoutBootstrap(); }}
+                disabled={isBootstrapping || isCheckingBootstrapFunding}
+                className="w-full py-3 rounded-xl border border-border bg-background text-sm font-medium text-foreground hover:bg-accent transition-colors disabled:opacity-50"
+              >
+                Open Wallet Now
+              </button>
+            )}
+          </div>
         )}
       </div>
     </div>

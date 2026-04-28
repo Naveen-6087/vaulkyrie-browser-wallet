@@ -29,6 +29,11 @@ function inferHostedRelayUrl(): string | null {
   }
 
   const { protocol, host } = window.location;
+  const hostname = window.location.hostname;
+  if (LOCAL_RELAY_HOSTS.has(hostname)) {
+    return null;
+  }
+
   if (protocol === "https:" || protocol === "http:") {
     const relayProtocol = protocol === "https:" ? "wss:" : "ws:";
     return `${relayProtocol}//${host}/relay`;
@@ -220,6 +225,10 @@ export function validateRelayUrl(input: string): RelayUrlValidation {
   }
 
   const isLocal = LOCAL_RELAY_HOSTS.has(parsed.hostname);
+  if (isLocal && parsed.pathname === "/relay" && parsed.port !== "8765") {
+    parsed.port = "8765";
+  }
+
   if (parsed.protocol === "ws:" && !isLocal) {
     return {
       ok: false,
