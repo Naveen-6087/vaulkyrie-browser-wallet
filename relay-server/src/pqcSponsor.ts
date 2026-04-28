@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   Connection,
   Keypair,
@@ -14,6 +15,7 @@ const DEFAULT_PROGRAM_ID = "HUf5TWL4H18qJigd9m7h6MihX1xnzr2BVbbyGYFLEGPx";
 const INIT_PQC_WALLET_INSTRUCTION = 27;
 const PQC_WALLET_SPACE = 88;
 const FREE_SPONSOR_LIMIT = Number.parseInt(process.env.PQC_SPONSOR_FREE_LIMIT ?? "25", 10);
+const serverRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 interface SponsoredWalletRecord {
   walletIdHex: string;
@@ -34,11 +36,11 @@ export interface SponsorPqcInitInput {
 }
 
 const sponsorStorePath = path.resolve(
-  process.env.PQC_SPONSOR_STORE_PATH ?? path.join(process.cwd(), ".vaulkyrie-sponsored-pqc.json"),
+  process.env.PQC_SPONSOR_STORE_PATH ?? path.join(serverRoot, ".vaulkyrie-sponsored-pqc.json"),
 );
 
 const sponsorKeypairPath = path.resolve(
-  process.env.PQC_SPONSOR_KEYPAIR_PATH ?? path.join(process.cwd(), ".vaulkyrie-pqc-sponsor.json"),
+  process.env.PQC_SPONSOR_KEYPAIR_PATH ?? path.join(serverRoot, ".vaulkyrie-pqc-sponsor.json"),
 );
 
 function readStore(): SponsorStore {

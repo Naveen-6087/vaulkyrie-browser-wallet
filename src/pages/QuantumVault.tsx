@@ -617,6 +617,11 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
     }
   }, []);
 
+  const canUseSelfFundedPqcFallback = (status: PqcSponsorStatus | null) => {
+    if (!status) return true;
+    return !status.enabled || status.freeRemaining <= 0 || status.balanceLamports <= 0;
+  };
+
   const handleRequestPqcSetupAirdrop = async () => {
     if (!activeAccount?.publicKey) return;
     if (network !== "devnet") {
@@ -701,6 +706,8 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
       let setupMode = "sponsored";
       try {
         setStatusMessage("Requesting sponsored PQC wallet initialization...");
+        const latestSponsorStatus = await fetchPqcSponsorStatus(relayUrl, network).catch(() => sponsorStatus);
+        setSponsorStatus(latestSponsorStatus);
         const sponsored = await requestSponsoredPqcInit({
           relayUrl,
           network,
@@ -710,8 +717,18 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
         signature = sponsored.signature;
         await refreshPqcSponsorStatus();
       } catch (sponsorError) {
-        setupMode = "self-funded";
         const sponsorMessage = sponsorError instanceof Error ? sponsorError.message : String(sponsorError);
+        const latestSponsorStatus = await fetchPqcSponsorStatus(relayUrl, network).catch(() => sponsorStatus);
+        setSponsorStatus(latestSponsorStatus);
+        if (!canUseSelfFundedPqcFallback(latestSponsorStatus)) {
+          throw new Error(
+            `Sponsored PQC setup failed even though the sponsor is funded. ` +
+            `${sponsorMessage}. Restart relay-server with the latest code and retry. ` +
+            `Sponsor: ${latestSponsorStatus?.sponsorAddress ?? "unknown"}`,
+          );
+        }
+
+        setupMode = "self-funded";
         setStatusMessage(`Sponsor unavailable: ${sponsorMessage}. Checking self-funded setup...`);
         signature = await withRpcFallback(network, async (connection) => {
           await ensurePqcInitPayerIsFunded(connection, payer);
