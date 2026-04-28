@@ -48,6 +48,7 @@ import {
   prepareVaultBootstrapTransaction,
 } from "@/services/bootstrap/vaultBootstrap";
 import logo from "@/assets/xlogo.jpeg";
+import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { useWalletStore } from "@/store/walletStore";
 import type { SignRequestPayload } from "@/services/relay/channelRelay";
 
@@ -153,9 +154,9 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
   const [bootstrapRequiredLamports, setBootstrapRequiredLamports] = useState<number | null>(null);
   const [bootstrapPendingActions, setBootstrapPendingActions] = useState<string[]>([]);
   const [bootstrapAlreadyInitialized, setBootstrapAlreadyInitialized] = useState(false);
-  const [copied, setCopied] = useState(false);
   const [relayMode, setRelayMode] = useState<"local" | "remote" | null>(null);
   const [, setConnectionState] = useState<ConnectionState>("disconnected");
+  const { copy, isCopied } = useCopyToClipboard({ resetAfterMs: 1500 });
 
   const relayRef = useRef<RelayAdapter | null>(null);
   const orchestratorRef = useRef<DkgOrchestrator | null>(null);
@@ -934,13 +935,12 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
   }, [config.cosigner, config.threshold, config.totalParticipants, devices.length, delayedComplete, hasServerCosigner, relayUrl]);
 
   const handleCopyCode = async () => {
-    await navigator.clipboard.writeText(
+    await copy(
       relayMode === "remote"
         ? buildSessionJoinUri(relaySessionInfo, relayUrl)
         : sessionCode,
+      "session-invite",
     );
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
   };
 
   const DeviceIcon = ({ type }: { type: DeviceInfo["type"] }) => {
@@ -1096,7 +1096,7 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
                     }`}
                   >
                     {relayMode === "remote" ? relaySessionInfo.invite : sessionCode}
-                    {copied ? (
+                    {isCopied("session-invite") ? (
                       <Check className="h-3 w-3 text-success" />
                     ) : (
                       <Copy className="h-3 w-3 text-muted-foreground" />
@@ -1401,14 +1401,16 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
                   <code className="flex-1 text-xs font-mono text-foreground bg-muted rounded-md px-2.5 py-2 truncate">
                     {groupPublicKey}
                   </code>
-                  <button
-                    onClick={async () => {
-                      await navigator.clipboard.writeText(groupPublicKey);
-                    }}
-                    className="p-2 rounded-lg hover:bg-accent transition-colors cursor-pointer shrink-0"
-                  >
-                    <Copy className="h-3.5 w-3.5 text-muted-foreground" />
-                  </button>
+                    <button
+                      onClick={() => void copy(groupPublicKey, "group-public-key")}
+                      className="p-2 rounded-lg hover:bg-accent transition-colors cursor-pointer shrink-0"
+                    >
+                      {isCopied("group-public-key") ? (
+                        <Check className="h-3.5 w-3.5 text-success" />
+                      ) : (
+                        <Copy className="h-3.5 w-3.5 text-muted-foreground" />
+                      )}
+                    </button>
                 </div>
               </div>
 
@@ -1428,16 +1430,20 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
                   <code className="flex-1 text-xs font-mono text-foreground bg-muted rounded-md px-2.5 py-2 truncate">
                     {bootstrapWalletAddress || "Deriving vault address..."}
                   </code>
-                  <button
-                    onClick={async () => {
-                      if (!bootstrapWalletAddress) return;
-                      await navigator.clipboard.writeText(bootstrapWalletAddress);
-                    }}
-                    disabled={!bootstrapWalletAddress}
-                    className="p-2 rounded-lg hover:bg-accent transition-colors cursor-pointer shrink-0 disabled:opacity-40"
-                  >
-                    <Copy className="h-3.5 w-3.5 text-muted-foreground" />
-                  </button>
+                    <button
+                      onClick={() => {
+                        if (!bootstrapWalletAddress) return;
+                        void copy(bootstrapWalletAddress, "bootstrap-wallet");
+                      }}
+                      disabled={!bootstrapWalletAddress}
+                      className="p-2 rounded-lg hover:bg-accent transition-colors cursor-pointer shrink-0 disabled:opacity-40"
+                    >
+                      {isCopied("bootstrap-wallet") ? (
+                        <Check className="h-3.5 w-3.5 text-success" />
+                      ) : (
+                        <Copy className="h-3.5 w-3.5 text-muted-foreground" />
+                      )}
+                    </button>
                 </div>
                 <div className="grid grid-cols-2 gap-3 mt-3">
                   <div className="rounded-lg bg-muted/60 px-3 py-2">

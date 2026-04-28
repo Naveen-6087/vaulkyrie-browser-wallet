@@ -60,11 +60,10 @@ const PRESETS = [
 
 export function VaultConfigStep({ onNext, onBack }: VaultConfigStepProps) {
   const [vaultName, setVaultName] = useState("Main Vault");
-  const [selectedPreset, setSelectedPreset] = useState(2); // default 2-of-3
+  const [selectedPreset, setSelectedPreset] = useState(2);
 
   return (
     <div className="flex flex-col h-full bg-background">
-      {/* Header */}
       <div className="flex items-center gap-3 px-4 py-3 border-b border-border">
         <button
           onClick={onBack}
@@ -81,7 +80,6 @@ export function VaultConfigStep({ onNext, onBack }: VaultConfigStepProps) {
       </div>
 
       <div className="flex flex-col flex-1 px-5 py-4 overflow-y-auto">
-        {/* Vault name */}
         <div className="mb-5">
           <label className="text-xs font-medium text-muted-foreground mb-1.5 block">
             Vault Name
@@ -97,7 +95,6 @@ export function VaultConfigStep({ onNext, onBack }: VaultConfigStepProps) {
           />
         </div>
 
-        {/* Threshold selection */}
         <div className="mb-4">
           <label className="text-xs font-medium text-muted-foreground mb-2.5 block">
             Signing Threshold
@@ -149,7 +146,6 @@ export function VaultConfigStep({ onNext, onBack }: VaultConfigStepProps) {
                     </p>
                   </div>
 
-                  {/* Radio indicator */}
                   <div
                     className={`h-4 w-4 rounded-full border-2 shrink-0 mt-0.5 flex items-center justify-center ${
                       isSelected ? "border-primary" : "border-muted-foreground/30"
@@ -169,29 +165,26 @@ export function VaultConfigStep({ onNext, onBack }: VaultConfigStepProps) {
           </div>
         </div>
 
-        {/* Info card */}
-        <div className="bg-info/8 border border-info/20 rounded-lg p-3 mt-auto mb-4">
+        <div className="bg-info/8 border border-info/20 rounded-lg p-3 mt-auto mb-4 shadow-[0_0_0_1px_rgba(78,205,196,0.05)]">
           <p className="text-xs text-info leading-relaxed">
             {PRESETS[selectedPreset].cosigner ? (
               <>
                 <strong>How it works:</strong> Your signing key is split between this browser and
-                the Vaulkyrie server cosigner. The server cosigner automatically joins Fast Vault
-                signing requests.
+                the Vaulkyrie server cosigner.
               </>
             ) : (
               <>
                 <strong>How it works:</strong> Your signing key is split into{" "}
-                {PRESETS[selectedPreset].total} shares using FROST DKG. Each device
-                holds one share. At least {PRESETS[selectedPreset].threshold} device
+                {PRESETS[selectedPreset].total} shares using FROST DKG. At least{" "}
+                {PRESETS[selectedPreset].threshold} device
                 {PRESETS[selectedPreset].threshold > 1 ? "s" : ""} must participate
-                to sign a transaction.
+                to sign.
               </>
             )}
           </p>
         </div>
       </div>
 
-      {/* Continue button */}
       <div className="px-5 pb-5">
         <motion.button
           whileHover={{ scale: 1.01 }}

@@ -29,6 +29,8 @@ import { LAMPORTS_PER_SOL, PublicKey, SystemProgram, Transaction, type Connectio
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { ScreenHeader } from "@/components/layout/ScreenHeader";
+import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import {
   generateWotsKeyPair,
   wotsSignMessage,
@@ -144,10 +146,9 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
   const [splitAmount, setSplitAmount] = useState("");
   const [splitDestination, setSplitDestination] = useState("");
   const [lastProofHex, setLastProofHex] = useState("");
-  const [copied, setCopied] = useState(false);
-  const [copiedAddress, setCopiedAddress] = useState(false);
   const [signingSessionCode, setSigningSessionCode] = useState("");
   const [relaySessionInfo, setRelaySessionInfo] = useState(() => createRelaySessionMetadata("------"));
+  const { copy, isCopied } = useCopyToClipboard({ resetAfterMs: 1500 });
   const relayRef = useRef<RelayAdapter | null>(null);
   const orchestratorRef = useRef<SigningOrchestrator | null>(null);
   const pendingSigningMessagesRef = useRef<BufferedSigningMessage[]>([]);
@@ -725,16 +726,12 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
   };
 
   const handleCopyRoot = async () => {
-    await navigator.clipboard.writeText(vault.authorityRootHex);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
+    await copy(vault.authorityRootHex, "authority-root");
   };
 
   const handleCopyVaultAddress = async () => {
     if (!vault.vaultAddress) return;
-    await navigator.clipboard.writeText(vault.vaultAddress);
-    setCopiedAddress(true);
-    setTimeout(() => setCopiedAddress(false), 1500);
+    await copy(vault.vaultAddress, "vault-address");
   };
 
   const vaultBalanceSol = vault.balanceLamports / LAMPORTS_PER_SOL;
@@ -743,22 +740,17 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
     ? `https://explorer.solana.com/address/${vault.vaultAddress}${explorerClusterParam}`
     : null;
 
-  // ── Render ───────────────────────────────────────────────────────
+    // ── Render ───────────────────────────────────────────────────────
 
   return (
     <div className="flex flex-col gap-4 p-4 flex-1 overflow-y-auto">
-      {/* Header */}
-      <div className="flex items-center gap-2 mb-2">
-        <button
-          onClick={() => onNavigate("dashboard")}
-          className="text-muted-foreground hover:text-foreground transition-colors text-sm cursor-pointer"
-        >
-          ← Back
-        </button>
-        <h2 className="text-lg font-semibold flex-1 text-center mr-8">
-          PQC Wallet
-        </h2>
-      </div>
+      <ScreenHeader
+        title="PQC Wallet"
+        description="Manage the single-use Winternitz-protected vault and its post-quantum admin authority."
+        onBack={() => onNavigate("dashboard")}
+        backLabel="Back to dashboard"
+        className="rounded-2xl border border-border/70 bg-card/55"
+      />
 
       {/* Status Banner */}
       <Card className="border-primary/30 bg-primary/5">
@@ -879,7 +871,7 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
                       onClick={handleCopyVaultAddress}
                       className="p-1 rounded hover:bg-accent transition-colors cursor-pointer"
                     >
-                      {copiedAddress ? (
+                      {isCopied("vault-address") ? (
                         <Check className="h-3 w-3 text-success" />
                       ) : (
                         <Copy className="h-3 w-3 text-muted-foreground" />
@@ -991,7 +983,7 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
                           onClick={handleCopyRoot}
                           className="p-1 rounded hover:bg-accent transition-colors cursor-pointer"
                         >
-                          {copied ? (
+                          {isCopied("authority-root") ? (
                             <Check className="h-3 w-3 text-success" />
                           ) : (
                             <Copy className="h-3 w-3 text-muted-foreground" />

@@ -1,8 +1,9 @@
 import { ChevronDown, Copy, Check, Plus, Wallet } from "lucide-react";
 import { useState } from "react";
-import { cn, shortenAddress, copyToClipboard } from "@/lib/utils";
+import { cn, shortenAddress } from "@/lib/utils";
 import { NETWORKS } from "@/lib/constants";
 import { useWalletStore } from "@/store/walletStore";
+import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import type { NetworkId } from "@/types";
 import logo from "@/assets/xlogo.jpeg";
 
@@ -21,40 +22,39 @@ export function Header({
   onNetworkChange,
   onCreateVault,
 }: HeaderProps) {
-  const [copied, setCopied] = useState(false);
   const [showNetworks, setShowNetworks] = useState(false);
   const [showVaults, setShowVaults] = useState(false);
   const { accounts, switchVault, vaultConfigs } = useWalletStore();
+  const { copy, isCopied } = useCopyToClipboard({ resetAfterMs: 1500 });
 
   const handleCopy = async () => {
-    await copyToClipboard(address);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
+    await copy(address, "header-address");
   };
 
   const networkConfig = NETWORKS[network];
 
   return (
-    <header className="flex items-center justify-between px-4 py-3 border-b border-border bg-card/60 backdrop-blur-md">
+    <header className="flex items-center justify-between gap-3 border-b border-border/70 bg-card/75 px-4 py-3 backdrop-blur-md">
       {/* Account info with vault selector */}
       <div className="flex items-center gap-2.5 min-w-0 relative">
-        <div className="h-8 w-8 rounded-full overflow-hidden shadow-sm shadow-primary/20 shrink-0">
+        <div className="h-9 w-9 rounded-2xl overflow-hidden border border-border/60 shadow-sm shadow-primary/20 shrink-0">
           <img src={logo} alt="V" className="h-full w-full object-cover" />
         </div>
-        <div className="min-w-0">
+        <div className="min-w-0 space-y-1">
           <button
             onClick={() => setShowVaults(!showVaults)}
-            className="flex items-center gap-1 text-sm font-medium truncate hover:text-primary transition-colors cursor-pointer"
+            className="flex items-center gap-1 text-sm font-semibold truncate hover:text-primary transition-colors cursor-pointer"
           >
             {accountName}
             {accounts.length > 1 && <ChevronDown className="h-3 w-3 text-muted-foreground" />}
           </button>
           <button
             onClick={handleCopy}
-            className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+            className="inline-flex items-center gap-1.5 rounded-full border border-border/70 bg-background/60 px-2.5 py-1 text-xs text-muted-foreground hover:text-foreground hover:border-primary/30 transition-colors cursor-pointer"
+            aria-live="polite"
           >
             <span className="font-mono">{shortenAddress(address)}</span>
-            {copied ? (
+            {isCopied("header-address") ? (
               <Check className="h-3 w-3 text-success" />
             ) : (
               <Copy className="h-3 w-3" />
@@ -69,7 +69,7 @@ export function Header({
               className="fixed inset-0 z-40"
               onClick={() => setShowVaults(false)}
             />
-            <div className="absolute left-0 top-full mt-1 z-50 min-w-[200px] rounded-lg border border-border bg-popover p-1 shadow-lg">
+            <div className="absolute left-0 top-full mt-2 z-50 min-w-[220px] rounded-2xl border border-border/80 bg-popover/95 p-1.5 shadow-2xl backdrop-blur">
               {accounts.map((acc) => (
                 <button
                   key={acc.publicKey}
@@ -78,7 +78,7 @@ export function Header({
                     setShowVaults(false);
                   }}
                   className={cn(
-                    "flex items-center gap-2 w-full px-2.5 py-2 rounded-md text-xs transition-colors cursor-pointer",
+                    "flex items-center gap-2 w-full px-2.5 py-2.5 rounded-xl text-xs transition-colors cursor-pointer",
                     acc.publicKey === address
                       ? "bg-accent text-accent-foreground"
                       : "text-popover-foreground hover:bg-accent/60",
@@ -120,8 +120,8 @@ export function Header({
         <button
           onClick={() => setShowNetworks(!showNetworks)}
           className={cn(
-            "flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-colors cursor-pointer",
-            "border-border hover:bg-accent",
+            "flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium border transition-colors cursor-pointer",
+            "border-border/80 bg-background/60 hover:bg-accent/70",
           )}
         >
           <span
@@ -138,7 +138,7 @@ export function Header({
               className="fixed inset-0 z-40"
               onClick={() => setShowNetworks(false)}
             />
-            <div className="absolute right-0 top-full mt-1 z-50 min-w-[140px] rounded-lg border border-border bg-popover p-1 shadow-lg">
+            <div className="absolute right-0 top-full mt-2 z-50 min-w-[156px] rounded-2xl border border-border/80 bg-popover/95 p-1.5 shadow-2xl backdrop-blur">
               {(Object.keys(NETWORKS) as NetworkId[]).map((id) => (
                 <button
                   key={id}
@@ -147,7 +147,7 @@ export function Header({
                     setShowNetworks(false);
                   }}
                   className={cn(
-                    "flex items-center gap-2 w-full px-2.5 py-1.5 rounded-md text-xs transition-colors cursor-pointer",
+                    "flex items-center gap-2 w-full px-2.5 py-2 rounded-xl text-xs transition-colors cursor-pointer",
                     id === network
                       ? "bg-accent text-accent-foreground"
                       : "text-popover-foreground hover:bg-accent/60",

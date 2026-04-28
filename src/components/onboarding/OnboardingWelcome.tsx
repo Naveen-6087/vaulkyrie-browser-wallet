@@ -44,7 +44,6 @@ export function OnboardingWelcome({
 
   return (
     <div className="flex flex-col h-full bg-background overflow-hidden">
-      {/* Banner with teal glow */}
       <div className="relative h-48 overflow-hidden shrink-0">
         <img
           src={banner}
@@ -54,7 +53,6 @@ export function OnboardingWelcome({
         <div className="absolute inset-0 bg-gradient-to-b from-transparent via-transparent to-background" />
         <div className="absolute inset-0 bg-gradient-to-r from-primary/10 via-transparent to-primary/10" />
 
-        {/* Logo centered */}
         <motion.div
           className="absolute inset-0 flex items-center justify-center"
           initial={{ scale: 0.8, opacity: 0 }}
@@ -72,7 +70,6 @@ export function OnboardingWelcome({
         </motion.div>
       </div>
 
-      {/* Content */}
       <div className="flex flex-col flex-1 px-5 pt-3 pb-5">
         <motion.div
           initial={{ y: 20, opacity: 0 }}
@@ -89,7 +86,6 @@ export function OnboardingWelcome({
           </p>
         </motion.div>
 
-        {/* Feature carousel */}
         <div className="bg-card/80 border border-border rounded-xl p-4 mb-5">
           <AnimatePresence mode="wait">
             <motion.div
@@ -120,7 +116,6 @@ export function OnboardingWelcome({
             </motion.div>
           </AnimatePresence>
 
-          {/* Dots */}
           <div className="flex justify-center gap-1.5 mt-3">
             {FEATURES.map((_, i) => (
               <button
@@ -136,7 +131,6 @@ export function OnboardingWelcome({
           </div>
         </div>
 
-        {/* Action buttons */}
         <div className="flex flex-col gap-3 mt-auto">
           <motion.button
             whileHover={{ scale: 1.02 }}

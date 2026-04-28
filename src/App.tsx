@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { PublicKey } from "@solana/web3.js";
 import { Header } from "@/components/layout/Header";
 import { BottomNav } from "@/components/layout/BottomNav";
+import { ScreenShell } from "@/components/layout/ScreenShell";
 import { Dashboard } from "@/pages/Dashboard";
 import { QuantumVault } from "@/pages/QuantumVault";
 import { SendView } from "@/components/wallet/SendView";
@@ -137,6 +138,7 @@ function App() {
 
   const isFullScreen =
     view === "onboarding" ||
+    view === "import-vault" ||
     view === "vault-config" ||
     view === "dkg-ceremony" ||
     view === "join-ceremony" ||
@@ -299,20 +301,14 @@ function App() {
 
       case "activity":
         return (
-          <div className="flex flex-col gap-4 p-4 flex-1">
-            <div className="flex items-center gap-2 mb-2">
-              <button
-                onClick={() => setView("dashboard")}
-                className="text-muted-foreground hover:text-foreground transition-colors text-sm cursor-pointer"
-              >
-                ← Back
-              </button>
-              <h2 className="text-lg font-semibold flex-1 text-center mr-8">
-                Activity
-              </h2>
-            </div>
+          <ScreenShell
+            title="Activity"
+            description="Recent wallet transactions and policy-orchestrated sends."
+            onBack={() => setView("dashboard")}
+            backLabel="Back to dashboard"
+          >
             <ActivityList transactions={transactions} />
-          </div>
+          </ScreenShell>
         );
 
       case "settings":
@@ -327,7 +323,7 @@ function App() {
         return <RecoveryView onNavigate={setView} />;
 
       case "contacts":
-        return <AddressBook />;
+        return <AddressBook onNavigate={setView} />;
 
       case "policy":
         return <PolicyView onNavigate={setView} />;

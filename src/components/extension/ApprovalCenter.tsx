@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { AlertTriangle, Check, Clock, Shield, Trash2, XCircle } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { ScreenShell } from "@/components/layout/ScreenShell";
 import {
   listPendingExtensionApprovals,
   listExtensionApprovals,
@@ -159,20 +160,14 @@ export function ApprovalCenter({ onNavigate }: ApprovalCenterProps) {
   };
 
   return (
-    <div className="flex flex-col gap-4 p-4 flex-1 overflow-y-auto">
-      <div className="flex items-center gap-2 mb-2">
-        <button
-          onClick={() => onNavigate("dashboard")}
-          className="text-muted-foreground hover:text-foreground transition-colors text-sm cursor-pointer"
-        >
-          ← Back
-        </button>
-        <h2 className="text-lg font-semibold flex-1 text-center mr-8">
-          DApp Approvals
-        </h2>
-      </div>
-
-      <Card>
+    <ScreenShell
+      title="DApp Approvals"
+      description="Review pending site requests and manage which origins can use this vault."
+      onBack={() => onNavigate("settings")}
+      backLabel="Back to settings"
+    >
+      <div className="space-y-4">
+        <Card>
         <CardContent className="pt-4">
           <div className="rounded-xl border border-primary/15 bg-primary/5 px-3 py-3 text-[11px] text-muted-foreground">
             Requests from websites show up here before Vaulkyrie connects or signs on their behalf.
@@ -414,6 +409,7 @@ export function ApprovalCenter({ onNavigate }: ApprovalCenterProps) {
           ))}
         </div>
       )}
-    </div>
+      </div>
+    </ScreenShell>
   );
 }

@@ -22,7 +22,6 @@ export function BalanceCard({
   return (
     <Card className="border-0 bg-gradient-to-br from-card to-card/60 overflow-hidden">
       <div className="p-5">
-        {/* Balance */}
         <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider mb-1">
           Total balance
         </p>
@@ -41,7 +40,6 @@ export function BalanceCard({
           </span>
         </div>
 
-        {/* Quick actions */}
         <div className="flex gap-2 mt-5">
           <Button
             variant="default"

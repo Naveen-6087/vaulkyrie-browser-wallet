@@ -160,7 +160,7 @@ export function LockScreen({ onUnlock }: LockScreenProps) {
           </button>
         </div>
 
-          {isSetup && (
+        {isSetup && (
           <>
             <label htmlFor="wallet-password-confirm" className="sr-only">
               Confirm password
@@ -217,8 +217,6 @@ export function LockScreen({ onUnlock }: LockScreenProps) {
           {isSetup ? "Set Password" : "Unlock"}
         </motion.button>
       </motion.form>
-
-      {/* Biometric auth — hidden until WebAuthn support is implemented */}
     </div>
   );
 }

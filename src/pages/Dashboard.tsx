@@ -29,7 +29,6 @@ export function Dashboard({ onNavigate }: DashboardProps) {
 
   return (
     <div className="flex flex-col gap-4 p-4 flex-1 overflow-y-auto">
-      {/* Error banner */}
       {error && (
         <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-destructive/10 text-destructive text-xs">
           <WifiOff className="h-3.5 w-3.5 flex-shrink-0" />
@@ -43,7 +42,6 @@ export function Dashboard({ onNavigate }: DashboardProps) {
         </div>
       )}
 
-      {/* Loading indicator on first load */}
       {isLoading && !hasData && (
         <div className="flex items-center justify-center py-12">
           <RefreshCw className="h-5 w-5 animate-spin text-primary mr-2" />
@@ -60,7 +58,6 @@ export function Dashboard({ onNavigate }: DashboardProps) {
         onNavigate={onNavigate}
       />
 
-      {/* Subtle refresh spinner when reloading with existing data */}
       {isLoading && hasData && (
         <div className="flex justify-center">
           <RefreshCw className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
