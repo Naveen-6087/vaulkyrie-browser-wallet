@@ -172,11 +172,21 @@ export function VaultConfigStep({ onNext, onBack }: VaultConfigStepProps) {
         {/* Info card */}
         <div className="bg-info/8 border border-info/20 rounded-lg p-3 mt-auto mb-4">
           <p className="text-xs text-info leading-relaxed">
-            <strong>How it works:</strong> Your signing key is split into{" "}
-            {PRESETS[selectedPreset].total} shares using FROST DKG. Each device
-            holds one share. At least {PRESETS[selectedPreset].threshold} device
-            {PRESETS[selectedPreset].threshold > 1 ? "s" : ""} must participate
-            to sign a transaction.
+            {PRESETS[selectedPreset].cosigner ? (
+              <>
+                <strong>How it works:</strong> Your signing key is split between this browser and
+                the Vaulkyrie server cosigner. The server cosigner automatically joins Fast Vault
+                signing requests.
+              </>
+            ) : (
+              <>
+                <strong>How it works:</strong> Your signing key is split into{" "}
+                {PRESETS[selectedPreset].total} shares using FROST DKG. Each device
+                holds one share. At least {PRESETS[selectedPreset].threshold} device
+                {PRESETS[selectedPreset].threshold > 1 ? "s" : ""} must participate
+                to sign a transaction.
+              </>
+            )}
           </p>
         </div>
       </div>

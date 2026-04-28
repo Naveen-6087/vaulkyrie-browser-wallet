@@ -15,6 +15,7 @@ import {
   Copy,
   Shield,
   AlertTriangle,
+  Server,
 } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import type { VaultConfig } from "@/components/onboarding/VaultConfigStep";
@@ -165,7 +166,13 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
   const bootstrappingRef = useRef(false);
   const MIN_ANIMATION_MS = 4000;
 
-  const allDevicesPaired = devices.filter((d) => d.status === "ready").length >= config.totalParticipants;
+  const hasServerCosigner = config.cosigner?.enabled === true;
+  const readyDeviceCount = devices.filter((d) => d.status === "ready").length;
+  const serverCosignerCount = hasServerCosigner ? 1 : 0;
+  const readyParticipantCount = readyDeviceCount + serverCosignerCount;
+  const remainingParticipantCount = Math.max(config.totalParticipants - readyParticipantCount, 0);
+  const visualParticipantCount = Math.max(readyParticipantCount, devices.length, 1);
+  const allDevicesPaired = readyParticipantCount >= config.totalParticipants;
   const bootstrapFundingReady =
     bootstrapAlreadyInitialized ||
     (
@@ -266,7 +273,7 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
       relayRef.current = relay;
       relay.connect();
 
-      if (mode === "remote") {
+      if (mode === "remote" && !hasServerCosigner) {
         relay.createSession(config.threshold, config.totalParticipants, sessionCode);
       }
     })();
@@ -276,7 +283,7 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
       relayRef.current?.disconnect();
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [relayUrl]);
+  }, [hasServerCosigner, relayUrl]);
 
   const queueOrHandleSigningMessage = useCallback((message: BufferedSigningMessage) => {
     const orchestrator = signingOrchestratorRef.current;
@@ -804,7 +811,7 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
     dkgStartTimeRef.current = Date.now();
 
     const relay = relayRef.current;
-    const useOrchestrator = relay && devices.length > 1;
+    const useOrchestrator = relay && devices.length > 1 && !hasServerCosigner;
 
     if (useOrchestrator) {
       // Multi-device DKG via relay + orchestrator
@@ -871,6 +878,12 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
           let cosigner: VaultCosignerMetadata | null = null;
 
           if (cosignerConfig) {
+            setDkgMessage("Connecting to Vaulkyrie server cosigner...");
+            const relayAvailable = await probeRelayAvailability(relayUrl);
+            if (!relayAvailable) {
+              throw new Error("Fast Vault requires the Vaulkyrie relay/cosigner server. Start relay-server with npm run dev, then retry.");
+            }
+
             setDkgMessage("Registering server cosigner share...");
             const cosignerKeyPackage = result.keyPackages[cosignerConfig.participantId];
             if (!cosignerKeyPackage) {
@@ -918,7 +931,7 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
           setPhase("pairing");
         });
     }
-  }, [config.cosigner, config.threshold, config.totalParticipants, devices.length, delayedComplete, relayUrl]);
+  }, [config.cosigner, config.threshold, config.totalParticipants, devices.length, delayedComplete, hasServerCosigner, relayUrl]);
 
   const handleCopyCode = async () => {
     await navigator.clipboard.writeText(
@@ -994,7 +1007,7 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
           </h2>
           <p className="text-xs text-muted-foreground">
             {phase === "pairing" &&
-              `Step 2 of 3 · ${devices.filter((d) => d.status === "ready").length}/${config.totalParticipants} devices`}
+              `Step 2 of 3 · ${readyParticipantCount}/${config.totalParticipants} participants`}
             {phase === "dkg-round1" && "Round 1 · Generating commitments..."}
             {phase === "dkg-round2" && "Round 2 · Exchanging packages..."}
             {phase === "dkg-round3" && "Round 3 · Computing group key..."}
@@ -1017,6 +1030,20 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
             >
               {/* QR Code area */}
               <div className="bg-card border border-border rounded-xl p-4 mb-4">
+                {hasServerCosigner ? (
+                  <div className="flex flex-col items-center text-center py-4">
+                    <div className="h-14 w-14 rounded-2xl bg-primary/15 text-primary flex items-center justify-center mb-3">
+                      <Server className="h-7 w-7" />
+                    </div>
+                    <p className="text-sm font-semibold text-foreground">
+                      Vaulkyrie Server Cosigner
+                    </p>
+                    <p className="text-xs text-muted-foreground mt-1 max-w-[260px]">
+                      The server cosigner will receive participant {config.cosigner?.participantId ?? 2} and auto-sign approved Fast Vault requests.
+                    </p>
+                  </div>
+                ) : (
+                  <>
                 <div className="text-center mb-3">
                   <p className="text-xs text-muted-foreground mb-1">
                     Scan with another Vaulkyrie device
@@ -1087,6 +1114,8 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
                     </div>
                   </div>
                 )}
+                  </>
+                )}
               </div>
 
               {/* Device list */}
@@ -1127,6 +1156,27 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
                         )}
                       </motion.div>
                     ))}
+                    {hasServerCosigner && (
+                      <motion.div
+                        key="server-cosigner"
+                        initial={{ opacity: 0, y: 10, height: 0 }}
+                        animate={{ opacity: 1, y: 0, height: "auto" }}
+                        className="flex items-center gap-3 p-3 rounded-lg bg-card border border-border"
+                      >
+                        <div className="h-8 w-8 rounded-lg flex items-center justify-center bg-success/15 text-success">
+                          <Server className="h-4 w-4" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium truncate">
+                            Vaulkyrie Server Cosigner
+                          </p>
+                          <StatusBadge status="ready" />
+                        </div>
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-success/15 text-success font-medium">
+                          AUTO
+                        </span>
+                      </motion.div>
+                    )}
                   </AnimatePresence>
                 </div>
               </div>
@@ -1136,12 +1186,9 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
                 <div className="flex items-center justify-center gap-2 text-xs text-muted-foreground mb-4">
                   <RefreshCw className="h-3 w-3 animate-spin" />
                   Waiting for{" "}
-                  {config.totalParticipants -
-                    devices.filter((d) => d.status === "ready").length}{" "}
+                  {remainingParticipantCount}{" "}
                   more device
-                  {config.totalParticipants -
-                    devices.filter((d) => d.status === "ready").length >
-                  1
+                  {remainingParticipantCount > 1
                     ? "s"
                     : ""}
                   ...
@@ -1193,7 +1240,7 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
                   }}
                 >
                   {/* Orbiting particles */}
-                  {devices.map((_, i) => (
+                  {Array.from({ length: visualParticipantCount }).map((_, i) => (
                     <motion.div
                       key={i}
                       className="absolute w-3 h-3 rounded-full bg-primary shadow-lg shadow-primary/50"
@@ -1204,8 +1251,8 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
                       }}
                       animate={{
                         rotate: [
-                          i * (360 / devices.length),
-                          i * (360 / devices.length) + 360,
+                          i * (360 / visualParticipantCount),
+                          i * (360 / visualParticipantCount) + 360,
                         ],
                         x: [70, 70],
                         y: [-6, -6],
