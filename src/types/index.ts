@@ -103,9 +103,20 @@ export interface PolicyProfile {
   name: string;
   actionType: "send" | "admin";
   approvalMode: "allow" | "review" | "block";
+  template?:
+    | "standardWallet"
+    | "highSecurityWallet"
+    | "treasuryOps"
+    | "recoveryEscalation"
+    | "adminQuarantine";
   tokenSymbol: string;
   maxAmount: number | null;
   allowedRecipients: string[];
+  defaultProtocolRisk?: "none" | "low" | "medium" | "high" | "critical";
+  defaultDeviceTrust?: "attested" | "trusted" | "degraded" | "unknown" | "compromised";
+  guardianPosture?: "none" | "optional" | "available" | "verifiedQuorum";
+  recipientMode?: "open" | "allowlist" | "sensitive";
+  forcePqcReview?: boolean;
   notes: string;
   createdAt: number;
   updatedAt: number;

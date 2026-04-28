@@ -141,6 +141,7 @@ export interface PolicyEvaluationAccount {
   delayUntilSlot: bigint;
   status: PolicyEvaluationStatus;
   reasonCode: number;
+  decisionFlags: number;
 }
 
 // ── Instruction parameter types ──────────────────────────────────────

@@ -28,7 +28,7 @@ import {
   encryptPolicyEvaluateInput,
   nextPolicyComputationOffset,
 } from "@/sdk/arciumPolicy";
-import { hexToBytes } from "@/services/frost/frostService";
+import { bytesToHex, hexToBytes } from "@/services/frost/frostService";
 import { SigningOrchestrator } from "@/services/frost/signingOrchestrator";
 import {
   loadDkgResult,
@@ -53,9 +53,12 @@ import type { PolicyConfigAccount, PolicyEvaluationAccount } from "@/sdk/types";
 import {
   buildWalletPolicyActionHash,
   buildWalletPolicyActionPayload,
-  buildWalletPolicyInputCommitment,
+  buildWalletPolicyEvaluationDraft,
   buildWalletPolicyResultCommitment,
 } from "@/sdk/policyBindings";
+
+const selectClassName =
+  "w-full rounded-xl border border-border/70 bg-card px-3 py-2.5 text-sm shadow-sm outline-none transition focus:border-primary/50 focus:ring-2 focus:ring-primary/15";
 
 interface PolicyViewProps {
   onNavigate: (view: WalletView) => void;
@@ -155,6 +158,13 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
     deletePolicyProfile,
     pendingPolicyRequest,
     setPendingPolicyRequest,
+    contacts,
+    tokens,
+    transactions,
+    recoverySessions,
+    dkgResults,
+    stashPolicyEvaluationDraft,
+    getPolicyEvaluationDraft,
   } = useWalletStore();
   const [config, setConfig] = useState<PolicyConfigAccount | null>(null);
   const [evaluations, setEvaluations] = useState<
@@ -179,9 +189,19 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
   const [profileName, setProfileName] = useState("");
   const [profileActionType, setProfileActionType] = useState<PolicyProfile["actionType"]>("send");
   const [profileApprovalMode, setProfileApprovalMode] = useState<PolicyProfile["approvalMode"]>("review");
+  const [profileTemplate, setProfileTemplate] = useState<NonNullable<PolicyProfile["template"]>>("standardWallet");
   const [profileTokenSymbol, setProfileTokenSymbol] = useState("SOL");
   const [profileMaxAmount, setProfileMaxAmount] = useState("");
   const [profileRecipients, setProfileRecipients] = useState("");
+  const [profileProtocolRisk, setProfileProtocolRisk] =
+    useState<NonNullable<PolicyProfile["defaultProtocolRisk"]>>("low");
+  const [profileDeviceTrust, setProfileDeviceTrust] =
+    useState<NonNullable<PolicyProfile["defaultDeviceTrust"]>>("trusted");
+  const [profileGuardianPosture, setProfileGuardianPosture] =
+    useState<NonNullable<PolicyProfile["guardianPosture"]>>("optional");
+  const [profileRecipientMode, setProfileRecipientMode] =
+    useState<NonNullable<PolicyProfile["recipientMode"]>>("open");
+  const [profileForcePqcReview, setProfileForcePqcReview] = useState(false);
   const [profileNotes, setProfileNotes] = useState("");
 
   const [evalExpirySlots, setEvalExpirySlots] = useState("200");
@@ -545,9 +565,15 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
     setProfileName("");
     setProfileActionType("send");
     setProfileApprovalMode("review");
+    setProfileTemplate("standardWallet");
     setProfileTokenSymbol("SOL");
     setProfileMaxAmount("");
     setProfileRecipients("");
+    setProfileProtocolRisk("low");
+    setProfileDeviceTrust("trusted");
+    setProfileGuardianPosture("optional");
+    setProfileRecipientMode("open");
+    setProfileForcePqcReview(false);
     setProfileNotes("");
   }, []);
 
@@ -573,9 +599,15 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
       name: trimmedName,
       actionType: profileActionType,
       approvalMode: profileApprovalMode,
+      template: profileTemplate,
       tokenSymbol: profileTokenSymbol.trim().toUpperCase() || "SOL",
       maxAmount: maxAmountValue,
       allowedRecipients: normalizeRecipients(profileRecipients),
+      defaultProtocolRisk: profileProtocolRisk,
+      defaultDeviceTrust: profileDeviceTrust,
+      guardianPosture: profileGuardianPosture,
+      recipientMode: profileRecipientMode,
+      forcePqcReview: profileForcePqcReview,
       notes: profileNotes.trim(),
       createdAt: now,
       updatedAt: now,
@@ -649,17 +681,46 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
         token: evalToken,
       });
       const actionHash = await buildWalletPolicyActionHash(actionPayload);
-      const encryptedInput = await buildWalletPolicyInputCommitment({
+      const selectedTokenBalance =
+        evalToken === "SOL"
+          ? activeAccount?.balance ?? 0
+          : (tokens.find((token) => token.symbol === evalToken)?.balance ?? 0);
+      const dkg = activeAccount?.publicKey ? dkgResults[activeAccount.publicKey] ?? null : null;
+      const currentSlot = await withRpcFallback(network, (connection) => connection.getSlot());
+      const expirySlot = BigInt(currentSlot) + BigInt(evalExpirySlots || "200");
+      const evaluationDraft = await buildWalletPolicyEvaluationDraft({
         policyProfile: selectedProfile,
         actionPayload,
+        accountPublicKey: activeAccount?.publicKey ?? null,
+        tokenBalance: selectedTokenBalance,
+        totalBalance: activeAccount?.balance ?? selectedTokenBalance,
+        contacts,
+        recentTransactions: transactions,
+        recoverySessions: activeAccount?.publicKey ? recoverySessions[activeAccount.publicKey] ?? [] : [],
+        cosignerEnabled: vaultConfigs[activeAccount?.publicKey ?? ""]?.cosignerEnabled,
+        cosignerAttested: Boolean(dkg?.cosigner),
+        currentSlot: BigInt(currentSlot),
+        expirySlot,
       });
       const [evalPda] = findPolicyEvaluationPda(configPda, actionHash);
+      stashPolicyEvaluationDraft({
+        actionHashHex: bytesToHex(actionHash),
+        profileId: selectedProfile?.id ?? null,
+        actionType: evalActionType,
+        recipient: evalRecipient.trim(),
+        amount: Number(evalAmount || "0"),
+        tokenSymbol: evalToken.trim().toUpperCase() || "SOL",
+        signalCommitmentHex: bytesToHex(evaluationDraft.signalCommitment),
+        packedSignalLanes: [
+          evaluationDraft.packedSignalLanes[0].toString(),
+          evaluationDraft.packedSignalLanes[1].toString(),
+        ],
+        signals: evaluationDraft.signals,
+        createdAt: Date.now(),
+      });
 
       setActionMsg("Building open_policy_evaluation transaction...");
       const sig = await withRpcFallback(network, async (connection) => {
-        const currentSlot = await connection.getSlot();
-        const expirySlot = BigInt(currentSlot) + BigInt(evalExpirySlots || "200");
-
         const ix = createOpenPolicyEvaluationInstruction(
           configPda,
           evalPda,
@@ -667,7 +728,7 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
           {
             vaultId: authority.toBytes(),
             actionHash,
-            encryptedInputCommitment: encryptedInput,
+            encryptedInputCommitment: evaluationDraft.signalCommitment,
             requestNonce: nonce,
             expirySlot,
             computationOffset: 0n,
@@ -691,7 +752,27 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
       setError(e instanceof Error ? e.message : "Failed to open evaluation");
       setPhase("error");
     }
-  }, [activeAccount?.publicKey, config, evalActionType, evalAmount, evalExpirySlots, evalRecipient, evalToken, fetchPolicyData, network, selectedProfile, setPendingPolicyRequest, signAndSendPolicyTransaction]);
+  }, [
+    activeAccount,
+    config,
+    contacts,
+    dkgResults,
+    evalActionType,
+    evalAmount,
+    evalExpirySlots,
+    evalRecipient,
+    evalToken,
+    fetchPolicyData,
+    network,
+    recoverySessions,
+    selectedProfile,
+    setPendingPolicyRequest,
+    signAndSendPolicyTransaction,
+    stashPolicyEvaluationDraft,
+    tokens,
+    transactions,
+    vaultConfigs,
+  ]);
 
   const handleAbortEvaluation = async (evalAddress: PublicKey) => {
     if (!activeAccount?.publicKey) return;
@@ -748,16 +829,23 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
         );
 
         setActionMsg("Encrypting policy input for Arcium...");
+        const actionHashHex = bytesToHex(evaluation.actionHash);
+        const evaluationDraft = getPolicyEvaluationDraft(actionHashHex);
+        if (!evaluationDraft) {
+          throw new Error(
+            "This evaluation is missing its local private signal draft. Re-open the evaluation from the wallet before queueing Arcium.",
+          );
+        }
         const encryptedInput = await encryptPolicyEvaluateInput(
           connection,
           authority,
-          evaluation,
+          evaluationDraft,
         );
 
         setActionMsg("Building queue_policy_evaluate transaction...");
         const ix = createQueuePolicyEvaluateInstruction(evalAddress, authority, {
           computationOffset,
-          encryptedInput: encryptedInput.encryptedInput,
+          encryptedInputs: encryptedInput.encryptedInputs,
           x25519Pubkey: encryptedInput.x25519Pubkey,
           nonce: encryptedInput.nonce,
           clusterOffset: ARCIUM_DEVNET_CLUSTER_OFFSET,
@@ -823,15 +911,18 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
         return;
       }
 
-      const resultCommitment = await buildWalletPolicyResultCommitment({
-        mode,
-        reasonCode,
-        actionHash: evaluation.actionHash,
-        computationOffset: evaluation.computationOffset,
-      });
-
       await withRpcFallback(network, async (connection) => {
         const currentSlot = await connection.getSlot();
+        const delayUntilSlot = BigInt(currentSlot + delaySlots);
+        const resultCommitment = await buildWalletPolicyResultCommitment({
+          requestCommitment: evaluation.requestCommitment,
+          signalCommitment: evaluation.encryptedInputCommitment,
+          threshold: configuredThreshold,
+          delayUntilSlot,
+          approved: true,
+          decisionFlags: 0,
+          reasonCode,
+        });
         const ix = createFinalizePolicyEvaluationInstruction(
           evalAddress,
           authority,
@@ -842,7 +933,7 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
             threshold: configuredThreshold,
             nonce: evaluation.requestNonce,
             receiptExpirySlot: evaluation.expirySlot,
-            delayUntilSlot: BigInt(currentSlot + delaySlots),
+            delayUntilSlot,
             reasonCode,
             computationOffset: evaluation.computationOffset,
             resultCommitment,
@@ -992,7 +1083,7 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
                   name="policyProfileActionType"
                   value={profileActionType}
                   onChange={(event) => setProfileActionType(event.target.value as PolicyProfile["actionType"])}
-                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+                  className={selectClassName}
                 >
                   <option value="send">Send</option>
                   <option value="admin">Admin</option>
@@ -1005,7 +1096,7 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
                   name="policyProfileDecision"
                   value={profileApprovalMode}
                   onChange={(event) => setProfileApprovalMode(event.target.value as PolicyProfile["approvalMode"])}
-                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+                  className={selectClassName}
                 >
                   <option value="allow">Auto-allow</option>
                   <option value="review">Manual review</option>
@@ -1015,6 +1106,22 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
             </div>
 
             <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label htmlFor="policy-profile-template" className="text-xs text-muted-foreground mb-1 block">Template</label>
+                <select
+                  id="policy-profile-template"
+                  name="policyProfileTemplate"
+                  value={profileTemplate}
+                  onChange={(event) => setProfileTemplate(event.target.value as NonNullable<PolicyProfile["template"]>)}
+                  className={selectClassName}
+                >
+                  <option value="standardWallet">Standard wallet</option>
+                  <option value="highSecurityWallet">High security</option>
+                  <option value="treasuryOps">Treasury ops</option>
+                  <option value="recoveryEscalation">Recovery escalation</option>
+                  <option value="adminQuarantine">Admin quarantine</option>
+                </select>
+              </div>
               <div>
                 <label htmlFor="policy-profile-token" className="text-xs text-muted-foreground mb-1 block">Token</label>
                 <Input
@@ -1040,6 +1147,83 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
                 />
               </div>
             </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label htmlFor="policy-profile-protocol-risk" className="text-xs text-muted-foreground mb-1 block">Protocol risk</label>
+                <select
+                  id="policy-profile-protocol-risk"
+                  name="policyProfileProtocolRisk"
+                  value={profileProtocolRisk}
+                  onChange={(event) => setProfileProtocolRisk(event.target.value as NonNullable<PolicyProfile["defaultProtocolRisk"]>)}
+                  className={selectClassName}
+                >
+                  <option value="none">None</option>
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                  <option value="critical">Critical</option>
+                </select>
+              </div>
+              <div>
+                <label htmlFor="policy-profile-device-trust" className="text-xs text-muted-foreground mb-1 block">Device trust</label>
+                <select
+                  id="policy-profile-device-trust"
+                  name="policyProfileDeviceTrust"
+                  value={profileDeviceTrust}
+                  onChange={(event) => setProfileDeviceTrust(event.target.value as NonNullable<PolicyProfile["defaultDeviceTrust"]>)}
+                  className={selectClassName}
+                >
+                  <option value="attested">Attested</option>
+                  <option value="trusted">Trusted</option>
+                  <option value="degraded">Degraded</option>
+                  <option value="unknown">Unknown</option>
+                  <option value="compromised">Compromised</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label htmlFor="policy-profile-guardian-posture" className="text-xs text-muted-foreground mb-1 block">Guardian posture</label>
+                <select
+                  id="policy-profile-guardian-posture"
+                  name="policyProfileGuardianPosture"
+                  value={profileGuardianPosture}
+                  onChange={(event) => setProfileGuardianPosture(event.target.value as NonNullable<PolicyProfile["guardianPosture"]>)}
+                  className={selectClassName}
+                >
+                  <option value="none">None</option>
+                  <option value="optional">Optional</option>
+                  <option value="available">Available</option>
+                  <option value="verifiedQuorum">Verified quorum</option>
+                </select>
+              </div>
+              <div>
+                <label htmlFor="policy-profile-recipient-mode" className="text-xs text-muted-foreground mb-1 block">Recipient posture</label>
+                <select
+                  id="policy-profile-recipient-mode"
+                  name="policyProfileRecipientMode"
+                  value={profileRecipientMode}
+                  onChange={(event) => setProfileRecipientMode(event.target.value as NonNullable<PolicyProfile["recipientMode"]>)}
+                  className={selectClassName}
+                >
+                  <option value="open">Open</option>
+                  <option value="allowlist">Allowlist-first</option>
+                  <option value="sensitive">Sensitive</option>
+                </select>
+              </div>
+            </div>
+
+            <label className="flex items-center gap-2 rounded-xl border border-border/70 bg-background/70 px-3 py-3 text-sm">
+              <input
+                type="checkbox"
+                checked={profileForcePqcReview}
+                onChange={(event) => setProfileForcePqcReview(event.target.checked)}
+                className="h-4 w-4 accent-primary"
+              />
+              <span>Force PQC escalation for this profile</span>
+            </label>
 
             <div>
               <label htmlFor="policy-profile-recipients" className="text-xs text-muted-foreground mb-1 block">Allowed recipients</label>
@@ -1075,9 +1259,8 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
         <div className="bg-primary/5 rounded-xl px-4 py-3 text-[10px] text-muted-foreground">
           <p className="font-medium text-foreground/70 mb-1">What this saves</p>
           <p>
-            Policy profiles live inside the wallet and capture the rule you want reviewers or the
-            private Arcium flow to evaluate later. They make the dashboard usable now, even before
-            every encrypted MXE path is fully wired into each transaction flow.
+            Policy profiles now carry Vaulkyrie templates plus private signal defaults so Arcium can
+            evaluate richer encrypted inputs instead of a single placeholder byte.
           </p>
         </div>
       </div>
@@ -1175,18 +1358,18 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
               <select
                 id="policy-eval-profile"
                 name="policyEvalProfile"
-                value={selectedProfileId}
-                onChange={(event) => {
-                  const nextId = event.target.value;
-                  setSelectedProfileId(nextId);
-                  const nextProfile = savedProfiles.find((profile) => profile.id === nextId);
+                 value={selectedProfileId}
+                  onChange={(event) => {
+                    const nextId = event.target.value;
+                    setSelectedProfileId(nextId);
+                    const nextProfile = savedProfiles.find((profile) => profile.id === nextId);
                   if (nextProfile) {
                     setEvalActionType(nextProfile.actionType);
                     setEvalToken(nextProfile.tokenSymbol);
                   }
                 }}
-                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
-              >
+                 className={selectClassName}
+               >
                 <option value="">No saved profile</option>
                 {savedProfiles.map((profile) => (
                   <option key={profile.id} value={profile.id}>
@@ -1204,7 +1387,7 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
                   name="policyEvalActionType"
                   value={evalActionType}
                   onChange={(event) => setEvalActionType(event.target.value as PolicyProfile["actionType"])}
-                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+                  className={selectClassName}
                 >
                   <option value="send">Send</option>
                   <option value="admin">Admin</option>
@@ -1266,12 +1449,15 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
             {selectedProfile && (
               <div className="rounded-xl border border-border bg-background/60 px-3 py-3 text-[11px] text-muted-foreground space-y-1">
                 <p className="font-medium text-foreground">{selectedProfile.name}</p>
-                <p>{formatApprovalMode(selectedProfile.approvalMode)} · {selectedProfile.actionType} · {selectedProfile.tokenSymbol}</p>
-                <p>
-                  Max amount: {selectedProfile.maxAmount ?? "No cap"} · Allowed recipients: {selectedProfile.allowedRecipients.length || "Any"}
-                </p>
-              </div>
-            )}
+                 <p>{formatApprovalMode(selectedProfile.approvalMode)} · {selectedProfile.actionType} · {selectedProfile.tokenSymbol}</p>
+                 <p>
+                   Max amount: {selectedProfile.maxAmount ?? "No cap"} · Allowed recipients: {selectedProfile.allowedRecipients.length || "Any"}
+                 </p>
+                 <p>
+                   Template: {selectedProfile.template ?? "standardWallet"} · Risk: {selectedProfile.defaultProtocolRisk ?? "low"} · Device: {selectedProfile.defaultDeviceTrust ?? "trusted"}
+                 </p>
+               </div>
+             )}
 
             <Button onClick={handleOpenEvaluation} className="w-full">
               <Plus className="h-4 w-4 mr-2" />
@@ -1316,7 +1502,7 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
             <div className="grid grid-cols-2 gap-2 text-[11px] text-muted-foreground">
               <div className="rounded-lg bg-background/70 px-3 py-2 border border-border">
                 <p className="font-medium text-foreground">1. Local policy profiles</p>
-                <p>Human-readable wallet rules for send/admin actions.</p>
+                <p>Reusable Vaulkyrie templates with private signal defaults.</p>
               </div>
               <div className="rounded-lg bg-background/70 px-3 py-2 border border-border">
                 <p className="font-medium text-foreground">2. On-chain bridge</p>
@@ -1324,7 +1510,7 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
               </div>
               <div className="rounded-lg bg-background/70 px-3 py-2 border border-border">
                 <p className="font-medium text-foreground">3. Evaluation request</p>
-                <p>Binds an action summary and policy commitment on-chain.</p>
+                <p>Binds the action plus the packed private signal commitment on-chain.</p>
               </div>
               <div className="rounded-lg bg-background/70 px-3 py-2 border border-border">
                 <p className="font-medium text-foreground">4. Queue computation</p>
@@ -1377,13 +1563,19 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
                     <span className="text-right">{profile.actionType}</span>
                     <span>Decision</span>
                     <span className="text-right">{formatApprovalMode(profile.approvalMode)}</span>
-                    <span>Token / cap</span>
-                    <span className="text-right">
-                      {profile.tokenSymbol} / {profile.maxAmount ?? "No cap"}
-                    </span>
-                    <span>Recipients</span>
-                    <span className="text-right">{profile.allowedRecipients.length || "Any"}</span>
-                  </div>
+                     <span>Token / cap</span>
+                     <span className="text-right">
+                       {profile.tokenSymbol} / {profile.maxAmount ?? "No cap"}
+                     </span>
+                     <span>Recipients</span>
+                     <span className="text-right">{profile.allowedRecipients.length || "Any"}</span>
+                     <span>Template</span>
+                     <span className="text-right">{profile.template ?? "standardWallet"}</span>
+                     <span>Risk / device</span>
+                     <span className="text-right">
+                       {profile.defaultProtocolRisk ?? "low"} / {profile.defaultDeviceTrust ?? "trusted"}
+                     </span>
+                   </div>
                   {profile.notes && (
                     <p className="text-[10px] text-muted-foreground border-t border-border pt-2">
                       {profile.notes}
@@ -1568,6 +1760,8 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
                   <span className="font-mono text-right">{ev.account.expirySlot.toString()}</span>
                   <span>Computation offset</span>
                   <span className="font-mono text-right">{ev.account.computationOffset.toString()}</span>
+                  <span>Decision flags</span>
+                  <span className="font-mono text-right">0x{ev.account.decisionFlags.toString(16).padStart(4, "0")}</span>
                 </div>
                 {ev.account.status === PolicyEvaluationStatus.Pending && (
                   <div className="mt-3 flex gap-2">

@@ -22,7 +22,7 @@ import {
 } from "@arcium-hq/client";
 import { Buffer } from "buffer";
 import { VAULKYRIE_POLICY_MXE_PROGRAM_ID } from "./constants";
-import type { PolicyEvaluationAccount } from "./types";
+import type { WalletPolicySignals } from "./policyEngine";
 
 export const ARCIUM_DEVNET_CLUSTER_OFFSET = 456;
 export const POLICY_EVALUATE_COMP_DEF_OFFSET = 3285788639;
@@ -48,9 +48,10 @@ export interface PolicyEvaluateArciumAccounts {
 }
 
 export interface EncryptedPolicyEvaluateInput {
-  encryptedInput: Uint8Array;
+  encryptedInputs: [Uint8Array, Uint8Array];
   x25519Pubkey: Uint8Array;
   nonce: bigint;
+  signals: WalletPolicySignals;
 }
 
 function assertBytes(name: string, value: Uint8Array, expected: number) {
@@ -205,7 +206,10 @@ export async function assertPolicyEvaluateArciumReady(
 export async function encryptPolicyEvaluateInput(
   connection: Connection,
   payer: PublicKey,
-  evaluation: PolicyEvaluationAccount,
+  draft: {
+    packedSignalLanes: [string, string];
+    signals: WalletPolicySignals;
+  },
 ): Promise<EncryptedPolicyEvaluateInput> {
   const provider = readonlyAnchorProvider(connection, payer);
   const mxePublicKey = await getMXEPublicKey(provider, VAULKYRIE_POLICY_MXE_PROGRAM_ID);
@@ -218,18 +222,19 @@ export async function encryptPolicyEvaluateInput(
   const nonceBytes = randomBytes(16);
   const sharedSecret = x25519.getSharedSecret(privateKey, mxePublicKey);
   const cipher = new RescueCipher(sharedSecret);
+  const packedSignalLanes = draft.packedSignalLanes.map((lane) => BigInt(lane)) as [bigint, bigint];
+  const encrypted = cipher.encrypt(packedSignalLanes, nonceBytes);
+  const encryptedInputs = [new Uint8Array(encrypted[0]), new Uint8Array(encrypted[1])] as const;
 
-  const policySignal = BigInt(evaluation.encryptedInputCommitment[0]);
-  const encrypted = cipher.encrypt([policySignal], nonceBytes);
-  const encryptedInput = new Uint8Array(encrypted[0]);
-
-  assertBytes("encrypted policy input", encryptedInput, 32);
+  assertBytes("encrypted policy input lane 0", encryptedInputs[0], 32);
+  assertBytes("encrypted policy input lane 1", encryptedInputs[1], 32);
   assertBytes("x25519 public key", x25519Pubkey, 32);
 
   return {
-    encryptedInput,
+    encryptedInputs: [encryptedInputs[0], encryptedInputs[1]],
     x25519Pubkey,
     nonce: bytesToBigIntLE(nonceBytes),
+    signals: draft.signals,
   };
 }
 
@@ -243,14 +248,15 @@ export function createQueuePolicyEvaluateInstruction(
   payer: PublicKey,
   params: {
     computationOffset: bigint;
-    encryptedInput: Uint8Array;
+    encryptedInputs: [Uint8Array, Uint8Array];
     x25519Pubkey: Uint8Array;
     nonce: bigint;
     clusterOffset?: number;
   },
   programId: PublicKey = VAULKYRIE_POLICY_MXE_PROGRAM_ID,
 ): TransactionInstruction {
-  assertBytes("encrypted policy input", params.encryptedInput, 32);
+  assertBytes("encrypted policy input lane 0", params.encryptedInputs[0], 32);
+  assertBytes("encrypted policy input lane 1", params.encryptedInputs[1], 32);
   assertBytes("x25519 public key", params.x25519Pubkey, 32);
 
   const accounts = derivePolicyEvaluateArciumAccounts(
@@ -258,11 +264,12 @@ export function createQueuePolicyEvaluateInstruction(
     params.clusterOffset,
     programId,
   );
-  const data = new Uint8Array(8 + 8 + 32 + 32 + 16);
+  const data = new Uint8Array(8 + 8 + 32 + 32 + 32 + 16);
   let off = 0;
   off = writeBytes(data, off, QUEUE_POLICY_EVALUATE_DISC);
   off = writeU64LE(data, off, params.computationOffset);
-  off = writeBytes(data, off, params.encryptedInput);
+  off = writeBytes(data, off, params.encryptedInputs[0]);
+  off = writeBytes(data, off, params.encryptedInputs[1]);
   off = writeBytes(data, off, params.x25519Pubkey);
   writeU128LE(data, off, params.nonce);
 

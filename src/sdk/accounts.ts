@@ -273,5 +273,6 @@ export function decodePolicyEvaluation(
     delayUntilSlot: readU64LE(data, 232),
     status: readU8(data, 240) as PolicyEvaluationStatus,
     reasonCode: readU16LE(data, 241),
+    decisionFlags: readU16LE(data, 243),
   };
 }

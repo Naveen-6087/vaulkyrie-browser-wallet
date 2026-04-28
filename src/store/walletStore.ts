@@ -13,6 +13,7 @@ import type {
   SpendOrchestrationActivity,
   RecoverySessionRecord,
 } from "../types";
+import type { WalletPolicySignals } from "../sdk/policyEngine";
 import { DEFAULT_NETWORK, type NetworkId } from "../lib/constants";
 import {
   createVaulkyrieClient,
@@ -92,6 +93,21 @@ interface WalletState extends PersistedWalletState {
   // Password (PBKDF2 hash + salt, hex-encoded)
   // In-memory handoff from SendView to PolicyView
   pendingPolicyRequest: PendingPolicyRequest | null;
+  policyEvaluationDrafts: Record<
+    string,
+    {
+      actionHashHex: string;
+      profileId: string | null;
+      actionType: "send" | "admin";
+      recipient: string;
+      amount: number;
+      tokenSymbol: string;
+      signalCommitmentHex: string;
+      packedSignalLanes: [string, string];
+      signals: WalletPolicySignals;
+      createdAt: number;
+    }
+  >;
 
   // Tokens & transactions (real data from RPC)
   tokens: Token[];
@@ -165,6 +181,9 @@ interface WalletState extends PersistedWalletState {
   deletePolicyProfile: (publicKey: string, profileId: string) => void;
   getPolicyProfiles: (publicKey: string) => PolicyProfile[];
   setPendingPolicyRequest: (request: PendingPolicyRequest | null) => void;
+  stashPolicyEvaluationDraft: (draft: WalletState["policyEvaluationDrafts"][string]) => void;
+  getPolicyEvaluationDraft: (actionHashHex: string) => WalletState["policyEvaluationDrafts"][string] | null;
+  clearPolicyEvaluationDraft: (actionHashHex: string) => void;
   recordOrchestrationActivity: (publicKey: string, activity: SpendOrchestrationActivity) => void;
   getOrchestrationHistory: (publicKey: string) => SpendOrchestrationActivity[];
   upsertRecoverySession: (publicKey: string, session: RecoverySessionRecord) => void;
@@ -231,6 +250,7 @@ export const useWalletStore = create<WalletState>()(
       orchestrationHistory: {},
       recoverySessions: {},
       pendingPolicyRequest: null,
+      policyEvaluationDrafts: {},
       tokens: [],
       transactions: [],
       collectibles: [],
@@ -301,6 +321,7 @@ export const useWalletStore = create<WalletState>()(
             transactions: [],
             collectibles: [],
             vaultState: null,
+            policyEvaluationDrafts: {},
             lastFetchedAt: null,
           });
         }
@@ -446,6 +467,20 @@ export const useWalletStore = create<WalletState>()(
         })),
       getPolicyProfiles: (publicKey) => get().policyProfiles[publicKey] ?? [],
       setPendingPolicyRequest: (pendingPolicyRequest) => set({ pendingPolicyRequest }),
+      stashPolicyEvaluationDraft: (draft) =>
+        set((state) => ({
+          policyEvaluationDrafts: {
+            ...state.policyEvaluationDrafts,
+            [draft.actionHashHex]: draft,
+          },
+        })),
+      getPolicyEvaluationDraft: (actionHashHex) => get().policyEvaluationDrafts[actionHashHex] ?? null,
+      clearPolicyEvaluationDraft: (actionHashHex) =>
+        set((state) => {
+          const next = { ...state.policyEvaluationDrafts };
+          delete next[actionHashHex];
+          return { policyEvaluationDrafts: next };
+        }),
       recordOrchestrationActivity: (publicKey, activity) =>
         set((state) => ({
           orchestrationHistory: {

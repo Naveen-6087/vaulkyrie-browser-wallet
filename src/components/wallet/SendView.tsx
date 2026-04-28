@@ -66,6 +66,9 @@ interface SendViewProps {
 type SendPhase = "form" | "review" | "join-review" | "signing" | "coordinate" | "success" | "error";
 type SendMode = "send" | "join";
 
+const selectClassName =
+  "w-full rounded-xl border border-border/70 bg-card px-3 py-2.5 text-sm shadow-sm outline-none transition focus:border-primary/50 focus:ring-2 focus:ring-primary/15";
+
 type BufferedSigningMessage =
   | { type: "round1"; fromId: number; commitments: number[] }
   | { type: "round2"; fromId: number; share: number[] };
@@ -1804,7 +1807,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
                   setSelectedPolicyProfileId(event.target.value);
                   setError("");
                 }}
-                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+                className={selectClassName}
               >
                 <option value="">No policy profile</option>
                 {savedPolicyProfiles.map((profile) => (
@@ -1825,6 +1828,9 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
                   </p>
                   <p>
                     Token: {selectedPolicyProfile.tokenSymbol} · Max: {selectedPolicyProfile.maxAmount ?? "No cap"} · Recipients: {selectedPolicyProfile.allowedRecipients.length || "Any"}
+                  </p>
+                  <p>
+                    Template: {selectedPolicyProfile.template ?? "standardWallet"} · Risk: {selectedPolicyProfile.defaultProtocolRisk ?? "low"} · Device: {selectedPolicyProfile.defaultDeviceTrust ?? "trusted"}
                   </p>
                 </div>
               ) : (
