@@ -16,7 +16,7 @@ interface BottomNavProps {
 const navItems: { view: WalletView; icon: typeof Home; label: string }[] = [
   { view: "dashboard", icon: Home, label: "Home" },
   { view: "send", icon: ArrowUpRight, label: "Send" },
-  { view: "quantum-vault", icon: Atom, label: "Vault" },
+  { view: "quantum-vault", icon: Atom, label: "PQC" },
   { view: "receive", icon: ArrowDownLeft, label: "Receive" },
   { view: "settings", icon: Settings, label: "Settings" },
 ];

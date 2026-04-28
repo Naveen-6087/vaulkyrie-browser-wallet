@@ -19,6 +19,9 @@
  *   - Secret key: 16 × 32 bytes = 512 bytes
  */
 
+import { generateMnemonic, mnemonicToSeed, validateMnemonic } from "@scure/bip39";
+import { wordlist } from "@scure/bip39/wordlists/english.js";
+
 // ── Constants ────────────────────────────────────────────────────────
 
 const CHAINS = 16;
@@ -26,6 +29,8 @@ const CHAIN_LEN = 15;
 const HASH_LEN = 32;
 const WOTS_PUBKEY_LEN = CHAINS * HASH_LEN;  // 512
 const WOTS_SIG_LEN = CHAINS * HASH_LEN;     // 512
+const HARDENED_OFFSET = 0x80000000;
+const VAULKYRIE_WOTS_DERIVATION_DOMAIN = new TextEncoder().encode("Vaulkyrie PQC seed v1");
 
 export { CHAINS, CHAIN_LEN, HASH_LEN, WOTS_PUBKEY_LEN, WOTS_SIG_LEN };
 
@@ -35,6 +40,10 @@ async function sha256(data: Uint8Array): Promise<Uint8Array> {
   const buf = new Uint8Array(data).buffer as ArrayBuffer;
   const hash = await crypto.subtle.digest("SHA-256", buf);
   return new Uint8Array(hash);
+}
+
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  return new Uint8Array(bytes).buffer as ArrayBuffer;
 }
 
 /** Hash a value `n` times: H^n(x) */
@@ -68,6 +77,12 @@ export interface WotsKeyPair {
   publicKey: WotsPublicKey;
   /** Merkleized public key hash matching solana-winternitz PDA binding */
   publicKeyHash: Uint8Array;
+}
+
+export interface PqcSigningPosition {
+  wallet: number;
+  parent: number;
+  child: number;
 }
 
 // ── XMSS Tree Types ─────────────────────────────────────────────────
@@ -107,19 +122,69 @@ interface SerializedWotsKeyPair {
 
 // ── Key Generation ───────────────────────────────────────────────────
 
-/** Generate a single WOTS+ key pair */
-export async function generateWotsKeyPair(): Promise<WotsKeyPair> {
-  // Generate 16 random 32-byte secret elements
-  const secretElements: Uint8Array[] = [];
-  for (let i = 0; i < CHAINS; i++) {
-    const element = new Uint8Array(HASH_LEN);
-    crypto.getRandomValues(element);
-    secretElements.push(element);
+function assertDerivationIndex(index: number, label: string) {
+  if (!Number.isInteger(index) || index < 0 || index >= HARDENED_OFFSET) {
+    throw new Error(`${label} derivation index must be an integer from 0 to ${HARDENED_OFFSET - 1}.`);
+  }
+}
+
+function normalizeMnemonic(mnemonic: string): string {
+  return mnemonic.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function u32Be(value: number): Uint8Array {
+  const out = new Uint8Array(4);
+  const view = new DataView(out.buffer);
+  view.setUint32(0, value, false);
+  return out;
+}
+
+function concatBytes(...parts: Uint8Array[]): Uint8Array {
+  const length = parts.reduce((total, part) => total + part.length, 0);
+  const out = new Uint8Array(length);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
+}
+
+async function hmacSha512(keyBytes: Uint8Array, data: Uint8Array): Promise<Uint8Array> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    toArrayBuffer(keyBytes),
+    { name: "HMAC", hash: "SHA-512" },
+    false,
+    ["sign"],
+  );
+  return new Uint8Array(await crypto.subtle.sign("HMAC", key, toArrayBuffer(data)));
+}
+
+async function deriveHardenedNode(
+  key: Uint8Array,
+  chainCode: Uint8Array,
+  index: number,
+): Promise<{ key: Uint8Array; chainCode: Uint8Array }> {
+  assertDerivationIndex(index, "PQC");
+  const data = concatBytes(new Uint8Array([0]), key, u32Be(index + HARDENED_OFFSET));
+  const digest = await hmacSha512(chainCode, data);
+  return {
+    key: digest.slice(0, HASH_LEN),
+    chainCode: digest.slice(HASH_LEN),
+  };
+}
+
+async function keyPairFromSecretElements(secretElements: Uint8Array[]): Promise<WotsKeyPair> {
+  if (secretElements.length !== CHAINS) {
+    throw new Error(`WOTS key must have ${CHAINS} secret elements.`);
   }
 
-  // Compute public key: hash each element CHAIN_LEN times
   const publicElements: Uint8Array[] = [];
   for (let i = 0; i < CHAINS; i++) {
+    if (secretElements[i].length !== HASH_LEN) {
+      throw new Error(`WOTS secret element ${i} must be ${HASH_LEN} bytes.`);
+    }
     publicElements.push(await chainHash(secretElements[i], CHAIN_LEN));
   }
 
@@ -131,6 +196,88 @@ export async function generateWotsKeyPair(): Promise<WotsKeyPair> {
     publicKey,
     publicKeyHash,
   };
+}
+
+/** Generate a single WOTS+ key pair */
+export async function generateWotsKeyPair(): Promise<WotsKeyPair> {
+  // Generate 16 random 32-byte secret elements
+  const secretElements: Uint8Array[] = [];
+  for (let i = 0; i < CHAINS; i++) {
+    const element = new Uint8Array(HASH_LEN);
+    crypto.getRandomValues(element);
+    secretElements.push(element);
+  }
+
+  return keyPairFromSecretElements(secretElements);
+}
+
+export function generatePqcMnemonic(strength: 128 | 256 = 256): string {
+  return generateMnemonic(wordlist, strength);
+}
+
+export function validatePqcMnemonic(mnemonic: string): boolean {
+  return validateMnemonic(normalizeMnemonic(mnemonic), wordlist);
+}
+
+export async function mnemonicToPqcSeed(mnemonic: string, passphrase = ""): Promise<Uint8Array> {
+  const normalized = normalizeMnemonic(mnemonic);
+  if (!validateMnemonic(normalized, wordlist)) {
+    throw new Error("Enter a valid BIP39 recovery phrase.");
+  }
+  return mnemonicToSeed(normalized, passphrase);
+}
+
+export function nextPqcSigningPosition(position: PqcSigningPosition): PqcSigningPosition {
+  assertDerivationIndex(position.wallet, "Wallet");
+  assertDerivationIndex(position.parent, "Parent");
+  assertDerivationIndex(position.child, "Child");
+
+  if (position.child < HARDENED_OFFSET - 1) {
+    return { ...position, child: position.child + 1 };
+  }
+  if (position.parent < HARDENED_OFFSET - 1) {
+    return { wallet: position.wallet, parent: position.parent + 1, child: 0 };
+  }
+  if (position.wallet < HARDENED_OFFSET - 1) {
+    return { wallet: position.wallet + 1, parent: 0, child: 0 };
+  }
+  throw new Error("PQC BIP39 derivation space is exhausted.");
+}
+
+export async function deriveWotsKeyPairFromSeed(
+  seed: Uint8Array,
+  position: PqcSigningPosition = { wallet: 0, parent: 0, child: 0 },
+): Promise<WotsKeyPair> {
+  assertDerivationIndex(position.wallet, "Wallet");
+  assertDerivationIndex(position.parent, "Parent");
+  assertDerivationIndex(position.child, "Child");
+
+  const master = await hmacSha512(VAULKYRIE_WOTS_DERIVATION_DOMAIN, seed);
+  let node: { key: Uint8Array; chainCode: Uint8Array } = {
+    key: master.slice(0, HASH_LEN),
+    chainCode: master.slice(HASH_LEN),
+  };
+
+  for (const index of [position.wallet, position.parent, position.child]) {
+    node = await deriveHardenedNode(node.key, node.chainCode, index);
+  }
+
+  const secretElements: Uint8Array[] = [];
+  for (let i = 0; i < CHAINS; i++) {
+    const element = await deriveHardenedNode(node.key, node.chainCode, i);
+    secretElements.push(element.key);
+  }
+
+  return keyPairFromSecretElements(secretElements);
+}
+
+export async function deriveWotsKeyPairFromMnemonic(
+  mnemonic: string,
+  position: PqcSigningPosition = { wallet: 0, parent: 0, child: 0 },
+  passphrase = "",
+): Promise<WotsKeyPair> {
+  const seed = await mnemonicToPqcSeed(mnemonic, passphrase);
+  return deriveWotsKeyPairFromSeed(seed, position);
 }
 
 export async function merklizeWotsPublicKey(publicKey: WotsPublicKey): Promise<Uint8Array> {

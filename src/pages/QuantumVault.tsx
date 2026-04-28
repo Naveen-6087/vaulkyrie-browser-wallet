@@ -11,7 +11,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Shield,
-  Lock,
   Unlock,
   AlertTriangle,
   ArrowRight,
@@ -30,9 +29,14 @@ import { ScreenHeader } from "@/components/layout/ScreenHeader";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import {
   generateWotsKeyPair,
+  generatePqcMnemonic,
+  mnemonicToPqcSeed,
+  validatePqcMnemonic,
+  deriveWotsKeyPairFromSeed,
+  deriveWotsKeyPairFromMnemonic,
+  nextPqcSigningPosition,
   wotsSignMessage,
   wotsVerifyMessage,
-  quantumCloseMessage,
   pqcWalletAdvanceMessage,
   bytesToHex,
   hexToBytes as hexToQuantumBytes,
@@ -40,16 +44,16 @@ import {
   serializeWotsKeyPair,
   serializeWotsSignature,
 } from "@/services/quantum/wots";
-import type { WotsKeyPair } from "@/services/quantum/wots";
+import type { PqcSigningPosition, WotsKeyPair } from "@/services/quantum/wots";
 import type { WalletView } from "@/types";
 import { useWalletStore } from "@/store/walletStore";
 import { withRpcFallback } from "@/services/solanaRpc";
 import {
-  createCloseQuantumVaultInstruction,
   createInitPqcWalletInstruction,
   createAdvancePqcWalletInstruction,
 } from "@/sdk/instructions";
-import { findPqcWalletPda, findQuantumVaultPda } from "@/sdk/pda";
+import { ACCOUNT_SIZE } from "@/sdk/constants";
+import { findPqcWalletPda } from "@/sdk/pda";
 import { signAndSendTransaction } from "@/services/frost/signTransaction";
 import { VaulkyrieClient } from "@/sdk/client";
 import { SigningOrchestrator } from "@/services/frost/signingOrchestrator";
@@ -113,13 +117,23 @@ interface QuantumVaultState {
 interface StoredPqcWalletKey {
   walletId: Uint8Array;
   currentKeyPair: WotsKeyPair;
+  source: "random" | "bip39";
+  seedHex?: string;
+  position?: PqcSigningPosition;
 }
 
-function serializeStoredPqcWalletKey(walletId: Uint8Array, currentKeyPair: WotsKeyPair): string {
+function serializeStoredPqcWalletKey(
+  walletId: Uint8Array,
+  currentKeyPair: WotsKeyPair,
+  metadata: Partial<Pick<StoredPqcWalletKey, "source" | "seedHex" | "position">> = {},
+): string {
   return JSON.stringify({
-    version: 2,
+    version: 3,
     walletIdHex: bytesToHex(walletId),
     currentKeyPair: JSON.parse(serializeWotsKeyPair(currentKeyPair)),
+    source: metadata.source ?? "random",
+    seedHex: metadata.seedHex,
+    position: metadata.position,
   });
 }
 
@@ -128,12 +142,18 @@ function deserializeStoredPqcWalletKey(serialized: string): StoredPqcWalletKey {
     version?: number;
     walletIdHex?: string;
     currentKeyPair?: unknown;
+    source?: "random" | "bip39";
+    seedHex?: string;
+    position?: PqcSigningPosition;
   };
 
-  if (parsed.version === 2 && parsed.walletIdHex && parsed.currentKeyPair) {
+  if ((parsed.version === 2 || parsed.version === 3) && parsed.walletIdHex && parsed.currentKeyPair) {
     return {
       walletId: hexToQuantumBytes(parsed.walletIdHex),
       currentKeyPair: deserializeWotsKeyPair(JSON.stringify(parsed.currentKeyPair)),
+      source: parsed.version === 3 ? parsed.source ?? "random" : "random",
+      seedHex: parsed.seedHex,
+      position: parsed.position,
     };
   }
 
@@ -141,6 +161,30 @@ function deserializeStoredPqcWalletKey(serialized: string): StoredPqcWalletKey {
   return {
     walletId: legacyKeyPair.publicKeyHash,
     currentKeyPair: legacyKeyPair,
+    source: "random",
+  };
+}
+
+async function buildNextPqcStoredKey(storedKey: StoredPqcWalletKey): Promise<StoredPqcWalletKey> {
+  if (storedKey.source === "bip39" && storedKey.seedHex && storedKey.position) {
+    const nextPosition = nextPqcSigningPosition(storedKey.position);
+    const nextKeyPair = await deriveWotsKeyPairFromSeed(
+      hexToQuantumBytes(storedKey.seedHex),
+      nextPosition,
+    );
+    return {
+      ...storedKey,
+      currentKeyPair: nextKeyPair,
+      position: nextPosition,
+    };
+  }
+
+  return {
+    ...storedKey,
+    currentKeyPair: await generateWotsKeyPair(),
+    source: "random",
+    seedHex: undefined,
+    position: undefined,
   };
 }
 
@@ -156,7 +200,6 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
     relayUrl,
     getQuantumVaultKey,
     storeQuantumVaultKey,
-    clearQuantumVaultKey,
     getWinterAuthorityState,
     refreshBalances,
     refreshTransactions,
@@ -177,13 +220,16 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
   });
 
   const [activePanel, setActivePanel] = useState<
-    "overview" | "open" | "split" | "close" | null
+    "overview" | "open" | "split" | null
   >("overview");
   const [isProcessing, setIsProcessing] = useState(false);
   const [statusMessage, setStatusMessage] = useState("");
   const [migrationAmount, setMigrationAmount] = useState("");
   const [splitAmount, setSplitAmount] = useState("");
   const [splitDestination, setSplitDestination] = useState("");
+  const [mnemonicInput, setMnemonicInput] = useState("");
+  const [showMnemonicImport, setShowMnemonicImport] = useState(false);
+  const [generatedMnemonic, setGeneratedMnemonic] = useState("");
   const [lastProofHex, setLastProofHex] = useState("");
   const [signingSessionCode, setSigningSessionCode] = useState("");
   const [relaySessionInfo, setRelaySessionInfo] = useState(() => createRelaySessionMetadata("------"));
@@ -532,15 +578,92 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
 
   // ── Open Vault ───────────────────────────────────────────────────
 
-  const handleOpenVault = async () => {
+  const ensurePqcInitPayerIsFunded = useCallback(async (
+    connection: Connection,
+    payer: PublicKey,
+  ) => {
+    const rentLamports = await connection.getMinimumBalanceForRentExemption(ACCOUNT_SIZE.PqcWalletState);
+    const requiredLamports = rentLamports + 10_000;
+    const balanceLamports = await connection.getBalance(payer);
+
+    if (balanceLamports < requiredLamports) {
+      throw new Error(
+        `Fund the active fast-vault address before initializing the PQC wallet. ` +
+        `${payer.toBase58()} has ${(balanceLamports / LAMPORTS_PER_SOL).toFixed(6)} SOL; ` +
+        `it needs at least ${(requiredLamports / LAMPORTS_PER_SOL).toFixed(6)} SOL for rent and network fees.`,
+      );
+    }
+  }, []);
+
+  const handleRequestPqcSetupAirdrop = async () => {
+    if (!activeAccount?.publicKey) return;
+    if (network !== "devnet") {
+      setStatusMessage("Devnet faucet is only available while the wallet network is set to devnet.");
+      return;
+    }
+
+    setIsProcessing(true);
+    setStatusMessage("Requesting 1 SOL for PQC wallet setup...");
+
+    try {
+      const payer = new PublicKey(activeAccount.publicKey);
+      const signature = await withRpcFallback(network, async (connection) => {
+        const sig = await connection.requestAirdrop(payer, LAMPORTS_PER_SOL);
+        const latest = await connection.getLatestBlockhash();
+        await connection.confirmTransaction({ signature: sig, ...latest }, "confirmed");
+        return sig;
+      });
+      setStatusMessage(`Devnet setup funding received. Tx: ${signature}`);
+      await refreshBalances();
+    } catch (err) {
+      setStatusMessage(
+        `Faucet request failed: ${err instanceof Error ? err.message : String(err)}. ` +
+        `Send a small amount of devnet SOL to ${activeAccount.publicKey}, then retry.`,
+      );
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleOpenVault = async (mode: "generated" | "imported" | "random" = "generated") => {
     if (!activeAccount?.publicKey) return;
 
     setIsProcessing(true);
-    setStatusMessage("Generating the first Winternitz wallet root...");
+    setGeneratedMnemonic("");
+    setStatusMessage("Checking PQC wallet setup funding...");
 
     try {
-      const keyPair = await generateWotsKeyPair();
       const payer = new PublicKey(activeAccount.publicKey);
+      await withRpcFallback(network, async (connection) => ensurePqcInitPayerIsFunded(connection, payer));
+
+      const position: PqcSigningPosition = { wallet: 0, parent: 0, child: 0 };
+      let keyPair: WotsKeyPair;
+      let seedHex: string | undefined;
+      let mnemonicToShow = "";
+      let source: StoredPqcWalletKey["source"] = "random";
+
+      if (mode === "imported") {
+        if (!validatePqcMnemonic(mnemonicInput)) {
+          throw new Error("Enter a valid BIP39 recovery phrase before importing.");
+        }
+        setStatusMessage("Deriving the first Winternitz root from the BIP39 phrase...");
+        const seed = await mnemonicToPqcSeed(mnemonicInput);
+        seedHex = bytesToHex(seed);
+        keyPair = await deriveWotsKeyPairFromSeed(seed, position);
+        source = "bip39";
+      } else if (mode === "generated") {
+        setStatusMessage("Generating a BIP39 recovery phrase for the PQC wallet...");
+        const mnemonic = generatePqcMnemonic();
+        const seed = await mnemonicToPqcSeed(mnemonic);
+        seedHex = bytesToHex(seed);
+        keyPair = await deriveWotsKeyPairFromMnemonic(mnemonic, position);
+        mnemonicToShow = mnemonic;
+        source = "bip39";
+      } else {
+        setStatusMessage("Generating the first Winternitz wallet root...");
+        keyPair = await generateWotsKeyPair();
+      }
+
       const walletId = keyPair.publicKeyHash;
       const [vaultPda, bump] = findPqcWalletPda(walletId);
 
@@ -569,7 +692,14 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
         );
       });
 
-      storeQuantumVaultKey(walletAddress, serializeStoredPqcWalletKey(walletId, keyPair));
+      storeQuantumVaultKey(
+        walletAddress,
+        serializeStoredPqcWalletKey(walletId, keyPair, { source, seedHex, position: source === "bip39" ? position : undefined }),
+      );
+      if (mnemonicToShow) {
+        setGeneratedMnemonic(mnemonicToShow);
+      }
+      setMnemonicInput("");
       setLastProofHex("");
       setStatusMessage(
         `PQC wallet opened. Fund ${vaultPda.toBase58()} before sending from it. Tx: ${signature}`,
@@ -673,7 +803,8 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
         throw new Error("Stored Winternitz key does not match the current onchain wallet root.");
       }
 
-      const nextKeyPair = await generateWotsKeyPair();
+      const nextStoredKey = await buildNextPqcStoredKey(storedKey);
+      const nextKeyPair = nextStoredKey.currentKeyPair;
       const message = await pqcWalletAdvanceMessage(
         storedKey.walletId,
         pqcWallet.account.currentRoot,
@@ -721,74 +852,17 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
         );
       });
 
-      storeQuantumVaultKey(walletAddress, serializeStoredPqcWalletKey(storedKey.walletId, nextKeyPair));
+      storeQuantumVaultKey(
+        walletAddress,
+        serializeStoredPqcWalletKey(nextStoredKey.walletId, nextKeyPair, {
+          source: nextStoredKey.source,
+          seedHex: nextStoredKey.seedHex,
+          position: nextStoredKey.position,
+        }),
+      );
       setStatusMessage("PQC wallet send completed. The Winternitz root rolled forward.");
       setSplitAmount("");
       setSplitDestination("");
-      setActivePanel("overview");
-      await Promise.all([refreshQuantumVault(), refreshBalances(), refreshTransactions()]);
-    } catch (err) {
-      setStatusMessage(`Error: ${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      setIsProcessing(false);
-    }
-  };
-
-  // ── Close Vault ──────────────────────────────────────────────────
-
-  const handleCloseVault = async () => {
-    if (!activeAccount?.publicKey || !vault.vaultAddress) return;
-
-    setIsProcessing(true);
-    setStatusMessage("Building close authorization...");
-
-    try {
-      const serializedKey = getQuantumVaultKey(walletAddress);
-      if (!serializedKey) {
-        throw new Error("No local Winternitz key found for this quantum vault.");
-      }
-
-      const keyPair = deserializeWotsKeyPair(serializedKey);
-      const refund = new PublicKey(activeAccount.publicKey);
-      const message = quantumCloseMessage(refund.toBytes());
-
-      setStatusMessage("Signing vault close with the one-time key...");
-      const signature = await wotsSignMessage(message, keyPair.secretKey);
-
-      const valid = await wotsVerifyMessage(message, signature, keyPair.publicKey);
-      if (!valid) {
-        setStatusMessage("Close signature verification failed!");
-        return;
-      }
-
-      const signatureBytes = serializeWotsSignature(signature);
-      setLastProofHex(bytesToHex(signatureBytes).substring(0, 64) + "...");
-
-      await withRpcFallback(network, async (connection) => {
-        const ix = createCloseQuantumVaultInstruction(
-          new PublicKey(vault.vaultAddress),
-          refund,
-          {
-            signature: signatureBytes,
-            bump: findQuantumVaultPda(keyPair.publicKeyHash)[1],
-          },
-        );
-
-        const tx = new Transaction().add(ix);
-        return signAndSendQuantumTransaction(
-          connection,
-          tx,
-          `Close quantum vault and refund ${refund.toBase58()}`,
-          {
-            amount: vault.balanceLamports / LAMPORTS_PER_SOL,
-            token: "SOL",
-            recipient: refund.toBase58(),
-          },
-        );
-      });
-
-      clearQuantumVaultKey(walletAddress);
-      setStatusMessage("Quantum vault closed and all funds were returned to your wallet.");
       setActivePanel("overview");
       await Promise.all([refreshQuantumVault(), refreshBalances(), refreshTransactions()]);
     } catch (err) {
@@ -897,24 +971,100 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
               </CardContent>
             </Card>
 
-            <Button
-              className="w-full gap-2"
-              size="lg"
-              onClick={handleOpenVault}
-              disabled={isProcessing}
-            >
-              {isProcessing ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Opening wallet...
-                </>
-              ) : (
-                <>
-                  <Unlock className="h-4 w-4" />
-                  Initialize PQC Wallet
-                </>
-              )}
-            </Button>
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-sm">PQC Wallet Setup</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <Button
+                  className="w-full gap-2"
+                  size="lg"
+                  onClick={() => handleOpenVault("generated")}
+                  disabled={isProcessing}
+                >
+                  {isProcessing ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Opening wallet...
+                    </>
+                  ) : (
+                    <>
+                      <Unlock className="h-4 w-4" />
+                      Create BIP39 PQC Wallet
+                    </>
+                  )}
+                </Button>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <Button
+                    variant="secondary"
+                    className="gap-2"
+                    onClick={handleRequestPqcSetupAirdrop}
+                    disabled={isProcessing || network !== "devnet"}
+                  >
+                    <Shield className="h-4 w-4" />
+                    Devnet SOL
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    className="gap-2"
+                    onClick={() => setShowMnemonicImport((value) => !value)}
+                    disabled={isProcessing}
+                  >
+                    <ArrowRight className="h-4 w-4" />
+                    Import Phrase
+                  </Button>
+                </div>
+
+                {showMnemonicImport && (
+                  <div className="space-y-2">
+                    <textarea
+                      value={mnemonicInput}
+                      onChange={(event) => setMnemonicInput(event.target.value)}
+                      placeholder="BIP39 recovery phrase"
+                      className="min-h-20 w-full resize-none rounded-md border border-input bg-background px-3 py-2 text-xs font-mono outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    />
+                    <Button
+                      className="w-full gap-2"
+                      onClick={() => handleOpenVault("imported")}
+                      disabled={isProcessing || !mnemonicInput.trim()}
+                    >
+                      <Shield className="h-4 w-4" />
+                      Initialize From Phrase
+                    </Button>
+                  </div>
+                )}
+
+                <p className="text-[10px] text-muted-foreground">
+                  Setup rent is paid by the active Vaulkyrie vault address, so fast vaults need a small SOL balance before this step.
+                </p>
+              </CardContent>
+            </Card>
+
+            {generatedMnemonic && (
+              <Card className="border-primary/30">
+                <CardHeader>
+                  <CardTitle className="text-sm">PQC Recovery Phrase</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  <code className="block rounded-md bg-muted px-3 py-2 text-xs font-mono leading-relaxed">
+                    {generatedMnemonic}
+                  </code>
+                  <Button
+                    variant="secondary"
+                    className="w-full gap-2"
+                    onClick={() => copy(generatedMnemonic, "pqc-mnemonic")}
+                  >
+                    {isCopied("pqc-mnemonic") ? (
+                      <Check className="h-4 w-4 text-success" />
+                    ) : (
+                      <Copy className="h-4 w-4" />
+                    )}
+                    Copy Recovery Phrase
+                  </Button>
+                </CardContent>
+              </Card>
+            )}
           </motion.div>
         )}
 
@@ -927,6 +1077,31 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
             exit={{ opacity: 0 }}
             className="flex flex-col gap-4"
           >
+            {generatedMnemonic && (
+              <Card className="border-primary/30">
+                <CardHeader>
+                  <CardTitle className="text-sm">PQC Recovery Phrase</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  <code className="block rounded-md bg-muted px-3 py-2 text-xs font-mono leading-relaxed">
+                    {generatedMnemonic}
+                  </code>
+                  <Button
+                    variant="secondary"
+                    className="w-full gap-2"
+                    onClick={() => copy(generatedMnemonic, "pqc-mnemonic")}
+                  >
+                    {isCopied("pqc-mnemonic") ? (
+                      <Check className="h-4 w-4 text-success" />
+                    ) : (
+                      <Copy className="h-4 w-4" />
+                    )}
+                    Copy Recovery Phrase
+                  </Button>
+                </CardContent>
+              </Card>
+            )}
+
             {/* Authority info */}
             <Card>
               <CardHeader>
@@ -1200,64 +1375,6 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
           </motion.div>
         )}
 
-        {/* ── Close Panel ── */}
-        {activePanel === "close" && (
-          <motion.div
-            key="close"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="flex flex-col gap-4"
-          >
-            <Card className="border-destructive/30">
-              <CardHeader>
-                <CardTitle className="text-sm text-destructive flex items-center gap-2">
-                  <AlertTriangle className="h-4 w-4" />
-                  Close Quantum Vault
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <p className="text-xs text-muted-foreground">
-                  This will withdraw <strong>all</strong> funds from the quantum
-                  vault and destroy the one-time vault PDA. This action is irreversible.
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  All remaining funds will be sent to your wallet address:
-                </p>
-                <code className="text-[10px] font-mono bg-muted rounded px-2 py-1.5 block truncate">
-                  {walletAddress}
-                </code>
-                <div className="flex items-center gap-2 text-[10px] text-warning">
-                  <AlertTriangle className="h-3 w-3" />
-                  This consumes the one-time Winternitz key
-                </div>
-              </CardContent>
-            </Card>
-
-            <div className="flex gap-2">
-              <Button
-                variant="secondary"
-                className="flex-1"
-                onClick={() => setActivePanel("overview")}
-              >
-                Cancel
-              </Button>
-              <Button
-                variant="destructive"
-                className="flex-1 gap-2"
-                onClick={handleCloseVault}
-                disabled={isProcessing}
-              >
-                {isProcessing ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Lock className="h-4 w-4" />
-                )}
-                Close Vault
-              </Button>
-            </div>
-          </motion.div>
-        )}
       </AnimatePresence>
 
       {isProcessing && relaySessionInfo.code !== "------" && (
