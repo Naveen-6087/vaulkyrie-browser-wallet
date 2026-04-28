@@ -11,6 +11,7 @@ import {
   generateSessionCode,
   parseSessionInvite,
   probeRelayAvailability,
+  resolveRelayUrl,
   type RelayAdapter,
 } from "@/services/relay/relayAdapter";
 import type { SignRequestPayload } from "@/services/relay/channelRelay";
@@ -197,11 +198,15 @@ function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
 }
 
 async function canReachRelay(url: string): Promise<boolean> {
-  return probeRelayAvailability(url, 1500);
+  try {
+    return await probeRelayAvailability(resolveRelayUrl(url), 1500);
+  } catch {
+    return false;
+  }
 }
 
 function crossDeviceRelayUnavailableMessage(): string {
-  return "Cross-device relay is unavailable. Configure a reachable relay in Settings > Cross-device Relay before starting or joining a multi-device signing session.";
+  return "Cross-device relay is unavailable right now. Check your internet connection, then try again. Advanced users can switch to a self-hosted relay in Settings > Cross-device Relay.";
 }
 
 function buildPreviewSignerIds(
@@ -1118,7 +1123,8 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
 
       const availableKeyIds = Object.keys(dkg.keyPackages).map(Number);
       const myParticipantId = dkg.participantId ?? availableKeyIds[0] ?? 1;
-      const relayAvailable = await canReachRelay(relayUrl);
+      const joinRelayUrl = resolveRelayUrl(parsedJoinSession.relayUrl ?? relayUrl);
+      const relayAvailable = await canReachRelay(joinRelayUrl);
       if (!relayAvailable) {
         throw new Error(crossDeviceRelayUnavailableMessage());
       }
@@ -1131,7 +1137,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
         participantId: myParticipantId,
         isCoordinator: false,
         deviceName: `Signer ${myParticipantId}`,
-        relayUrl,
+        relayUrl: joinRelayUrl,
         sessionId: sessionCode,
         events: {
           onParticipantJoined: () => {
@@ -1817,14 +1823,14 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
           </CardHeader>
           <CardContent className="space-y-3">
             <Input
-              placeholder="Enter invite or 6-character local code"
+              placeholder="Paste a join link, full invite, or 6-character local code"
               value={joinSessionCode}
               onChange={(e) => {
-                setJoinSessionCode(e.target.value.toUpperCase());
+                setJoinSessionCode(e.target.value);
                 setError("");
               }}
               className="font-mono text-center tracking-wide"
-              maxLength={20}
+              maxLength={512}
             />
             {parsedJoinSession && (
               <div className="rounded-xl border border-primary/20 bg-primary/5 px-3 py-3 text-center">
@@ -1835,7 +1841,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
               </div>
             )}
             <p className="text-[11px] text-muted-foreground">
-              Use the full invite from the coordinator on another browser or device. Local fallback still accepts a 6-character code.
+              Use the join link or full invite from the coordinator on another browser or device. Local fallback still accepts a 6-character code.
             </p>
             <Button className="w-full" onClick={handleJoinSigningSession}>
               Connect to session

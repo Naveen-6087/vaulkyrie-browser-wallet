@@ -40,6 +40,7 @@ import {
   createRelay,
   generateSessionCode,
   probeRelayAvailability,
+  resolveRelayUrl,
   type RelayAdapter,
 } from "@/services/relay/relayAdapter";
 import type { SignRequestPayload } from "@/services/relay/channelRelay";
@@ -131,11 +132,15 @@ function normalizeRecipients(input: string): string[] {
 }
 
 async function canReachRelay(url: string): Promise<boolean> {
-  return probeRelayAvailability(url, 1500);
+  try {
+    return await probeRelayAvailability(resolveRelayUrl(url), 1500);
+  } catch {
+    return false;
+  }
 }
 
 function crossDeviceRelayUnavailableMessage(): string {
-  return "Cross-device relay is unavailable. Configure a reachable relay in Settings > Cross-device Relay before starting a policy signing session.";
+  return "Cross-device relay is unavailable right now. Check your internet connection, then try again. Advanced users can switch to a self-hosted relay in Settings > Cross-device Relay.";
 }
 
 export function PolicyView({ onNavigate }: PolicyViewProps) {

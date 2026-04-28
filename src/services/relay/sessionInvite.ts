@@ -46,6 +46,96 @@ export interface RelaySessionMetadata {
   invite: string;
   verificationPhrase: string;
   expiresAt: number | null;
+  relayUrl: string | null;
+}
+
+const SUPPORTED_INVITE_PROTOCOLS = new Set(["vaulkyrie-dkg", "vaulkyrie-session"]);
+
+function encodeBase64Url(value: string): string {
+  const encoded = btoa(value);
+  return encoded.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function decodeBase64Url(value: string): string | null {
+  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
+  try {
+    return atob(padded);
+  } catch {
+    return null;
+  }
+}
+
+function parseRelayUrlCandidate(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function parseStructuredInvite(value: {
+  protocol?: string;
+  invite?: string;
+  session?: string;
+  authToken?: string;
+  expires?: number;
+  relayUrl?: string;
+  relay?: string;
+}): RelaySessionMetadata | null {
+  const relayUrl = parseRelayUrlCandidate(value.relayUrl ?? value.relay);
+  if (value.protocol && !SUPPORTED_INVITE_PROTOCOLS.has(value.protocol)) {
+    return null;
+  }
+
+  if (typeof value.invite === "string") {
+    const parsedInvite = parseSessionInvite(value.invite);
+    if (!parsedInvite) return null;
+    return { ...parsedInvite, relayUrl: relayUrl ?? parsedInvite.relayUrl };
+  }
+
+  if (typeof value.session === "string") {
+    return createRelaySessionMetadata(
+      normalizedInviteInput(value.session),
+      typeof value.authToken === "string" ? normalizedInviteInput(value.authToken) : null,
+      typeof value.expires === "number" ? value.expires : null,
+      relayUrl,
+    );
+  }
+
+  return null;
+}
+
+function parseInviteUrl(input: string): RelaySessionMetadata | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(input);
+  } catch {
+    return null;
+  }
+
+  const embeddedPayload =
+    parsed.searchParams.get("payload") ??
+    parsed.searchParams.get("data") ??
+    (parsed.hash.startsWith("#payload=") ? parsed.hash.slice("#payload=".length) : null);
+  if (embeddedPayload) {
+    const decoded = decodeBase64Url(embeddedPayload);
+    if (!decoded) return null;
+    return parseSessionInvite(decoded);
+  }
+
+  const relayUrl = parseRelayUrlCandidate(
+    parsed.searchParams.get("relayUrl") ?? parsed.searchParams.get("relay"),
+  );
+  const inviteParam =
+    parsed.searchParams.get("invite") ??
+    parsed.searchParams.get("session") ??
+    parsed.searchParams.get("code");
+  if (!inviteParam) {
+    return null;
+  }
+
+  const parsedInvite = parseSessionInvite(inviteParam);
+  if (!parsedInvite) return null;
+  return { ...parsedInvite, relayUrl: relayUrl ?? parsedInvite.relayUrl };
 }
 
 function randomToken(length: number): string {
@@ -90,6 +180,7 @@ export function createRelaySessionMetadata(
   code: string,
   authToken?: string | null,
   expiresAt?: number | null,
+  relayUrl?: string | null,
 ): RelaySessionMetadata {
   return {
     code,
@@ -97,6 +188,7 @@ export function createRelaySessionMetadata(
     invite: buildSessionInvite(code, authToken ?? null),
     verificationPhrase: buildSessionVerificationPhrase(code, authToken ?? null),
     expiresAt: expiresAt ?? null,
+    relayUrl: relayUrl ?? null,
   };
 }
 
@@ -112,21 +204,19 @@ export function parseSessionInvite(input: string): RelaySessionMetadata | null {
         session?: string;
         authToken?: string;
         expires?: number;
+        relayUrl?: string;
+        relay?: string;
       };
-      if (parsed.protocol === "vaulkyrie-dkg") {
-        if (typeof parsed.invite === "string") {
-          return parseSessionInvite(parsed.invite);
-        }
-        if (typeof parsed.session === "string") {
-          return createRelaySessionMetadata(
-            normalizedInviteInput(parsed.session),
-            typeof parsed.authToken === "string" ? normalizedInviteInput(parsed.authToken) : null,
-            typeof parsed.expires === "number" ? parsed.expires : null,
-          );
-        }
-      }
+      return parseStructuredInvite(parsed);
     } catch {
       return null;
+    }
+  }
+
+  if (trimmed.includes("://")) {
+    const parsedUrl = parseInviteUrl(trimmed);
+    if (parsedUrl) {
+      return parsedUrl;
     }
   }
 
@@ -134,7 +224,30 @@ export function parseSessionInvite(input: string): RelaySessionMetadata | null {
   const match = normalized.match(/^([A-Z0-9]{6})(?:[^A-Z0-9]+([A-Z0-9]{8,16}))?$/);
   if (!match) return null;
 
-  return createRelaySessionMetadata(match[1], match[2] ?? null, null);
+  return createRelaySessionMetadata(match[1], match[2] ?? null, null, null);
+}
+
+export function buildSessionSharePayload(
+  metadata: RelaySessionMetadata,
+  relayUrl?: string | null,
+): string {
+  return JSON.stringify({
+    protocol: "vaulkyrie-session",
+    version: 1,
+    session: metadata.code,
+    authToken: metadata.authToken ?? undefined,
+    invite: metadata.invite,
+    verification: metadata.verificationPhrase,
+    relayUrl: relayUrl ?? metadata.relayUrl ?? undefined,
+    expires: metadata.expiresAt ?? undefined,
+  });
+}
+
+export function buildSessionJoinUri(
+  metadata: RelaySessionMetadata,
+  relayUrl?: string | null,
+): string {
+  return `vaulkyrie://join?payload=${encodeBase64Url(buildSessionSharePayload(metadata, relayUrl))}`;
 }
 
 export function buildQrPayload(
@@ -143,8 +256,9 @@ export function buildQrPayload(
   participants: number,
   authToken?: string | null,
   expiresAt?: number | null,
+  relayUrl?: string | null,
 ): string {
-  const metadata = createRelaySessionMetadata(sessionId, authToken, expiresAt);
+  const metadata = createRelaySessionMetadata(sessionId, authToken, expiresAt, relayUrl);
   return JSON.stringify({
     protocol: "vaulkyrie-dkg",
     version: 2,
@@ -152,6 +266,7 @@ export function buildQrPayload(
     authToken: metadata.authToken ?? undefined,
     invite: metadata.invite,
     verification: metadata.verificationPhrase,
+    relayUrl: metadata.relayUrl ?? undefined,
     threshold,
     participants,
     expires: metadata.expiresAt ?? Date.now() + 300_000,

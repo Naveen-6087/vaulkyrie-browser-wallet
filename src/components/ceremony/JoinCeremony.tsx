@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import {
   createRelay,
   probeRelayAvailability,
+  resolveRelayUrl,
   type RelayAdapter,
   type ConnectionState,
 } from "@/services/relay/relayAdapter";
@@ -75,10 +76,26 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
 
   // Detect relay availability on mount
   useEffect(() => {
-    probeRelayAvailability(relayUrl).then((available) => {
-      setRelayMode(available ? "remote" : "local");
-    });
-  }, [relayUrl]);
+    let cancelled = false;
+
+    (async () => {
+      const candidateRelayUrl = parsedSessionInvite?.relayUrl ?? relayUrl;
+      try {
+        const available = await probeRelayAvailability(resolveRelayUrl(candidateRelayUrl));
+        if (!cancelled) {
+          setRelayMode(available ? "remote" : "local");
+        }
+      } catch {
+        if (!cancelled) {
+          setRelayMode("local");
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [parsedSessionInvite?.relayUrl, relayUrl]);
 
   useEffect(() => {
     phaseRef.current = phase;
@@ -218,13 +235,14 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
     pendingSigningMessagesRef.current = [];
 
     try {
+      const joinRelayUrl = resolveRelayUrl(parsedSessionInvite.relayUrl ?? relayUrl);
       const relay = createRelay({
         mode,
         participantId: 0, // will be assigned by the server
         isCoordinator: false,
         deviceName: navigator.userAgent.includes("Mobile") ? "Mobile Device" : "Browser",
         deviceType: navigator.userAgent.includes("Mobile") ? "mobile" : "browser",
-        relayUrl,
+        relayUrl: joinRelayUrl,
         sessionId: code,
         events: {
           onParticipantJoined: () => { /* other participants joining — no action needed */ },
@@ -473,17 +491,17 @@ export function JoinCeremony({ onComplete, onBack }: JoinCeremonyProps) {
             <p className="text-sm font-medium mb-2">
               {relayMode === "remote" ? "Enter Session Invite" : "Enter Session Code"}
             </p>
-            <p className="text-xs text-muted-foreground mb-4">
-              {relayMode === "remote"
-                ? "Paste the full invite from the vault creator or scan their QR code. Cross-device relay sessions now require the authenticated invite."
-                : "Ask the vault creator for the 6-character session code shown on their screen or scan their QR code."}
-            </p>
+              <p className="text-xs text-muted-foreground mb-4">
+                {relayMode === "remote"
+                  ? "Paste the join link or full invite from the vault creator, or scan their QR code. Cross-device relay sessions now require the authenticated invite."
+                  : "Ask the vault creator for the 6-character session code shown on their screen or scan their QR code."}
+              </p>
             <Input
               value={sessionCode}
-              onChange={(e) => setSessionCode(e.target.value.toUpperCase())}
-              placeholder={relayMode === "remote" ? "e.g. YWNFNL.A7Q9M3KD" : "e.g. YWNFNL"}
+              onChange={(e) => setSessionCode(e.target.value)}
+              placeholder={relayMode === "remote" ? "Paste a join link or full invite" : "e.g. YWNFNL"}
               className={`font-mono text-center ${relayMode === "remote" ? "text-sm tracking-wide" : "text-lg tracking-widest"}`}
-              maxLength={relayMode === "remote" ? 20 : 6}
+              maxLength={512}
             />
             {parsedSessionInvite && (
               <div className="mt-3 rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-center">

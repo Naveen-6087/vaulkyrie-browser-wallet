@@ -332,7 +332,7 @@ export class WebSocketRelay {
         this.sessionExpiresAt = sp.expiresAt ?? null;
         this.startHeartbeat();
         this.onSessionCreated?.(
-          createRelaySessionMetadata(sp.code, sp.authToken ?? null, sp.expiresAt ?? null),
+          createRelaySessionMetadata(sp.code, sp.authToken ?? null, sp.expiresAt ?? null, this.relayUrl),
         );
         return;
       }

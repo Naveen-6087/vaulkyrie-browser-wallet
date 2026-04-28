@@ -23,6 +23,7 @@ import {
   withRpcFallback,
 } from "../services/solanaRpc";
 import { walletPersistStorage } from "../lib/walletPersistStorage";
+import { DEFAULT_RELAY_URL } from "../services/relay/relayAdapter";
 
 // Per-vault DKG key material stored in localStorage
 interface StoredDkgResult {
@@ -230,7 +231,7 @@ export const useWalletStore = create<WalletState>()(
       collectibles: [],
       vaultState: null,
       network: DEFAULT_NETWORK,
-      relayUrl: import.meta.env.VITE_RELAY_URL ?? "ws://localhost:8765",
+      relayUrl: DEFAULT_RELAY_URL,
       currentView: "dashboard",
       isLoading: false,
       error: null,

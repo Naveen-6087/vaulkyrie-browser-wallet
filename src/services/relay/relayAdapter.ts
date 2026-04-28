@@ -23,6 +23,20 @@ export type { RelaySessionMetadata };
 export type RelayMode = "local" | "remote";
 const LOCAL_RELAY_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
 
+function inferHostedRelayUrl(): string | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  const { protocol, host } = window.location;
+  if (protocol === "https:" || protocol === "http:") {
+    const relayProtocol = protocol === "https:" ? "wss:" : "ws:";
+    return `${relayProtocol}//${host}/relay`;
+  }
+
+  return null;
+}
+
 export interface RelayAdapter {
   readonly mode: RelayMode;
   readonly participantId: number;
@@ -251,6 +265,33 @@ export async function probeRelayAvailability(
   }
 }
 
+export function resolveRelayUrl(input?: string | null): string {
+  const validation = validateRelayUrl((input ?? "").trim() || DEFAULT_RELAY_URL);
+  if (!validation.ok) {
+    throw new Error(validation.error ?? "Invalid relay URL.");
+  }
+  return validation.normalizedUrl;
+}
+
+export function isManagedRelayUrl(input: string): boolean {
+  const candidate = validateRelayUrl(input);
+  const managed = validateRelayUrl(DEFAULT_RELAY_URL);
+  return candidate.ok && managed.ok && candidate.normalizedUrl === managed.normalizedUrl;
+}
+
+export function getRelayDisplayLabel(input: string): string {
+  const validation = validateRelayUrl(input);
+  if (!validation.ok) {
+    return input;
+  }
+
+  if (isManagedRelayUrl(validation.normalizedUrl)) {
+    return validation.isLocal ? "Local development relay" : "Vaulkyrie Relay";
+  }
+
+  return validation.normalizedUrl.replace(/^wss?:\/\//, "");
+}
+
 export function createRelay(opts: CreateRelayOptions): RelayAdapter {
   if (opts.mode === "local") {
     const events: RelayEvents = { ...opts.events };
@@ -266,13 +307,8 @@ export function createRelay(opts: CreateRelayOptions): RelayAdapter {
     });
   }
 
-  const relayUrlValidation = validateRelayUrl(opts.relayUrl ?? DEFAULT_RELAY_URL);
-  if (!relayUrlValidation.ok) {
-    throw new Error(relayUrlValidation.error);
-  }
-
   return new RemoteRelayAdapter({
-    relayUrl: relayUrlValidation.normalizedUrl,
+    relayUrl: resolveRelayUrl(opts.relayUrl),
     participantId: opts.participantId,
     isCoordinator: opts.isCoordinator,
     deviceName: opts.deviceName,
@@ -285,4 +321,5 @@ export function createRelay(opts: CreateRelayOptions): RelayAdapter {
 }
 
 /** Default relay server URL — can be overridden via environment or settings */
-export const DEFAULT_RELAY_URL = import.meta.env.VITE_RELAY_URL ?? "ws://localhost:8765";
+export const DEFAULT_RELAY_URL =
+  import.meta.env.VITE_RELAY_URL?.trim() || inferHostedRelayUrl() || "ws://localhost:8765";

@@ -8,7 +8,13 @@ import { useWalletStore } from "@/store/walletStore";
 import { shortenAddress } from "@/lib/utils";
 import type { NetworkId, WalletView } from "@/types";
 import { NETWORKS } from "@/lib/constants";
-import { probeRelayAvailability, validateRelayUrl } from "@/services/relay/relayAdapter";
+import {
+  DEFAULT_RELAY_URL,
+  getRelayDisplayLabel,
+  isManagedRelayUrl,
+  probeRelayAvailability,
+  validateRelayUrl,
+} from "@/services/relay/relayAdapter";
 import { exportEncryptedWalletBackup } from "@/lib/walletBackup";
 import {
   listApprovedOrigins,
@@ -84,6 +90,8 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
   const timeoutOptions: Array<5 | 15 | 30 | 60> = [5, 15, 30, 60];
   const [currentTime, setCurrentTime] = useState(() => Date.now());
   const activeCooldown = unlockBlockedUntil !== null && unlockBlockedUntil > currentTime;
+  const usingManagedRelay = isManagedRelayUrl(relayUrl);
+  const relayDisplayLabel = getRelayDisplayLabel(relayUrl);
 
   useEffect(() => {
     if (!activeCooldown) return;
@@ -270,7 +278,7 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
         <SettingRow
           icon={Globe}
           label="Cross-device Relay"
-          value={relayUrl.replace(/^wss?:\/\//, "")}
+          value={relayDisplayLabel}
         />
         <SettingRow
           icon={Users}
@@ -438,10 +446,16 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
         </div>
         <div className="space-y-3 p-4">
           <p className="text-xs text-muted-foreground">
-            Vaulkyrie connects to a separately deployed relay server for cross-device ceremonies.
-            Use a <span className="font-mono">wss://</span> endpoint here for the published
-            Chrome extension.
+            Vaulkyrie uses a managed relay by default for cross-device ceremonies. Most users
+            should leave this on the hosted relay. Self-hosted endpoints are only needed for
+            advanced deployments.
           </p>
+          <div className="flex items-center justify-between rounded-md border border-border bg-muted/20 px-3 py-2 text-xs">
+            <span className="text-muted-foreground">Relay source</span>
+            <span className="text-foreground">
+              {usingManagedRelay ? "Managed by Vaulkyrie" : "Self-hosted override"}
+            </span>
+          </div>
           <div className="flex items-center justify-between rounded-md border border-border bg-muted/20 px-3 py-2 text-xs">
             <span className="text-muted-foreground">Relay health</span>
             <span
@@ -460,30 +474,46 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
                   : "Unavailable"}
             </span>
           </div>
+          <div className="rounded-md border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+            Active endpoint: <span className="font-mono text-foreground">{relayUrl}</span>
+          </div>
           <input
             value={relayDraft}
             onChange={(event) => setRelayDraft(event.target.value)}
-            placeholder="wss://relay.example.com"
+            placeholder={DEFAULT_RELAY_URL}
             className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
           />
           {relayError && (
             <p className="text-xs text-red-400">{relayError}</p>
           )}
-          <Button
-            variant="outline"
-            className="w-full"
-            onClick={() => {
-              const validation = validateRelayUrl(relayDraft);
-              if (!validation.ok) {
-                setRelayError(validation.error ?? "Invalid relay URL.");
-                return;
-              }
-              setRelayError("");
-              setRelayUrl(validation.normalizedUrl);
-            }}
-          >
-            Save relay URL
-          </Button>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <Button
+              variant="outline"
+              className="w-full"
+              onClick={() => {
+                const validation = validateRelayUrl(relayDraft);
+                if (!validation.ok) {
+                  setRelayError(validation.error ?? "Invalid relay URL.");
+                  return;
+                }
+                setRelayError("");
+                setRelayUrl(validation.normalizedUrl);
+              }}
+            >
+              Use self-hosted relay
+            </Button>
+            <Button
+              variant="secondary"
+              className="w-full"
+              onClick={() => {
+                setRelayError("");
+                setRelayDraft(DEFAULT_RELAY_URL);
+                setRelayUrl(DEFAULT_RELAY_URL);
+              }}
+            >
+              Use Vaulkyrie relay
+            </Button>
+          </div>
         </div>
       </Card>
 

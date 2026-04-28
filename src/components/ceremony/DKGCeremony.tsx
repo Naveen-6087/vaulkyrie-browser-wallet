@@ -29,7 +29,7 @@ import {
   type ConnectionState,
 } from "@/services/relay/relayAdapter";
 import type { RelayParticipant } from "@/services/relay/channelRelay";
-import { createRelaySessionMetadata } from "@/services/relay/sessionInvite";
+import { buildSessionJoinUri, createRelaySessionMetadata } from "@/services/relay/sessionInvite";
 import {
   DkgOrchestrator,
   type DkgOrchestratorProgress,
@@ -122,7 +122,7 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
   const [sessionCode, setSessionCode] = useState(generateSessionCode);
   const [relaySessionInfo, setRelaySessionInfo] = useState(() => createRelaySessionMetadata(sessionCode));
   const [qrPayload, setQrPayload] = useState(() =>
-    buildQrPayload(sessionCode, config.threshold, config.totalParticipants),
+    buildQrPayload(sessionCode, config.threshold, config.totalParticipants, null, null, relayUrl),
   );
   const [devices, setDevices] = useState<DeviceInfo[]>([
     {
@@ -252,6 +252,7 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
               config.totalParticipants,
               session.authToken,
               session.expiresAt,
+              relayUrl,
             ),
           );
         },
@@ -742,7 +743,9 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
 
   const handleCopyCode = async () => {
     await navigator.clipboard.writeText(
-      relayMode === "remote" ? relaySessionInfo.invite : sessionCode,
+      relayMode === "remote"
+        ? buildSessionJoinUri(relaySessionInfo, relayUrl)
+        : sessionCode,
     );
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
@@ -878,7 +881,7 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
                 {/* Session invite for manual entry */}
                 <div className="flex items-center justify-center gap-2">
                   <span className="text-xs text-muted-foreground">
-                    {relayMode === "remote" ? "Share invite:" : "Or enter code:"}
+                    {relayMode === "remote" ? "Copy join link:" : "Or enter code:"}
                   </span>
                   <button
                     onClick={handleCopyCode}
