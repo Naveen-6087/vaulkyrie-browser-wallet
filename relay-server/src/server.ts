@@ -17,6 +17,12 @@
 
 import { WebSocketServer, WebSocket } from "ws";
 import http from "node:http";
+import {
+  getCosignerCount,
+  getCosignerStatus,
+  registerCosignerShare,
+  requestCosignerSignature,
+} from "./cosigner.js";
 
 // ── Configuration ────────────────────────────────────────────────────
 
@@ -85,16 +91,101 @@ function generateAuthToken(): string {
 
 // ── HTTP server (health check + upgrade) ─────────────────────────────
 
-const httpServer = http.createServer((_req, res) => {
-  res.writeHead(200, {
+function writeJson(res: http.ServerResponse, status: number, body: unknown): void {
+  res.writeHead(status, {
     "Content-Type": "application/json",
     "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "Content-Type, X-Cosigner-Token",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
   });
-  res.end(JSON.stringify({
-    status: "ok",
-    sessions: sessions.size,
-    uptime: process.uptime(),
-  }));
+  res.end(JSON.stringify(body));
+}
+
+function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    req.on("data", (chunk) => {
+      body += chunk;
+      if (body.length > 1024 * 1024) {
+        reject(new Error("Request body too large."));
+        req.destroy();
+      }
+    });
+    req.on("end", () => {
+      try {
+        resolve(body ? JSON.parse(body) : {});
+      } catch {
+        reject(new Error("Invalid JSON body."));
+      }
+    });
+    req.on("error", reject);
+  });
+}
+
+function assertCosignerToken(req: http.IncomingMessage): void {
+  const expected = process.env.COSIGNER_ADMIN_TOKEN;
+  if (!expected) return;
+
+  const actual = req.headers["x-cosigner-token"];
+  if (actual !== expected) {
+    throw new Error("Invalid cosigner token.");
+  }
+}
+
+const httpServer = http.createServer(async (req, res) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Cosigner-Token");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+
+  if (req.method === "OPTIONS") {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+
+  const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+
+  try {
+    if (req.method === "GET" && url.pathname === "/cosigner/status") {
+      const vaultId = url.searchParams.get("vaultId");
+      writeJson(res, 200, {
+        status: "ok",
+        cosigner: vaultId ? getCosignerStatus(vaultId) : null,
+        cosigners: getCosignerCount(),
+      });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/cosigner/register") {
+      assertCosignerToken(req);
+      const body = await readJsonBody(req);
+      const record = registerCosignerShare(body as Parameters<typeof registerCosignerShare>[0]);
+      const safeRecord = { ...record };
+      delete (safeRecord as Partial<typeof record>).keyPackage;
+      writeJson(res, 200, { status: "registered", cosigner: safeRecord });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/cosigner/sign") {
+      assertCosignerToken(req);
+      const body = await readJsonBody(req);
+      const result = requestCosignerSignature(body as Parameters<typeof requestCosignerSignature>[0]);
+      writeJson(res, 202, { status: "accepted", ...result });
+      return;
+    }
+
+    writeJson(res, 200, {
+      status: "ok",
+      sessions: sessions.size,
+      cosigners: getCosignerCount(),
+      uptime: process.uptime(),
+    });
+  } catch (error) {
+    writeJson(res, 400, {
+      status: "error",
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 });
 
 // ── WebSocket server ─────────────────────────────────────────────────

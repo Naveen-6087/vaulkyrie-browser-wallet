@@ -171,6 +171,7 @@ function App() {
           participants: parsed.participants ?? vaultConfig?.totalParticipants ?? 3,
           participantId: parsed.participantId,
           isMultiDevice: parsed.isMultiDevice,
+          cosigner: parsed.cosigner ?? null,
           createdAt: Date.now(),
         });
         sessionStorage.removeItem("vaulkyrie_dkg_result");
@@ -184,6 +185,8 @@ function App() {
         vaultName: vaultConfig.vaultName,
         threshold: vaultConfig.threshold,
         totalParticipants: vaultConfig.totalParticipants,
+        cosignerEnabled: vaultConfig.cosigner?.enabled === true,
+        cosignerParticipantId: vaultConfig.cosigner?.participantId ?? null,
       });
     }
 

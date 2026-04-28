@@ -53,6 +53,7 @@ import {
 } from "@/services/relay/relayAdapter";
 import type { SignRequestPayload } from "@/services/relay/channelRelay";
 import { createRelaySessionMetadata } from "@/services/relay/sessionInvite";
+import { requestCosignerSignature, type VaultCosignerMetadata } from "@/services/cosigner/cosignerClient";
 import {
   generateXmssTree,
   getInitialXmssAuthorityHash,
@@ -268,6 +269,7 @@ export function RecoveryView({ onNavigate }: RecoveryViewProps) {
     keyPackageJson: string;
     publicKeyPackageJson: string;
     threshold: number;
+    cosigner?: VaultCosignerMetadata | null;
     prepareMessage: () => Promise<Uint8Array>;
     summary: string;
   }) => {
@@ -386,9 +388,24 @@ export function RecoveryView({ onNavigate }: RecoveryViewProps) {
           }
         },
         onSessionCreated: (session) => {
-          setActionMsg(`Recovery signing session created: ${session.invite}. Share it with another signer.`);
+          setActionMsg(
+            params.cosigner?.enabled
+              ? `Recovery signing session created. Requesting ${params.cosigner.label}...`
+              : `Recovery signing session created: ${session.invite}. Share it with another signer.`,
+          );
           setSigningSessionCode(session.invite);
           setRelaySessionInfo(session);
+          if (params.cosigner?.enabled) {
+            void requestCosignerSignature({ cosigner: params.cosigner, relayUrl, session })
+              .then((accepted) => {
+                if (accepted && params.cosigner) {
+                  setActionMsg(`${params.cosigner.label} is joining the recovery signing session...`);
+                }
+              })
+              .catch((error) => {
+                settle(() => reject(error));
+              });
+          }
         },
       });
 
@@ -444,6 +461,7 @@ export function RecoveryView({ onNavigate }: RecoveryViewProps) {
       keyPackageJson,
       publicKeyPackageJson: dkg.publicKeyPackage,
       threshold: dkg.threshold,
+      cosigner: dkg.cosigner ?? null,
       prepareMessage: async () => {
         await prepareLegacyVaultTransaction(connection, tx, activeAccount.publicKey);
         extraSigners.forEach((signer) => tx.partialSign(signer));

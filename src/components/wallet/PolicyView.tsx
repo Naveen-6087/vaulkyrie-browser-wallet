@@ -45,6 +45,7 @@ import {
 } from "@/services/relay/relayAdapter";
 import type { SignRequestPayload } from "@/services/relay/channelRelay";
 import { createRelaySessionMetadata } from "@/services/relay/sessionInvite";
+import { requestCosignerSignature, type VaultCosignerMetadata } from "@/services/cosigner/cosignerClient";
 import { NETWORKS } from "@/lib/constants";
 import { withRpcFallback } from "@/services/solanaRpc";
 import type { WalletView, PolicyProfile, PendingPolicyRequest } from "@/types";
@@ -332,6 +333,7 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
     keyPackageJson: string;
     publicKeyPackageJson: string;
     threshold: number;
+    cosigner?: VaultCosignerMetadata | null;
     prepareMessage: () => Promise<Uint8Array>;
     summary: string;
   }) => {
@@ -451,9 +453,24 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
           }
         },
         onSessionCreated: (session) => {
-          setActionMsg(`Policy signing session created: ${session.invite}. Share with another signer.`);
+          setActionMsg(
+            params.cosigner?.enabled
+              ? `Policy signing session created. Requesting ${params.cosigner.label}...`
+              : `Policy signing session created: ${session.invite}. Share with another signer.`,
+          );
           setSigningSessionCode(session.invite);
           setRelaySessionInfo(session);
+          if (params.cosigner?.enabled) {
+            void requestCosignerSignature({ cosigner: params.cosigner, relayUrl, session })
+              .then((accepted) => {
+                if (accepted && params.cosigner) {
+                  setActionMsg(`${params.cosigner.label} is joining the policy signing session...`);
+                }
+              })
+              .catch((error) => {
+                settle(() => reject(error));
+              });
+          }
         },
       });
 
@@ -503,6 +520,7 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
       keyPackageJson,
       publicKeyPackageJson: dkg.publicKeyPackage,
       threshold: dkg.threshold,
+      cosigner: dkg.cosigner ?? null,
       prepareMessage: async () => {
         await prepareLegacyVaultTransaction(connection, tx, activeAccount.publicKey);
         return tx.serializeMessage();

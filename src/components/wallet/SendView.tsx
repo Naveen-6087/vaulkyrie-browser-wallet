@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { signLocal, hexToBytes, bytesToHex } from "@/services/frost/frostService";
 import { SigningOrchestrator } from "@/services/frost/signingOrchestrator";
+import { requestCosignerSignature, type VaultCosignerMetadata } from "@/services/cosigner/cosignerClient";
 import {
   createRelay,
   generateSessionCode,
@@ -419,6 +420,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
           participants: parsed.participants ?? 3,
           participantId: parsed.participantId,
           isMultiDevice: parsed.isMultiDevice,
+          cosigner: parsed.cosigner ?? null,
           createdAt: Date.now(),
         };
         persistDkg(pubKey, dkg);
@@ -860,6 +862,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
           myKeyPkg,
           dkg.publicKeyPackage,
           dkg.threshold,
+          dkg.cosigner ?? null,
           (msg) => setSigningMessage(msg),
           async (signerIds) => {
             const prepared = await prepareSpendTransaction({
@@ -942,6 +945,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
     keyPackageJson: string,
     publicKeyPackageJson: string,
     requiredSigners: number,
+    cosigner: VaultCosignerMetadata | null,
     onStatus: (msg: string) => void,
     prepareMessage: (signerIds: number[]) => Promise<{
       message: Uint8Array;
@@ -1076,9 +1080,24 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
           }
         },
         onSessionCreated: (session) => {
-          onStatus(`Signing session created: ${session.invite}. Share with other signers.`);
+          onStatus(
+            cosigner?.enabled
+              ? `Signing session created. Requesting ${cosigner.label}...`
+              : `Signing session created: ${session.invite}. Share with other signers.`,
+          );
           setSigningSessionCode(session.invite);
           setRelaySessionInfo(session);
+          if (cosigner?.enabled) {
+            void requestCosignerSignature({ cosigner, relayUrl, session })
+              .then((accepted) => {
+                if (accepted) {
+                  onStatus(`${cosigner.label} is joining the signing session...`);
+                }
+              })
+              .catch((error) => {
+                settle(() => reject(error));
+              });
+          }
         },
       });
 

@@ -24,6 +24,7 @@ import {
 } from "../services/solanaRpc";
 import { walletPersistStorage } from "../lib/walletPersistStorage";
 import { DEFAULT_RELAY_URL } from "../services/relay/relayAdapter";
+import type { VaultCosignerMetadata } from "../services/cosigner/cosignerClient";
 
 // Per-vault DKG key material stored in localStorage
 interface StoredDkgResult {
@@ -37,12 +38,16 @@ interface StoredDkgResult {
   participantId?: number;
   /** Whether the vault was created via multi-device ceremony */
   isMultiDevice?: boolean;
+  /** Optional server cosigner metadata for assisted vaults */
+  cosigner?: VaultCosignerMetadata | null;
 }
 
 interface VaultConfigPersist {
   vaultName: string;
   threshold: number;
   totalParticipants: number;
+  cosignerEnabled?: boolean;
+  cosignerParticipantId?: number | null;
 }
 
 interface Contact {

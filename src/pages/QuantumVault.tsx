@@ -67,6 +67,7 @@ import {
 } from "@/services/relay/relayAdapter";
 import type { SignRequestPayload } from "@/services/relay/channelRelay";
 import { createRelaySessionMetadata } from "@/services/relay/sessionInvite";
+import { requestCosignerSignature } from "@/services/cosigner/cosignerClient";
 
 type BufferedSigningMessage =
   | { type: "round1"; fromId: number; commitments: number[] }
@@ -359,7 +360,22 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
         onSessionCreated: (session) => {
           setSigningSessionCode(session.invite);
           setRelaySessionInfo(session);
-          setStatusMessage(`Signing session created: ${session.invite}. Share it with another signer.`);
+          setStatusMessage(
+            dkg.cosigner?.enabled
+              ? `Signing session created. Requesting ${dkg.cosigner.label}...`
+              : `Signing session created: ${session.invite}. Share it with another signer.`,
+          );
+          if (dkg.cosigner?.enabled) {
+            void requestCosignerSignature({ cosigner: dkg.cosigner, relayUrl, session })
+              .then((accepted) => {
+                if (accepted) {
+                  setStatusMessage(`${dkg.cosigner!.label} is joining the signing session...`);
+                }
+              })
+              .catch((error) => {
+                settle(() => reject(error));
+              });
+          }
         },
       });
 

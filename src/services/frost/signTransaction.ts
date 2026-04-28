@@ -10,6 +10,7 @@ import { PublicKey, Transaction, VersionedTransaction, type Connection } from "@
 import { Buffer } from "buffer";
 import { signLocal, hexToBytes } from "./frostService";
 import { useWalletStore } from "@/store/walletStore";
+import type { VaultCosignerMetadata } from "@/services/cosigner/cosignerClient";
 
 interface DkgResult {
   groupPublicKeyHex: string;
@@ -19,6 +20,7 @@ interface DkgResult {
   participants: number;
   participantId?: number;
   isMultiDevice?: boolean;
+  cosigner?: VaultCosignerMetadata | null;
 }
 
 /**
@@ -41,6 +43,7 @@ export function loadDkgResult(publicKey: string): DkgResult {
         participants: parsed.participants ?? 3,
         participantId: parsed.participantId,
         isMultiDevice: parsed.isMultiDevice,
+        cosigner: parsed.cosigner ?? null,
         createdAt: Date.now(),
       };
       storeDkgResult(publicKey, dkg);

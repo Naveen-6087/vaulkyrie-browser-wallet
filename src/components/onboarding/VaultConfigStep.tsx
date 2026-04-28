@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
-import { Shield, Users, Lock, ArrowLeft, ArrowRight } from "lucide-react";
+import { Shield, Users, Lock, ArrowLeft, ArrowRight, Zap } from "lucide-react";
 
 interface VaultConfigStepProps {
   onNext: (config: VaultConfig) => void;
@@ -11,9 +11,23 @@ export interface VaultConfig {
   vaultName: string;
   threshold: number;
   totalParticipants: number;
+  cosigner?: {
+    enabled: boolean;
+    participantId: number;
+  };
 }
 
 const PRESETS = [
+  {
+    threshold: 2,
+    total: 2,
+    label: "Fast Vault",
+    desc: "This browser plus a Vaulkyrie server cosigner. Best for demos and single-device recovery.",
+    icon: Zap,
+    risk: "Assisted",
+    riskColor: "text-success",
+    cosigner: { enabled: true, participantId: 2 },
+  },
   {
     threshold: 1,
     total: 3,
@@ -46,7 +60,7 @@ const PRESETS = [
 
 export function VaultConfigStep({ onNext, onBack }: VaultConfigStepProps) {
   const [vaultName, setVaultName] = useState("Main Vault");
-  const [selectedPreset, setSelectedPreset] = useState(1); // default 2-of-3
+  const [selectedPreset, setSelectedPreset] = useState(2); // default 2-of-3
 
   return (
     <div className="flex flex-col h-full bg-background">
@@ -177,6 +191,7 @@ export function VaultConfigStep({ onNext, onBack }: VaultConfigStepProps) {
               vaultName,
               threshold: PRESETS[selectedPreset].threshold,
               totalParticipants: PRESETS[selectedPreset].total,
+              cosigner: PRESETS[selectedPreset].cosigner,
             })
           }
           disabled={!vaultName.trim()}

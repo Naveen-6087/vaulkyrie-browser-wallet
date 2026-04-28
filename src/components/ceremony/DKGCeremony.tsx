@@ -36,6 +36,11 @@ import {
 } from "@/services/frost/dkgOrchestrator";
 import { SigningOrchestrator } from "@/services/frost/signingOrchestrator";
 import { signAndSendTransaction } from "@/services/frost/signTransaction";
+import {
+  registerCosignerShare,
+  requestCosignerSignature,
+  type VaultCosignerMetadata,
+} from "@/services/cosigner/cosignerClient";
 import { withRpcFallback } from "@/services/solanaRpc";
 import {
   assertVaultBootstrapSimulation,
@@ -470,6 +475,7 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
         threshold: number;
         participantId?: number;
         isMultiDevice?: boolean;
+        cosigner?: VaultCosignerMetadata | null;
       };
       const walletPubkey = decodeVaultPublicKey(dkg.groupPublicKeyHex);
       walletAddress = walletPubkey.toBase58();
@@ -515,7 +521,124 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
           availableKeyIds.length < dkg.threshold
         ) {
           if (!relay) {
-            throw new Error("Relay session is no longer available for multi-device bootstrap.");
+            if (!dkg.cosigner?.enabled) {
+              throw new Error("Relay session is no longer available for multi-device bootstrap.");
+            }
+            if (!myKeyPackage) {
+              throw new Error(`No key package found for participant ${myParticipantId}.`);
+            }
+
+            const relayAvailable = await probeRelayAvailability(relayUrl);
+            if (!relayAvailable) {
+              throw new Error("Server cosigner relay is unavailable right now.");
+            }
+
+            const message = prepared.transaction.serializeMessage();
+            const signingResult = await new Promise<{ signatureHex: string; verified: boolean }>((resolve, reject) => {
+              let settled = false;
+              let signingStarted = false;
+              const requestedSessionCode = generateSessionCode();
+              const settle = (callback: () => void) => {
+                if (settled) return;
+                settled = true;
+                relay?.disconnect();
+                callback();
+              };
+
+              relay = createRelay({
+                mode: "remote",
+                participantId: myParticipantId,
+                isCoordinator: true,
+                deviceName: `Bootstrap signer ${myParticipantId}`,
+                relayUrl,
+                sessionId: requestedSessionCode,
+                events: {
+                  onParticipantJoined: () => {
+                    const connectedSignerIds = [
+                      myParticipantId,
+                      ...relay!
+                        .getParticipants()
+                        .map((participant) => participant.participantId)
+                        .filter((participantId, index, ids) => participantId > 0 && ids.indexOf(participantId) === index),
+                    ]
+                    .filter((participantId, index, ids) => ids.indexOf(participantId) === index)
+                    .sort((left, right) => left - right);
+                    const signerIds = connectedSignerIds.slice(0, dkg.threshold);
+                    setBootstrapMessage(`Connected signers: ${Math.min(connectedSignerIds.length, dkg.threshold)}/${dkg.threshold}`);
+                    if (signingStarted || signerIds.length < dkg.threshold) return;
+
+                    signingStarted = true;
+                    const request: SignRequestPayload = {
+                      requestId: crypto.randomUUID(),
+                      message: Array.from(message),
+                      signerIds,
+                      amount: 0,
+                      token: "VAULKYRIE",
+                      recipient: walletAddress,
+                      initiator: config.vaultName,
+                      network,
+                      createdAt: Date.now(),
+                      purpose: "bootstrap",
+                      summary: `Finalize ${prepared.actions.join(", ")}`,
+                    };
+                    relay!.broadcastSignRequest(request);
+                    void runSigningOrchestrator({
+                      relay: relay!,
+                      participantId: myParticipantId,
+                      keyPackageJson: myKeyPackage,
+                      publicKeyPackageJson: dkg.publicKeyPackage,
+                      message,
+                      signerIds,
+                      onStatus: setBootstrapMessage,
+                    }).then((result) => settle(() => resolve(result)))
+                      .catch((error) => settle(() => reject(error)));
+                  },
+                  onParticipantLeft: () => {
+                    setBootstrapMessage(`A signer disconnected. Connected: ${relay?.participantCount ?? 0}/${dkg.threshold}`);
+                  },
+                  onSignRequest: () => {},
+                  onSignRound1: (fromId, commitments) => queueOrHandleSigningMessage({ type: "round1", fromId, commitments }),
+                  onSignRound2: (fromId, share) => queueOrHandleSigningMessage({ type: "round2", fromId, share }),
+                  onError: (_fromId, relayError) => settle(() => reject(new Error(`Signing relay error: ${relayError}`))),
+                  onDkgRound1: () => {},
+                  onDkgRound2: () => {},
+                  onDkgRound3Done: () => {},
+                  onStartDkg: () => {},
+                  onSignComplete: () => {},
+                },
+                onConnectionStateChange: (state) => {
+                  if (state === "connected") {
+                    setBootstrapMessage("Connected to relay. Creating server cosigner bootstrap session...");
+                    relay?.createSession(dkg.threshold, dkg.threshold, requestedSessionCode);
+                  } else if (state === "failed") {
+                    settle(() => reject(new Error("Relay connection failed")));
+                  }
+                },
+                onSessionCreated: (session) => {
+                  setBootstrapMessage(`Requesting ${dkg.cosigner!.label}...`);
+                  void requestCosignerSignature({ cosigner: dkg.cosigner, relayUrl, session })
+                    .catch((error) => settle(() => reject(error)));
+                },
+              });
+
+              relay.connect();
+            });
+
+            if (!signingResult.verified) {
+              throw new Error("Bootstrap signature verification failed.");
+            }
+
+            prepared.transaction.addSignature(walletPubkey, Buffer.from(hexToBytes(signingResult.signatureHex)));
+            const signature = await connection.sendRawTransaction(prepared.transaction.serialize(), {
+              skipPreflight: false,
+              preflightCommitment: "confirmed",
+            });
+            await connection.confirmTransaction(signature, "confirmed");
+            return {
+              signature,
+              generatedXmssTree: prepared.generatedXmssTree,
+              generatedWinterAuthorityState: prepared.generatedWinterAuthorityState,
+            };
           }
           if (!myKeyPackage) {
             throw new Error(`No key package found for participant ${myParticipantId}.`);
@@ -630,6 +753,8 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
     isBootstrapping,
     network,
     onComplete,
+    queueOrHandleSigningMessage,
+    relayUrl,
     runSigningOrchestrator,
     storeXmssTree,
     storeWinterAuthorityState,
@@ -712,7 +837,30 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
       };
 
       runLocalDkg(config.threshold, config.totalParticipants, handleProgress)
-        .then((result) => {
+        .then(async (result) => {
+          const cosignerConfig = config.cosigner?.enabled ? config.cosigner : null;
+          let keyPackages = result.keyPackages;
+          let cosigner: VaultCosignerMetadata | null = null;
+
+          if (cosignerConfig) {
+            setDkgMessage("Registering server cosigner share...");
+            const cosignerKeyPackage = result.keyPackages[cosignerConfig.participantId];
+            if (!cosignerKeyPackage) {
+              throw new Error(`Generated DKG result is missing cosigner participant ${cosignerConfig.participantId}.`);
+            }
+
+            cosigner = await registerCosignerShare({
+              vaultId: result.groupPublicKeyHex,
+              groupPublicKeyHex: result.groupPublicKeyHex,
+              publicKeyPackage: result.publicKeyPackage,
+              keyPackage: cosignerKeyPackage,
+              participantId: cosignerConfig.participantId,
+              relayUrl,
+            });
+
+            keyPackages = { 1: result.keyPackages[1] };
+          }
+
           delayedComplete(() => {
             setGroupPublicKey(result.groupPublicKeyHex);
             setDkgProgress(100);
@@ -724,9 +872,12 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
                 JSON.stringify({
                   groupPublicKeyHex: result.groupPublicKeyHex,
                   publicKeyPackage: result.publicKeyPackage,
-                  keyPackages: result.keyPackages,
+                  keyPackages,
                   threshold: config.threshold,
                   participants: config.totalParticipants,
+                  participantId: 1,
+                  isMultiDevice: cosignerConfig ? true : undefined,
+                  cosigner,
                   createdAt: Date.now(),
                 }),
               );
@@ -739,7 +890,7 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
           setPhase("pairing");
         });
     }
-  }, [config.threshold, config.totalParticipants, devices.length, delayedComplete]);
+  }, [config.cosigner, config.threshold, config.totalParticipants, devices.length, delayedComplete, relayUrl]);
 
   const handleCopyCode = async () => {
     await navigator.clipboard.writeText(
