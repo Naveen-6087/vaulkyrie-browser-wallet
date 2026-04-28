@@ -4,6 +4,7 @@ import { PublicKey, SystemProgram, Transaction, LAMPORTS_PER_SOL } from "@solana
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { SelectField } from "@/components/ui/select-field";
 import { signLocal, hexToBytes, bytesToHex } from "@/services/frost/frostService";
 import { SigningOrchestrator } from "@/services/frost/signingOrchestrator";
 import { requestCosignerSignature, type VaultCosignerMetadata } from "@/services/cosigner/cosignerClient";
@@ -57,6 +58,7 @@ import {
   analyzeLegacyTransaction,
   type TransactionAnalysis,
 } from "@/services/transactionAnalysis";
+import { deriveWalletPolicySignals, evaluateWalletPolicy } from "@/sdk/policyEngine";
 
 interface SendViewProps {
   balance: number;
@@ -65,9 +67,6 @@ interface SendViewProps {
 
 type SendPhase = "form" | "review" | "join-review" | "signing" | "coordinate" | "success" | "error";
 type SendMode = "send" | "join";
-
-const selectClassName =
-  "w-full rounded-xl border border-border/70 bg-card px-3 py-2.5 text-sm shadow-sm outline-none transition focus:border-primary/50 focus:ring-2 focus:ring-primary/15";
 
 type BufferedSigningMessage =
   | { type: "round1"; fromId: number; commitments: number[] }
@@ -90,6 +89,25 @@ interface PreparedSpendActivityContext {
   actionHash: string;
   orchestrationAddress: string;
   policy: PreparedPolicySnapshot | null;
+}
+
+function formatThresholdPreview(threshold: number): string {
+  switch (threshold) {
+    case 1:
+      return "1-of-3";
+    case 2:
+      return "2-of-3";
+    case 3:
+      return "3-of-3";
+    case 255:
+      return "PQC required";
+    default:
+      return `Threshold ${threshold}`;
+  }
+}
+
+function formatPolicyBucket(value: string): string {
+  return value.replace(/([A-Z])/g, " $1");
 }
 
 // ── Custom token dropdown with icons ────────────────────────────────
@@ -298,6 +316,33 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
     [activeAccount?.publicKey, policyProfiles],
   );
   const selectedPolicyProfile = savedPolicyProfiles.find((profile) => profile.id === selectedPolicyProfileId) ?? null;
+  const selectedPolicyPreview = useMemo(() => {
+    if (!selectedPolicyProfile) return null;
+    const signals = deriveWalletPolicySignals({
+      policyProfile: selectedPolicyProfile,
+      actionType: "send",
+      recipient,
+      amount: parsedAmount,
+      tokenSymbol: selectedToken,
+      accountPublicKey: activeAccount?.publicKey,
+      tokenBalance,
+      totalBalance: balance,
+      contacts,
+    });
+    return {
+      signals,
+      decision: evaluateWalletPolicy(signals, 0n, 200n),
+    };
+  }, [
+    activeAccount?.publicKey,
+    balance,
+    contacts,
+    parsedAmount,
+    recipient,
+    selectedPolicyProfile,
+    selectedToken,
+    tokenBalance,
+  ]);
   const policyMismatch = useMemo(() => {
     if (!selectedPolicyProfile) return null;
     if (selectedPolicyProfile.tokenSymbol !== selectedToken) {
@@ -1616,6 +1661,22 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
                 <span className="text-muted-foreground">Decision mode</span>
                 <span className="font-medium capitalize">{selectedPolicyProfile.approvalMode}</span>
               </div>
+              {selectedPolicyPreview && (
+                <>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Preview threshold</span>
+                    <span className="font-medium">{formatThresholdPreview(selectedPolicyPreview.decision.threshold)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Recipient posture</span>
+                    <span className="font-medium">{formatPolicyBucket(selectedPolicyPreview.signals.recipientClass)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Delay</span>
+                    <span className="font-medium">{selectedPolicyPreview.decision.delayUntilSlot.toString()} slots</span>
+                  </div>
+                </>
+              )}
               {selectedPolicyProfile.notes && (
                 <p className="text-[10px] text-muted-foreground">{selectedPolicyProfile.notes}</p>
               )}
@@ -1801,13 +1862,12 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
               </div>
             </CardHeader>
             <CardContent className="space-y-3">
-              <select
+              <SelectField
                 value={selectedPolicyProfileId}
                 onChange={(event) => {
                   setSelectedPolicyProfileId(event.target.value);
                   setError("");
                 }}
-                className={selectClassName}
               >
                 <option value="">No policy profile</option>
                 {savedPolicyProfiles.map((profile) => (
@@ -1815,9 +1875,9 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
                     {profile.name}
                   </option>
                 ))}
-              </select>
+              </SelectField>
               {selectedPolicyProfile ? (
-                <div className="rounded-xl border border-border bg-background/60 px-3 py-3 text-[11px] text-muted-foreground space-y-1">
+                <div className="rounded-xl border border-border bg-background/60 px-3 py-3 text-[11px] text-muted-foreground space-y-2">
                   <p className="font-medium text-foreground">{selectedPolicyProfile.name}</p>
                   <p>
                     {selectedPolicyProfile.approvalMode === "allow"
@@ -1832,6 +1892,28 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
                   <p>
                     Template: {selectedPolicyProfile.template ?? "standardWallet"} · Risk: {selectedPolicyProfile.defaultProtocolRisk ?? "low"} · Device: {selectedPolicyProfile.defaultDeviceTrust ?? "trusted"}
                   </p>
+                  {selectedPolicyPreview && (
+                    <div className="grid grid-cols-2 gap-2 pt-1">
+                      <div className="rounded-lg border border-border/70 bg-card/80 px-2.5 py-2">
+                        <p className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Recipient</p>
+                        <p className="mt-1 text-foreground">{formatPolicyBucket(selectedPolicyPreview.signals.recipientClass)}</p>
+                      </div>
+                      <div className="rounded-lg border border-border/70 bg-card/80 px-2.5 py-2">
+                        <p className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Threshold</p>
+                        <p className="mt-1 text-foreground">{formatThresholdPreview(selectedPolicyPreview.decision.threshold)}</p>
+                      </div>
+                      <div className="rounded-lg border border-border/70 bg-card/80 px-2.5 py-2">
+                        <p className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Risk posture</p>
+                        <p className="mt-1 text-foreground">
+                          {formatPolicyBucket(selectedPolicyPreview.signals.protocolRisk)} · {formatPolicyBucket(selectedPolicyPreview.signals.deviceTrust)}
+                        </p>
+                      </div>
+                      <div className="rounded-lg border border-border/70 bg-card/80 px-2.5 py-2">
+                        <p className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Delay</p>
+                        <p className="mt-1 text-foreground">{selectedPolicyPreview.decision.delayUntilSlot.toString()} slots</p>
+                      </div>
+                    </div>
+                  )}
                 </div>
               ) : (
                 <p className="text-[11px] text-muted-foreground">

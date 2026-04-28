@@ -6,7 +6,7 @@ export const VAULKYRIE_CORE_PROGRAM_ID = new PublicKey(
 );
 
 export const VAULKYRIE_POLICY_MXE_PROGRAM_ID = new PublicKey(
-  "6XVfpzDXRDQXLHfvwkLA6So3WTriQfWQphsHzfWSSGr7"
+  "85DVk7pAZKxJGcqfN9WARt8HYPT89tjpgiQkdnca14sc"
 );
 
 // ── Instruction discriminators (single u8) ───────────────────────────

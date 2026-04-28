@@ -7,6 +7,7 @@ import {
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { SelectField } from "@/components/ui/select-field";
 import { useWalletStore } from "@/store/walletStore";
 import { PolicyMxeClient, findPolicyConfigPda, findPolicyEvaluationPda } from "@/sdk/policyClient";
 import {
@@ -56,9 +57,7 @@ import {
   buildWalletPolicyEvaluationDraft,
   buildWalletPolicyResultCommitment,
 } from "@/sdk/policyBindings";
-
-const selectClassName =
-  "w-full rounded-xl border border-border/70 bg-card px-3 py-2.5 text-sm shadow-sm outline-none transition focus:border-primary/50 focus:ring-2 focus:ring-primary/15";
+import { deriveWalletPolicySignals, evaluateWalletPolicy, type WalletPolicySignals } from "@/sdk/policyEngine";
 
 interface PolicyViewProps {
   onNavigate: (view: WalletView) => void;
@@ -147,6 +146,27 @@ function crossDeviceRelayUnavailableMessage(): string {
   return "Cross-device relay is unavailable right now. Check your internet connection, then try again. Advanced users can switch to a self-hosted relay in Settings > Cross-device Relay.";
 }
 
+function formatThresholdPreview(threshold: number): string {
+  switch (threshold) {
+    case 1:
+      return "1-of-3";
+    case 2:
+      return "2-of-3";
+    case 3:
+      return "3-of-3";
+    case 255:
+      return "PQC required";
+    default:
+      return `Threshold ${threshold}`;
+  }
+}
+
+function formatSignalLabel(value: keyof WalletPolicySignals, signals: WalletPolicySignals): string {
+  const item = signals[value];
+  if (typeof item !== "string") return String(item);
+  return item.replace(/([A-Z])/g, " $1");
+}
+
 export function PolicyView({ onNavigate }: PolicyViewProps) {
   const {
     activeAccount,
@@ -220,6 +240,50 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
     [activeAccount?.publicKey, policyProfiles],
   );
   const selectedProfile = savedProfiles.find((profile) => profile.id === selectedProfileId) ?? null;
+  const previewTokenBalance = useMemo(() => {
+    if (evalToken === "SOL") return activeAccount?.balance ?? 0;
+    return tokens.find((token) => token.symbol === evalToken)?.balance ?? 0;
+  }, [activeAccount?.balance, evalToken, tokens]);
+  const policyPreview = useMemo(() => {
+    if (!activeAccount?.publicKey) return null;
+    const signals = deriveWalletPolicySignals({
+      policyProfile: selectedProfile,
+      actionType: evalActionType,
+      recipient: evalRecipient,
+      amount: Number(evalAmount || "0"),
+      tokenSymbol: evalToken,
+      accountPublicKey: activeAccount.publicKey,
+      tokenBalance: previewTokenBalance,
+      totalBalance: activeAccount.balance ?? previewTokenBalance,
+      contacts,
+      recentTransactions: transactions,
+      recoverySessions: recoverySessions[activeAccount.publicKey] ?? [],
+      cosignerEnabled: vaultConfigs[activeAccount.publicKey]?.cosignerEnabled,
+      cosignerAttested: Boolean(dkgResults[activeAccount.publicKey]?.cosigner),
+    });
+    return {
+      signals,
+      decision: evaluateWalletPolicy(
+        signals,
+        0n,
+        BigInt(Math.max(Number(evalExpirySlots || "200"), 10)),
+      ),
+    };
+  }, [
+    activeAccount,
+    contacts,
+    dkgResults,
+    evalActionType,
+    evalAmount,
+    evalExpirySlots,
+    evalRecipient,
+    evalToken,
+    previewTokenBalance,
+    recoverySessions,
+    selectedProfile,
+    transactions,
+    vaultConfigs,
+  ]);
 
   const seedEvaluationDraft = useCallback((request: PendingPolicyRequest) => {
     setSelectedProfileId(request.profileId);
@@ -1078,49 +1142,46 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label htmlFor="policy-profile-action-type" className="text-xs text-muted-foreground mb-1 block">Action type</label>
-                <select
+                <SelectField
                   id="policy-profile-action-type"
                   name="policyProfileActionType"
                   value={profileActionType}
                   onChange={(event) => setProfileActionType(event.target.value as PolicyProfile["actionType"])}
-                  className={selectClassName}
                 >
                   <option value="send">Send</option>
                   <option value="admin">Admin</option>
-                </select>
+                </SelectField>
               </div>
               <div>
                 <label htmlFor="policy-profile-decision" className="text-xs text-muted-foreground mb-1 block">Decision</label>
-                <select
+                <SelectField
                   id="policy-profile-decision"
                   name="policyProfileDecision"
                   value={profileApprovalMode}
                   onChange={(event) => setProfileApprovalMode(event.target.value as PolicyProfile["approvalMode"])}
-                  className={selectClassName}
                 >
                   <option value="allow">Auto-allow</option>
                   <option value="review">Manual review</option>
                   <option value="block">Block</option>
-                </select>
+                </SelectField>
               </div>
             </div>
 
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label htmlFor="policy-profile-template" className="text-xs text-muted-foreground mb-1 block">Template</label>
-                <select
+                <SelectField
                   id="policy-profile-template"
                   name="policyProfileTemplate"
                   value={profileTemplate}
                   onChange={(event) => setProfileTemplate(event.target.value as NonNullable<PolicyProfile["template"]>)}
-                  className={selectClassName}
                 >
                   <option value="standardWallet">Standard wallet</option>
                   <option value="highSecurityWallet">High security</option>
                   <option value="treasuryOps">Treasury ops</option>
                   <option value="recoveryEscalation">Recovery escalation</option>
                   <option value="adminQuarantine">Admin quarantine</option>
-                </select>
+                </SelectField>
               </div>
               <div>
                 <label htmlFor="policy-profile-token" className="text-xs text-muted-foreground mb-1 block">Token</label>
@@ -1151,67 +1212,63 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label htmlFor="policy-profile-protocol-risk" className="text-xs text-muted-foreground mb-1 block">Protocol risk</label>
-                <select
+                <SelectField
                   id="policy-profile-protocol-risk"
                   name="policyProfileProtocolRisk"
                   value={profileProtocolRisk}
                   onChange={(event) => setProfileProtocolRisk(event.target.value as NonNullable<PolicyProfile["defaultProtocolRisk"]>)}
-                  className={selectClassName}
                 >
                   <option value="none">None</option>
                   <option value="low">Low</option>
                   <option value="medium">Medium</option>
                   <option value="high">High</option>
                   <option value="critical">Critical</option>
-                </select>
+                </SelectField>
               </div>
               <div>
                 <label htmlFor="policy-profile-device-trust" className="text-xs text-muted-foreground mb-1 block">Device trust</label>
-                <select
+                <SelectField
                   id="policy-profile-device-trust"
                   name="policyProfileDeviceTrust"
                   value={profileDeviceTrust}
                   onChange={(event) => setProfileDeviceTrust(event.target.value as NonNullable<PolicyProfile["defaultDeviceTrust"]>)}
-                  className={selectClassName}
                 >
                   <option value="attested">Attested</option>
                   <option value="trusted">Trusted</option>
                   <option value="degraded">Degraded</option>
                   <option value="unknown">Unknown</option>
                   <option value="compromised">Compromised</option>
-                </select>
+                </SelectField>
               </div>
             </div>
 
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label htmlFor="policy-profile-guardian-posture" className="text-xs text-muted-foreground mb-1 block">Guardian posture</label>
-                <select
+                <SelectField
                   id="policy-profile-guardian-posture"
                   name="policyProfileGuardianPosture"
                   value={profileGuardianPosture}
                   onChange={(event) => setProfileGuardianPosture(event.target.value as NonNullable<PolicyProfile["guardianPosture"]>)}
-                  className={selectClassName}
                 >
                   <option value="none">None</option>
                   <option value="optional">Optional</option>
                   <option value="available">Available</option>
                   <option value="verifiedQuorum">Verified quorum</option>
-                </select>
+                </SelectField>
               </div>
               <div>
                 <label htmlFor="policy-profile-recipient-mode" className="text-xs text-muted-foreground mb-1 block">Recipient posture</label>
-                <select
+                <SelectField
                   id="policy-profile-recipient-mode"
                   name="policyProfileRecipientMode"
                   value={profileRecipientMode}
                   onChange={(event) => setProfileRecipientMode(event.target.value as NonNullable<PolicyProfile["recipientMode"]>)}
-                  className={selectClassName}
                 >
                   <option value="open">Open</option>
                   <option value="allowlist">Allowlist-first</option>
                   <option value="sensitive">Sensitive</option>
-                </select>
+                </SelectField>
               </div>
             </div>
 
@@ -1355,7 +1412,7 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
 
             <div>
               <label htmlFor="policy-eval-profile" className="text-xs text-muted-foreground mb-1 block">Policy profile</label>
-              <select
+              <SelectField
                 id="policy-eval-profile"
                 name="policyEvalProfile"
                  value={selectedProfileId}
@@ -1368,7 +1425,6 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
                     setEvalToken(nextProfile.tokenSymbol);
                   }
                 }}
-                 className={selectClassName}
                >
                 <option value="">No saved profile</option>
                 {savedProfiles.map((profile) => (
@@ -1376,22 +1432,21 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
                     {profile.name}
                   </option>
                 ))}
-              </select>
+              </SelectField>
             </div>
 
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label htmlFor="policy-eval-action-type" className="text-xs text-muted-foreground mb-1 block">Action type</label>
-                <select
+                <SelectField
                   id="policy-eval-action-type"
                   name="policyEvalActionType"
                   value={evalActionType}
                   onChange={(event) => setEvalActionType(event.target.value as PolicyProfile["actionType"])}
-                  className={selectClassName}
                 >
                   <option value="send">Send</option>
                   <option value="admin">Admin</option>
-                </select>
+                </SelectField>
               </div>
               <div>
                 <label htmlFor="policy-eval-expiry-slots" className="text-xs text-muted-foreground mb-1 block">Expiry (slots)</label>
@@ -1456,8 +1511,41 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
                  <p>
                    Template: {selectedProfile.template ?? "standardWallet"} · Risk: {selectedProfile.defaultProtocolRisk ?? "low"} · Device: {selectedProfile.defaultDeviceTrust ?? "trusted"}
                  </p>
-               </div>
-             )}
+              </div>
+            )}
+
+            {policyPreview && (
+              <div className="rounded-xl border border-primary/20 bg-primary/5 px-3 py-3 text-[11px] text-muted-foreground space-y-3">
+                <div className="flex items-center justify-between">
+                  <p className="font-medium text-foreground">Live policy preview</p>
+                  <span className="rounded-full border border-primary/20 bg-background/80 px-2 py-0.5 font-mono text-[10px] text-foreground">
+                    {formatThresholdPreview(policyPreview.decision.threshold)}
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="rounded-lg border border-border/70 bg-background/70 px-3 py-2">
+                    <p className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Recipient</p>
+                    <p className="mt-1 text-foreground">{formatSignalLabel("recipientClass", policyPreview.signals)}</p>
+                  </div>
+                  <div className="rounded-lg border border-border/70 bg-background/70 px-3 py-2">
+                    <p className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Limit pressure</p>
+                    <p className="mt-1 text-foreground">{formatSignalLabel("limitHeadroomBucket", policyPreview.signals)}</p>
+                  </div>
+                  <div className="rounded-lg border border-border/70 bg-background/70 px-3 py-2">
+                    <p className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Risk</p>
+                    <p className="mt-1 text-foreground">
+                      {formatSignalLabel("protocolRisk", policyPreview.signals)} · {formatSignalLabel("deviceTrust", policyPreview.signals)}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border border-border/70 bg-background/70 px-3 py-2">
+                    <p className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Delay / code</p>
+                    <p className="mt-1 text-foreground">
+                      {policyPreview.decision.delayUntilSlot.toString()} slots · {policyPreview.decision.reasonCode}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
 
             <Button onClick={handleOpenEvaluation} className="w-full">
               <Plus className="h-4 w-4 mr-2" />
@@ -1805,7 +1893,7 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
                     <div className="grid grid-cols-2 gap-2">
                       <div>
                         <label htmlFor={`policy-finalize-mode-${ev.address.toBase58()}`} className="text-[10px] text-muted-foreground mb-1 block">Decision mode</label>
-                        <select
+                        <SelectField
                           id={`policy-finalize-mode-${ev.address.toBase58()}`}
                           name={`policyFinalizeMode-${ev.address.toBase58()}`}
                           value={finalizeModes[ev.address.toBase58()] ?? "allow"}
@@ -1815,12 +1903,12 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
                               [ev.address.toBase58()]: event.target.value as "allow" | "review" | "block",
                             }))
                           }
-                          className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-xs"
+                          className="py-1.5 text-xs"
                         >
                           <option value="allow">Allow</option>
                           <option value="review">Needs review</option>
                           <option value="block">Block</option>
-                        </select>
+                        </SelectField>
                       </div>
                       <div>
                         <label htmlFor={`policy-finalize-delay-${ev.address.toBase58()}`} className="text-[10px] text-muted-foreground mb-1 block">Delay slots</label>
