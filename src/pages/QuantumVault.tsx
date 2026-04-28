@@ -25,7 +25,7 @@ import {
   Atom,
   ExternalLink,
 } from "lucide-react";
-import { LAMPORTS_PER_SOL, PublicKey, Transaction, type Connection } from "@solana/web3.js";
+import { LAMPORTS_PER_SOL, PublicKey, SystemProgram, Transaction, type Connection } from "@solana/web3.js";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -140,6 +140,7 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
   >("overview");
   const [isProcessing, setIsProcessing] = useState(false);
   const [statusMessage, setStatusMessage] = useState("");
+  const [migrationAmount, setMigrationAmount] = useState("");
   const [splitAmount, setSplitAmount] = useState("");
   const [splitDestination, setSplitDestination] = useState("");
   const [lastProofHex, setLastProofHex] = useState("");
@@ -528,6 +529,59 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
     }
   };
 
+  // ── Migrate Assets ───────────────────────────────────────────────
+
+  const handleMigrateSolToVault = async () => {
+    if (!activeAccount?.publicKey || !vault.vaultAddress) return;
+
+    const amount = parseFloat(migrationAmount);
+    if (isNaN(amount) || amount <= 0) {
+      setStatusMessage("Enter a valid migration amount.");
+      return;
+    }
+
+    setIsProcessing(true);
+    setStatusMessage("Preparing SOL migration into the PQC wallet PDA...");
+
+    try {
+      const from = new PublicKey(activeAccount.publicKey);
+      const destination = new PublicKey(vault.vaultAddress);
+      const lamports = Math.floor(amount * LAMPORTS_PER_SOL);
+      if (lamports <= 0) {
+        throw new Error("Migration amount is too small.");
+      }
+
+      const signature = await withRpcFallback(network, async (connection) => {
+        const tx = new Transaction().add(
+          SystemProgram.transfer({
+            fromPubkey: from,
+            toPubkey: destination,
+            lamports,
+          }),
+        );
+
+        return signAndSendQuantumTransaction(
+          connection,
+          tx,
+          `Migrate ${amount} SOL into PQC wallet ${destination.toBase58()}`,
+          {
+            amount,
+            token: "SOL",
+            recipient: destination.toBase58(),
+          },
+        );
+      });
+
+      setMigrationAmount("");
+      setStatusMessage(`SOL migrated into the PQC wallet. Tx: ${signature}`);
+      await Promise.all([refreshQuantumVault(), refreshBalances(), refreshTransactions()]);
+    } catch (err) {
+      setStatusMessage(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
   // ── Split Vault ──────────────────────────────────────────────────
 
   const handleSplitVault = async () => {
@@ -702,7 +756,7 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
           ← Back
         </button>
         <h2 className="text-lg font-semibold flex-1 text-center mr-8">
-          Quantum Vault
+          PQC Wallet
         </h2>
       </div>
 
@@ -715,14 +769,14 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
             </div>
             <div className="flex-1">
               <p className="text-sm font-semibold">
-                {vault.status === VaultStatus.None && "No Quantum Vault"}
-                {vault.status === VaultStatus.Active && "Quantum Vault Active"}
+                {vault.status === VaultStatus.None && "No PQC Wallet"}
+                {vault.status === VaultStatus.Active && "PQC Wallet Active"}
               </p>
               <p className="text-xs text-muted-foreground">
                 {vault.status === VaultStatus.None &&
-                  "Open a one-time Winternitz vault PDA and fund it like a receive address"}
+                  "Open a Winternitz-protected PDA that behaves like a migration wallet"}
                 {vault.status === VaultStatus.Active &&
-                  "This vault can be spent exactly once with its bound Winternitz key"}
+                  "This v1 PQC wallet can receive SOL and spend once with its bound Winternitz key"}
               </p>
             </div>
             {vault.status === VaultStatus.Active && (
@@ -748,19 +802,19 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
               <CardHeader>
                 <CardTitle className="text-sm flex items-center gap-2">
                   <Info className="h-4 w-4 text-primary" />
-                  What is a Quantum Vault?
+                  What is a PQC Wallet?
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-2">
                 <p className="text-xs text-muted-foreground leading-relaxed">
-                  A quantum vault uses{" "}
+                  A PQC wallet uses{" "}
                   <span className="text-foreground font-medium">a Blueshift-style Winternitz one-time signature</span>{" "}
                   to bind a PDA that can hold SOL until you authorize a single split or close.
                 </p>
                 <p className="text-xs text-muted-foreground leading-relaxed">
-                  After opening the vault, fund its PDA like a receive address. The
-                  first successful split or close consumes the one-time key and
-                  closes the vault.
+                  This v1 implementation is a migration wallet: move SOL into the PDA, then
+                  withdraw it with PQC authorization. The production target is a WinterWallet-style
+                  rolling-root wallet that can keep operating after each spend.
                 </p>
                 <div className="grid grid-cols-3 gap-2 pt-2">
                   <div className="text-center p-2 rounded-lg bg-muted">
@@ -793,7 +847,7 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
               ) : (
                 <>
                   <Unlock className="h-4 w-4" />
-                  Initialize Quantum Vault
+                  Initialize PQC Wallet
                 </>
               )}
             </Button>
@@ -840,7 +894,7 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
                     <p className="text-[10px] font-mono text-primary">{vaultBalanceSol.toFixed(9)} SOL</p>
                   </div>
                   <p className="text-[10px] text-muted-foreground mt-1">
-                    Fund this address from any wallet, then execute exactly one split or close.
+                    Migrate SOL here from your active Vaulkyrie wallet, then execute exactly one split or close.
                   </p>
                 </div>
 
@@ -878,6 +932,43 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
                 </CardContent>
               </Card>
             )}
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-sm">Migrate SOL Into PQC Wallet</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <p className="text-xs text-muted-foreground">
+                  Move SOL from your current Vaulkyrie wallet into this Winternitz-protected PDA.
+                  The migration uses your normal threshold signer; later withdrawal uses the
+                  one-time post-quantum authorization.
+                </p>
+                <div>
+                  <label className="text-xs text-muted-foreground block mb-1">Amount (SOL)</label>
+                  <Input
+                    type="number"
+                    placeholder="0.00"
+                    value={migrationAmount}
+                    onChange={(event) => setMigrationAmount(event.target.value)}
+                    className="font-mono"
+                    step="0.001"
+                    min="0"
+                  />
+                </div>
+                <Button
+                  className="w-full gap-2"
+                  onClick={handleMigrateSolToVault}
+                  disabled={isProcessing || !vault.hasLocalKey}
+                >
+                  {isProcessing ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Shield className="h-4 w-4" />
+                  )}
+                  Migrate SOL
+                </Button>
+              </CardContent>
+            </Card>
 
             {(vault.authorityRootHex || vault.authorityNextLeafIndex !== null) && (
               <Card>
