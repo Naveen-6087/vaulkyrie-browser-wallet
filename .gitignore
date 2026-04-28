@@ -12,6 +12,8 @@ dist
 dist-ssr
 *.local
 .vaulkyrie-cosigners.json
+.vaulkyrie-pqc-sponsor.json
+.vaulkyrie-sponsored-pqc.json
 
 # Editor directories and files
 .vscode/*

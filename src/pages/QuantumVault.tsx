@@ -20,7 +20,10 @@ import {
   Info,
   Atom,
   ExternalLink,
+  Download,
+  Share2,
 } from "lucide-react";
+import { QRCodeSVG } from "qrcode.react";
 import { LAMPORTS_PER_SOL, PublicKey, SystemProgram, Transaction, type Connection } from "@solana/web3.js";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -73,6 +76,11 @@ import {
 import type { SignRequestPayload } from "@/services/relay/channelRelay";
 import { createRelaySessionMetadata } from "@/services/relay/sessionInvite";
 import { requestCosignerSignature } from "@/services/cosigner/cosignerClient";
+import {
+  fetchPqcSponsorStatus,
+  requestSponsoredPqcInit,
+  type PqcSponsorStatus,
+} from "@/services/pqcSponsorClient";
 
 type BufferedSigningMessage =
   | { type: "round1"; fromId: number; commitments: number[] }
@@ -230,6 +238,7 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
   const [mnemonicInput, setMnemonicInput] = useState("");
   const [showMnemonicImport, setShowMnemonicImport] = useState(false);
   const [generatedMnemonic, setGeneratedMnemonic] = useState("");
+  const [sponsorStatus, setSponsorStatus] = useState<PqcSponsorStatus | null>(null);
   const [lastProofHex, setLastProofHex] = useState("");
   const [signingSessionCode, setSigningSessionCode] = useState("");
   const [relaySessionInfo, setRelaySessionInfo] = useState(() => createRelaySessionMetadata("------"));
@@ -576,6 +585,19 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
     void refreshQuantumVault();
   }, [refreshQuantumVault]);
 
+  const refreshPqcSponsorStatus = useCallback(async () => {
+    try {
+      const status = await fetchPqcSponsorStatus(relayUrl, network);
+      setSponsorStatus(status);
+    } catch {
+      setSponsorStatus(null);
+    }
+  }, [network, relayUrl]);
+
+  useEffect(() => {
+    void refreshPqcSponsorStatus();
+  }, [refreshPqcSponsorStatus]);
+
   // ── Open Vault ───────────────────────────────────────────────────
 
   const ensurePqcInitPayerIsFunded = useCallback(async (
@@ -630,12 +652,10 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
 
     setIsProcessing(true);
     setGeneratedMnemonic("");
-    setStatusMessage("Checking PQC wallet setup funding...");
+    setStatusMessage("Preparing PQC wallet setup...");
 
     try {
       const payer = new PublicKey(activeAccount.publicKey);
-      await withRpcFallback(network, async (connection) => ensurePqcInitPayerIsFunded(connection, payer));
-
       const position: PqcSigningPosition = { wallet: 0, parent: 0, child: 0 };
       let keyPair: WotsKeyPair;
       let seedHex: string | undefined;
@@ -666,31 +686,54 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
 
       const walletId = keyPair.publicKeyHash;
       const [vaultPda, bump] = findPqcWalletPda(walletId);
+      const walletIdHex = bytesToHex(walletId);
+      const currentRootHex = bytesToHex(keyPair.publicKeyHash);
 
       setStatusMessage("Opening the onchain PQC wallet PDA...");
-      const signature = await withRpcFallback(network, async (connection) => {
+      await withRpcFallback(network, async (connection) => {
         const existing = await connection.getAccountInfo(vaultPda);
         if (existing) {
           throw new Error("A PQC wallet already exists for this Winternitz wallet id.");
         }
-
-        const ix = createInitPqcWalletInstruction(payer, vaultPda, {
-          walletId,
-          currentRoot: keyPair.publicKeyHash,
-          bump,
-        });
-        const tx = new Transaction().add(ix);
-        return signAndSendQuantumTransaction(
-          connection,
-          tx,
-          `Initialize PQC wallet ${vaultPda.toBase58()}`,
-          {
-            amount: 0,
-            token: "PQC",
-            recipient: vaultPda.toBase58(),
-          },
-        );
       });
+
+      let signature: string;
+      let setupMode = "sponsored";
+      try {
+        setStatusMessage("Requesting sponsored PQC wallet initialization...");
+        const sponsored = await requestSponsoredPqcInit({
+          relayUrl,
+          network,
+          walletIdHex,
+          currentRootHex,
+        });
+        signature = sponsored.signature;
+        await refreshPqcSponsorStatus();
+      } catch (sponsorError) {
+        setupMode = "self-funded";
+        const sponsorMessage = sponsorError instanceof Error ? sponsorError.message : String(sponsorError);
+        setStatusMessage(`Sponsor unavailable: ${sponsorMessage}. Checking self-funded setup...`);
+        signature = await withRpcFallback(network, async (connection) => {
+          await ensurePqcInitPayerIsFunded(connection, payer);
+
+          const ix = createInitPqcWalletInstruction(payer, vaultPda, {
+            walletId,
+            currentRoot: keyPair.publicKeyHash,
+            bump,
+          });
+          const tx = new Transaction().add(ix);
+          return signAndSendQuantumTransaction(
+            connection,
+            tx,
+            `Initialize PQC wallet ${vaultPda.toBase58()}`,
+            {
+              amount: 0,
+              token: "PQC",
+              recipient: vaultPda.toBase58(),
+            },
+          );
+        });
+      }
 
       storeQuantumVaultKey(
         walletAddress,
@@ -702,7 +745,7 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
       setMnemonicInput("");
       setLastProofHex("");
       setStatusMessage(
-        `PQC wallet opened. Fund ${vaultPda.toBase58()} before sending from it. Tx: ${signature}`,
+        `PQC wallet opened with ${setupMode} setup. Fund ${vaultPda.toBase58()} before sending from it. Tx: ${signature}`,
       );
       setActivePanel("overview");
       await Promise.all([refreshQuantumVault(), refreshBalances(), refreshTransactions()]);
@@ -881,6 +924,51 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
     await copy(vault.vaultAddress, "vault-address");
   };
 
+  const handleSharePqcAddress = async () => {
+    if (!vault.vaultAddress) return;
+    const uri = `solana:${vault.vaultAddress}`;
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: "Vaulkyrie PQC Wallet Address",
+          text: `Send SOL or SPL tokens to: ${vault.vaultAddress}`,
+          url: uri,
+        });
+        return;
+      } catch {
+        // User cancelled share.
+      }
+    }
+    await copy(vault.vaultAddress, "vault-address");
+  };
+
+  const handleDownloadPqcAddressCard = () => {
+    if (!vault.vaultAddress) return;
+
+    const svg = document.querySelector("[data-pqc-receive-qr] svg");
+    const qrMarkup = svg?.outerHTML ?? "";
+    const card = `<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Vaulkyrie PQC Wallet</title></head>
+<body style="font-family:Inter,Arial,sans-serif;margin:0;padding:32px;background:#0a0f14;color:#f8fafc">
+<div style="max-width:420px;border:1px solid #25313a;border-radius:18px;padding:24px;background:#111820">
+<h1 style="font-size:20px;margin:0 0 6px">Vaulkyrie PQC Wallet</h1>
+<p style="font-size:12px;color:#9ca3af;margin:0 0 20px">Network: ${network}</p>
+<div style="display:inline-block;background:white;padding:14px;border-radius:16px">${qrMarkup}</div>
+<p style="font-size:11px;color:#9ca3af;margin:20px 0 8px">Address</p>
+<p style="font:12px monospace;word-break:break-all;margin:0">${vault.vaultAddress}</p>
+</div>
+</body>
+</html>`;
+    const blob = new Blob([card], { type: "text/html" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "vaulkyrie-pqc-wallet.html";
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
+
   const vaultBalanceSol = vault.balanceLamports / LAMPORTS_PER_SOL;
   const explorerClusterParam = network === "mainnet" ? "" : `?cluster=${network}`;
   const quantumVaultExplorerUrl = vault.vaultAddress
@@ -1036,8 +1124,39 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
                 )}
 
                 <p className="text-[10px] text-muted-foreground">
-                  Setup rent is paid by the active Vaulkyrie vault address, so fast vaults need a small SOL balance before this step.
+                  Vaulkyrie sponsors the first setup attempts when the relay sponsor is funded. If quota or balance runs out, the active vault pays setup rent.
                 </p>
+
+                {sponsorStatus && (
+                  <div className="rounded-lg border border-border bg-muted/30 p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-xs font-medium">Sponsored setup</p>
+                        <p className="text-[10px] text-muted-foreground">
+                          {sponsorStatus.freeRemaining} of {sponsorStatus.freeLimit} free inits remaining
+                        </p>
+                      </div>
+                      <p className="text-xs font-mono text-primary">
+                        {(sponsorStatus.balanceLamports / LAMPORTS_PER_SOL).toFixed(4)} SOL
+                      </p>
+                    </div>
+                    <div className="mt-2 flex items-center gap-2">
+                      <code className="flex-1 truncate rounded bg-background/70 px-2 py-1 text-[10px] font-mono">
+                        {sponsorStatus.sponsorAddress}
+                      </code>
+                      <button
+                        onClick={() => copy(sponsorStatus.sponsorAddress, "pqc-sponsor")}
+                        className="rounded p-1 hover:bg-accent"
+                      >
+                        {isCopied("pqc-sponsor") ? (
+                          <Check className="h-3 w-3 text-success" />
+                        ) : (
+                          <Copy className="h-3 w-3 text-muted-foreground" />
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                )}
               </CardContent>
             </Card>
 
@@ -1158,6 +1277,46 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
                     View vault on Explorer <ExternalLink className="h-3 w-3" />
                   </a>
                 )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-sm">Receive To PQC Wallet</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="flex flex-col items-center gap-3">
+                  <div data-pqc-receive-qr className="rounded-2xl bg-white p-3">
+                    <QRCodeSVG
+                      value={`solana:${vault.vaultAddress}`}
+                      size={164}
+                      bgColor="#ffffff"
+                      fgColor="#0a0a0a"
+                      level="M"
+                    />
+                  </div>
+                  <code className="w-full rounded bg-muted px-2 py-2 text-center text-[10px] font-mono break-all">
+                    {vault.vaultAddress}
+                  </code>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  <Button variant="secondary" className="gap-2" onClick={handleCopyVaultAddress}>
+                    {isCopied("vault-address") ? (
+                      <Check className="h-4 w-4 text-success" />
+                    ) : (
+                      <Copy className="h-4 w-4" />
+                    )}
+                    Copy
+                  </Button>
+                  <Button variant="secondary" className="gap-2" onClick={handleSharePqcAddress}>
+                    <Share2 className="h-4 w-4" />
+                    Share
+                  </Button>
+                  <Button variant="secondary" className="gap-2" onClick={handleDownloadPqcAddressCard}>
+                    <Download className="h-4 w-4" />
+                    Export
+                  </Button>
+                </div>
               </CardContent>
             </Card>
 

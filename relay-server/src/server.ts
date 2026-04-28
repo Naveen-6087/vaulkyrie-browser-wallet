@@ -23,6 +23,7 @@ import {
   registerCosignerShare,
   requestCosignerSignature,
 } from "./cosigner.js";
+import { getPqcSponsorStatus, sponsorPqcWalletInit } from "./pqcSponsor.js";
 
 // ── Configuration ────────────────────────────────────────────────────
 
@@ -174,10 +175,26 @@ const httpServer = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === "GET" && url.pathname === "/pqc/sponsor/status") {
+      writeJson(res, 200, {
+        status: "ok",
+        sponsor: await getPqcSponsorStatus(url.searchParams.get("network") ?? undefined),
+      });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/pqc/sponsor/init") {
+      const body = await readJsonBody(req);
+      const result = await sponsorPqcWalletInit(body as Parameters<typeof sponsorPqcWalletInit>[0]);
+      writeJson(res, 202, { status: "accepted", ...result });
+      return;
+    }
+
     writeJson(res, 200, {
       status: "ok",
       sessions: sessions.size,
       cosigners: getCosignerCount(),
+      pqcSponsor: await getPqcSponsorStatus().catch(() => null),
       uptime: process.uptime(),
     });
   } catch (error) {
