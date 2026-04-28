@@ -152,8 +152,10 @@ export function requestCosignerSignature(input: RequestCosignerInput): { active:
 }
 
 function parseSessionInvite(invite: string): { code: string; authToken: string | null } {
-  if (/^[A-Z0-9]{6}$/.test(invite)) {
-    return { code: invite, authToken: null };
+  const normalizedInvite = invite.trim().toUpperCase();
+  const compactMatch = normalizedInvite.match(/^([A-Z0-9]{6})(?:[^A-Z0-9]+([A-Z0-9]{8,16}))?$/);
+  if (compactMatch) {
+    return { code: compactMatch[1], authToken: compactMatch[2] ?? null };
   }
 
   if (invite.startsWith("vaulkyrie://join?")) {
@@ -169,19 +171,31 @@ function parseSessionInvite(invite: string): { code: string; authToken: string |
     const payload = invite.slice("VAULKYRIE_SESSION_V1.".length);
     const parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as {
       code?: string;
+      session?: string;
       authToken?: string | null;
     };
-    const code = assertString(parsed.code, "invite code");
-    return { code, authToken: parsed.authToken ?? null };
+    const code = assertString(parsed.code ?? parsed.session, "invite code").toUpperCase();
+    return {
+      code,
+      authToken: typeof parsed.authToken === "string" ? parsed.authToken.toUpperCase() : null,
+    };
   }
 
   try {
-    const parsed = JSON.parse(invite) as { code?: string; invite?: string; authToken?: string | null };
+    const parsed = JSON.parse(invite) as {
+      code?: string;
+      session?: string;
+      invite?: string;
+      authToken?: string | null;
+    };
     if (parsed.invite) {
       return parseSessionInvite(parsed.invite);
     }
-    const code = assertString(parsed.code, "invite code");
-    return { code, authToken: parsed.authToken ?? null };
+    const code = assertString(parsed.code ?? parsed.session, "invite code").toUpperCase();
+    return {
+      code,
+      authToken: typeof parsed.authToken === "string" ? parsed.authToken.toUpperCase() : null,
+    };
   } catch {
     throw new Error("Invalid session invite.");
   }
