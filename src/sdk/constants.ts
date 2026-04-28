@@ -38,6 +38,8 @@ export const Instruction = {
   MigrateAuthority: 24,
   AdvancePolicyVersion: 25,
   AdvanceWinterAuthority: 26,
+  InitPqcWallet: 27,
+  AdvancePqcWallet: 28,
 } as const;
 
 // ── Account discriminators (8-byte ASCII) ────────────────────────────
@@ -46,6 +48,7 @@ export const DISCRIMINATOR = {
   PolicyReceipt: new Uint8Array([80, 79, 76, 82, 67, 80, 84, 49]), // "POLRCPT1"
   ActionSession: new Uint8Array([83, 69, 83, 83, 73, 79, 78, 49]), // "SESSION1"
   QuantumAuthority: new Uint8Array([81, 83, 84, 65, 84, 69, 48, 49]), // "QSTATE01"
+  PqcWallet: new Uint8Array([80, 81, 67, 87, 65, 76, 84, 49]), // "PQCWALT1"
   AuthorityProof: new Uint8Array([65, 85, 84, 72, 80, 82, 70, 49]), // "AUTHPRF1"
   SpendOrchestration: new Uint8Array([83, 80, 78, 68, 79, 82, 67, 49]), // "SPNDORC1"
   Recovery: new Uint8Array([82, 69, 67, 79, 86, 48, 48, 49]), // "RECOV001"
@@ -59,6 +62,7 @@ export const ACCOUNT_SIZE = {
   PolicyReceiptState: 96,
   ActionSessionState: 96,
   QuantumAuthorityState: 128,
+  PqcWalletState: 88,
   AuthorityProofState: 1364, // 80 header + 1284 proof
   SpendOrchestrationState: 184,
   RecoveryState: 152,
@@ -131,6 +135,7 @@ export const SEED = {
   QuantumAuthority: "quantum_authority",
   AuthorityProof: "authority_proof",
   QuantumVault: "quantum_vault",
+  PqcWallet: "pqc_wallet",
   SpendOrchestration: "spend_orch",
   PolicyConfig: "policy_config",
   PolicyEvaluation: "policy_eval",

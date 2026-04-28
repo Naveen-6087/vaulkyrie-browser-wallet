@@ -1,13 +1,10 @@
 /**
  * Vaulkyrie quantum vault page.
  *
- * Uses the Blueshift-style Winternitz vault flow onchain:
- *   - generate a one-time Winternitz key locally
- *   - open the bound quantum vault PDA onchain
+ * Uses a WinterWallet-style rolling Winternitz root:
+ *   - initialize a program-owned wallet PDA
  *   - fund that PDA like a receive address
- *   - spend it exactly once via split or close
- *
- * This is separate from the root-rolling Winter/XMSS authority account.
+ *   - each spend signs with the current WOTS key and rolls to the next root
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -35,22 +32,24 @@ import {
   generateWotsKeyPair,
   wotsSignMessage,
   wotsVerifyMessage,
-  quantumSplitMessage,
   quantumCloseMessage,
+  pqcWalletAdvanceMessage,
   bytesToHex,
+  hexToBytes as hexToQuantumBytes,
   deserializeWotsKeyPair,
   serializeWotsKeyPair,
   serializeWotsSignature,
 } from "@/services/quantum/wots";
+import type { WotsKeyPair } from "@/services/quantum/wots";
 import type { WalletView } from "@/types";
 import { useWalletStore } from "@/store/walletStore";
 import { withRpcFallback } from "@/services/solanaRpc";
 import {
-  createInitQuantumVaultInstruction,
-  createSplitQuantumVaultInstruction,
   createCloseQuantumVaultInstruction,
+  createInitPqcWalletInstruction,
+  createAdvancePqcWalletInstruction,
 } from "@/sdk/instructions";
-import { findQuantumVaultPda } from "@/sdk/pda";
+import { findPqcWalletPda, findQuantumVaultPda } from "@/sdk/pda";
 import { signAndSendTransaction } from "@/services/frost/signTransaction";
 import { VaulkyrieClient } from "@/sdk/client";
 import { SigningOrchestrator } from "@/services/frost/signingOrchestrator";
@@ -100,12 +99,49 @@ interface QuantumVaultState {
   status: VaultStatusType;
   balanceLamports: number;
   vaultAddress: string;
+  walletIdHex: string;
   publicKeyHashHex: string;
+  currentRootHex: string;
+  sequence: bigint | null;
   hasLocalKey: boolean;
   authorityRootHex: string;
   authorityNextLeafIndex: number | null;
   authorityNextSequence: bigint | null;
   hasWinterAuthorityState: boolean;
+}
+
+interface StoredPqcWalletKey {
+  walletId: Uint8Array;
+  currentKeyPair: WotsKeyPair;
+}
+
+function serializeStoredPqcWalletKey(walletId: Uint8Array, currentKeyPair: WotsKeyPair): string {
+  return JSON.stringify({
+    version: 2,
+    walletIdHex: bytesToHex(walletId),
+    currentKeyPair: JSON.parse(serializeWotsKeyPair(currentKeyPair)),
+  });
+}
+
+function deserializeStoredPqcWalletKey(serialized: string): StoredPqcWalletKey {
+  const parsed = JSON.parse(serialized) as {
+    version?: number;
+    walletIdHex?: string;
+    currentKeyPair?: unknown;
+  };
+
+  if (parsed.version === 2 && parsed.walletIdHex && parsed.currentKeyPair) {
+    return {
+      walletId: hexToQuantumBytes(parsed.walletIdHex),
+      currentKeyPair: deserializeWotsKeyPair(JSON.stringify(parsed.currentKeyPair)),
+    };
+  }
+
+  const legacyKeyPair = deserializeWotsKeyPair(serialized);
+  return {
+    walletId: legacyKeyPair.publicKeyHash,
+    currentKeyPair: legacyKeyPair,
+  };
 }
 
 interface QuantumVaultProps {
@@ -129,7 +165,10 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
     status: VaultStatus.None,
     balanceLamports: 0,
     vaultAddress: "",
+    walletIdHex: "",
     publicKeyHashHex: "",
+    currentRootHex: "",
+    sequence: null,
     hasLocalKey: false,
     authorityRootHex: "",
     authorityNextLeafIndex: null,
@@ -414,23 +453,32 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
 
     let hasLocalKey = false;
     let vaultAddress = "";
+    let walletIdHex = "";
     let publicKeyHashHex = "";
+    let currentRootHex = "";
+    let sequence: bigint | null = null;
     let balanceLamports = 0;
     let status: VaultStatusType = VaultStatus.None;
 
     const serializedKey = getQuantumVaultKey(walletAddress);
     if (serializedKey) {
       try {
-        const keyPair = deserializeWotsKeyPair(serializedKey);
+        const storedKey = deserializeStoredPqcWalletKey(serializedKey);
+        const keyPair = storedKey.currentKeyPair;
         hasLocalKey = true;
+        walletIdHex = bytesToHex(storedKey.walletId);
         publicKeyHashHex = bytesToHex(keyPair.publicKeyHash);
-        const [vaultPda] = findQuantumVaultPda(keyPair.publicKeyHash);
+        const [vaultPda] = findPqcWalletPda(storedKey.walletId);
         vaultAddress = vaultPda.toBase58();
 
         await withRpcFallback(network, async (connection) => {
-          const accountInfo = await connection.getAccountInfo(vaultPda);
-          if (accountInfo) {
-            balanceLamports = accountInfo.lamports;
+          const client = new VaulkyrieClient(connection);
+          const pqcWallet = await client.getPqcWallet(storedKey.walletId);
+          if (pqcWallet) {
+            currentRootHex = bytesToHex(pqcWallet.account.currentRoot);
+            sequence = pqcWallet.account.sequence;
+            const accountInfo = await connection.getAccountInfo(vaultPda);
+            balanceLamports = accountInfo?.lamports ?? 0;
             status = VaultStatus.Active;
           }
         });
@@ -466,7 +514,10 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
       status,
       balanceLamports,
       vaultAddress,
+      walletIdHex,
       publicKeyHashHex,
+      currentRootHex,
+      sequence,
       hasLocalKey,
       authorityRootHex,
       authorityNextLeafIndex,
@@ -485,41 +536,43 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
     if (!activeAccount?.publicKey) return;
 
     setIsProcessing(true);
-    setStatusMessage("Generating a Winternitz one-time key...");
+    setStatusMessage("Generating the first Winternitz wallet root...");
 
     try {
       const keyPair = await generateWotsKeyPair();
       const payer = new PublicKey(activeAccount.publicKey);
-      const [vaultPda, bump] = findQuantumVaultPda(keyPair.publicKeyHash);
+      const walletId = keyPair.publicKeyHash;
+      const [vaultPda, bump] = findPqcWalletPda(walletId);
 
-      setStatusMessage("Opening the onchain quantum vault PDA...");
+      setStatusMessage("Opening the onchain PQC wallet PDA...");
       const signature = await withRpcFallback(network, async (connection) => {
         const existing = await connection.getAccountInfo(vaultPda);
         if (existing) {
-          throw new Error("A quantum vault already exists for this stored Winternitz key.");
+          throw new Error("A PQC wallet already exists for this Winternitz wallet id.");
         }
 
-        const ix = createInitQuantumVaultInstruction(payer, vaultPda, {
-          hash: keyPair.publicKeyHash,
+        const ix = createInitPqcWalletInstruction(payer, vaultPda, {
+          walletId,
+          currentRoot: keyPair.publicKeyHash,
           bump,
         });
         const tx = new Transaction().add(ix);
         return signAndSendQuantumTransaction(
           connection,
           tx,
-          `Initialize quantum vault ${vaultPda.toBase58()}`,
+          `Initialize PQC wallet ${vaultPda.toBase58()}`,
           {
             amount: 0,
-            token: "QUANTUM",
+            token: "PQC",
             recipient: vaultPda.toBase58(),
           },
         );
       });
 
-      storeQuantumVaultKey(walletAddress, serializeWotsKeyPair(keyPair));
+      storeQuantumVaultKey(walletAddress, serializeStoredPqcWalletKey(walletId, keyPair));
       setLastProofHex("");
       setStatusMessage(
-        `Quantum vault opened. Fund ${vaultPda.toBase58()} before using split or close. Tx: ${signature}`,
+        `PQC wallet opened. Fund ${vaultPda.toBase58()} before sending from it. Tx: ${signature}`,
       );
       setActivePanel("overview");
       await Promise.all([refreshQuantumVault(), refreshBalances(), refreshTransactions()]);
@@ -583,7 +636,7 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
     }
   };
 
-  // ── Split Vault ──────────────────────────────────────────────────
+  // ── Send From PQC Wallet ────────────────────────────────────────
 
   const handleSplitVault = async () => {
     if (!activeAccount?.publicKey || !vault.vaultAddress) return;
@@ -595,21 +648,42 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
     }
 
     setIsProcessing(true);
-    setStatusMessage("Building Winternitz split authorization...");
+    setStatusMessage("Building rolling Winternitz send authorization...");
 
     try {
       const serializedKey = getQuantumVaultKey(walletAddress);
       if (!serializedKey) {
-        throw new Error("No local Winternitz key found for this quantum vault.");
+        throw new Error("No local Winternitz key found for this PQC wallet.");
       }
 
-      const keyPair = deserializeWotsKeyPair(serializedKey);
+      const storedKey = deserializeStoredPqcWalletKey(serializedKey);
+      const keyPair = storedKey.currentKeyPair;
       const amountLamports = BigInt(Math.floor(amount * 1e9));
       const destination = new PublicKey(splitDestination.trim());
-      const refund = new PublicKey(activeAccount.publicKey);
-      const message = quantumSplitMessage(amountLamports, destination.toBytes(), refund.toBytes());
+      const [pqcWalletPda] = findPqcWalletPda(storedKey.walletId);
 
-      setStatusMessage("Signing split message with the one-time key...");
+      const pqcWallet = await withRpcFallback(network, async (connection) => {
+        const client = new VaulkyrieClient(connection);
+        return client.getPqcWallet(storedKey.walletId);
+      });
+      if (!pqcWallet) {
+        throw new Error("PQC wallet state was not found onchain.");
+      }
+      if (bytesToHex(pqcWallet.account.currentRoot) !== bytesToHex(keyPair.publicKeyHash)) {
+        throw new Error("Stored Winternitz key does not match the current onchain wallet root.");
+      }
+
+      const nextKeyPair = await generateWotsKeyPair();
+      const message = await pqcWalletAdvanceMessage(
+        storedKey.walletId,
+        pqcWallet.account.currentRoot,
+        nextKeyPair.publicKeyHash,
+        destination.toBytes(),
+        amountLamports,
+        pqcWallet.account.sequence,
+      );
+
+      setStatusMessage("Signing send message with the current Winternitz key...");
       const signature = await wotsSignMessage(message, keyPair.secretKey);
 
       setStatusMessage("Verifying local Winternitz signature...");
@@ -624,14 +698,13 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
       setLastProofHex(bytesToHex(signatureBytes).substring(0, 64) + "...");
 
       await withRpcFallback(network, async (connection) => {
-        const ix = createSplitQuantumVaultInstruction(
-          new PublicKey(vault.vaultAddress),
+        const ix = createAdvancePqcWalletInstruction(
+          pqcWalletPda,
           destination,
-          refund,
           {
             signature: signatureBytes,
+            nextRoot: nextKeyPair.publicKeyHash,
             amount: amountLamports,
-            bump: findQuantumVaultPda(keyPair.publicKeyHash)[1],
           },
         );
 
@@ -639,7 +712,7 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
         return signAndSendQuantumTransaction(
           connection,
           tx,
-          `Split ${amount} SOL from quantum vault to ${destination.toBase58()}`,
+          `Send ${amount} SOL from PQC wallet to ${destination.toBase58()}`,
           {
             amount,
             token: "SOL",
@@ -648,8 +721,8 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
         );
       });
 
-      clearQuantumVaultKey(walletAddress);
-      setStatusMessage("Quantum vault split completed and the one-time vault was closed.");
+      storeQuantumVaultKey(walletAddress, serializeStoredPqcWalletKey(storedKey.walletId, nextKeyPair));
+      setStatusMessage("PQC wallet send completed. The Winternitz root rolled forward.");
       setSplitAmount("");
       setSplitDestination("");
       setActivePanel("overview");
@@ -746,7 +819,7 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
     <div className="flex flex-col gap-4 p-4 flex-1 overflow-y-auto">
       <ScreenHeader
         title="PQC Wallet"
-        description="Manage the single-use Winternitz-protected vault and its post-quantum admin authority."
+        description="Manage a WinterWallet-style rolling Winternitz wallet and its post-quantum admin authority."
         onBack={() => onNavigate("dashboard")}
         backLabel="Back to dashboard"
         className="rounded-2xl border border-border/70 bg-card/55"
@@ -766,9 +839,9 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
               </p>
               <p className="text-xs text-muted-foreground">
                 {vault.status === VaultStatus.None &&
-                  "Open a Winternitz-protected PDA that behaves like a migration wallet"}
+                  "Open a Winternitz-protected PDA wallet with rolling roots"}
                 {vault.status === VaultStatus.Active &&
-                  "This v1 PQC wallet can receive SOL and spend once with its bound Winternitz key"}
+                  "This PQC wallet can receive SOL and roll to a fresh Winternitz root after each send"}
               </p>
             </div>
             {vault.status === VaultStatus.Active && (
@@ -801,17 +874,16 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
                 <p className="text-xs text-muted-foreground leading-relaxed">
                   A PQC wallet uses{" "}
                   <span className="text-foreground font-medium">a Blueshift-style Winternitz one-time signature</span>{" "}
-                  to bind a PDA that can hold SOL until you authorize a single split or close.
+                  to authorize a program-owned wallet PDA.
                 </p>
                 <p className="text-xs text-muted-foreground leading-relaxed">
-                  This v1 implementation is a migration wallet: move SOL into the PDA, then
-                  withdraw it with PQC authorization. The production target is a WinterWallet-style
-                  rolling-root wallet that can keep operating after each spend.
+                  Each send signs the transfer and the next root together, then the wallet
+                  advances to a fresh key so the spent Winternitz key is never reused.
                 </p>
                 <div className="grid grid-cols-3 gap-2 pt-2">
                   <div className="text-center p-2 rounded-lg bg-muted">
-                    <p className="text-lg font-bold text-primary">1</p>
-                    <p className="text-[10px] text-muted-foreground">One-time spend</p>
+                    <p className="text-lg font-bold text-primary">Roll</p>
+                    <p className="text-[10px] text-muted-foreground">Rolling sends</p>
                   </div>
                   <div className="text-center p-2 rounded-lg bg-muted">
                     <p className="text-lg font-bold text-primary">16</p>
@@ -819,7 +891,7 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
                   </div>
                   <div className="text-center p-2 rounded-lg bg-muted">
                     <p className="text-lg font-bold text-primary">PDA</p>
-                    <p className="text-[10px] text-muted-foreground">Program-owned vault</p>
+                    <p className="text-[10px] text-muted-foreground">Program wallet</p>
                   </div>
                 </div>
               </CardContent>
@@ -834,7 +906,7 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
               {isProcessing ? (
                 <>
                   <Loader2 className="h-4 w-4 animate-spin" />
-                  Opening vault...
+                  Opening wallet...
                 </>
               ) : (
                 <>
@@ -858,11 +930,11 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
             {/* Authority info */}
             <Card>
               <CardHeader>
-                <CardTitle className="text-sm">Vault Info</CardTitle>
+                <CardTitle className="text-sm">Wallet Info</CardTitle>
               </CardHeader>
               <CardContent className="space-y-3">
                 <div>
-                  <p className="text-[10px] text-muted-foreground mb-1">Quantum Vault Address</p>
+                  <p className="text-[10px] text-muted-foreground mb-1">PQC Wallet Address</p>
                   <div className="flex items-center gap-2">
                     <code className="flex-1 text-[10px] font-mono bg-muted rounded px-2 py-1.5 truncate">
                       {vault.vaultAddress}
@@ -886,7 +958,7 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
                     <p className="text-[10px] font-mono text-primary">{vaultBalanceSol.toFixed(9)} SOL</p>
                   </div>
                   <p className="text-[10px] text-muted-foreground mt-1">
-                    Migrate SOL here from your active Vaulkyrie wallet, then execute exactly one split or close.
+                    Migrate SOL here from your active Vaulkyrie wallet, then send from this PDA with rolling Winternitz authorization.
                   </p>
                 </div>
 
@@ -896,8 +968,8 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
                     <p className="text-[10px] text-muted-foreground">Local Winternitz key</p>
                   </div>
                   <div className="p-2 rounded-lg bg-muted text-center">
-                    <p className="text-sm font-bold">Single-use</p>
-                    <p className="text-[10px] text-muted-foreground">Vault lifecycle</p>
+                    <p className="text-sm font-bold">{vault.sequence?.toString() ?? "0"}</p>
+                    <p className="text-[10px] text-muted-foreground">Wallet sequence</p>
                   </div>
                 </div>
 
@@ -925,6 +997,17 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
               </Card>
             )}
 
+            {vault.walletIdHex && (
+              <Card>
+                <CardContent className="pt-4 pb-4 space-y-2">
+                  <p className="text-[10px] text-muted-foreground">Stable Wallet ID</p>
+                  <code className="text-[10px] font-mono text-muted-foreground break-all">
+                    {vault.walletIdHex}
+                  </code>
+                </CardContent>
+              </Card>
+            )}
+
             <Card>
               <CardHeader>
                 <CardTitle className="text-sm">Migrate SOL Into PQC Wallet</CardTitle>
@@ -933,7 +1016,7 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
                 <p className="text-xs text-muted-foreground">
                   Move SOL from your current Vaulkyrie wallet into this Winternitz-protected PDA.
                   The migration uses your normal threshold signer; later withdrawal uses the
-                  one-time post-quantum authorization.
+                  rolling post-quantum authorization.
                 </p>
                 <div>
                   <label className="text-xs text-muted-foreground block mb-1">Amount (SOL)</label>
@@ -1036,23 +1119,13 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
                 disabled={!vault.hasLocalKey}
               >
                 <ArrowRight className="h-4 w-4" />
-                Split Vault Once
-              </Button>
-
-              <Button
-                variant="secondary"
-                className="w-full gap-2 text-destructive hover:text-destructive"
-                onClick={() => setActivePanel("close")}
-                disabled={!vault.hasLocalKey}
-              >
-                <Lock className="h-4 w-4" />
-                Close Vault
+                Send From PQC Wallet
               </Button>
             </div>
           </motion.div>
         )}
 
-        {/* ── Split Panel ── */}
+        {/* ── Send Panel ── */}
         {activePanel === "split" && (
           <motion.div
             key="split"
@@ -1063,12 +1136,12 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
           >
             <Card>
               <CardHeader>
-                <CardTitle className="text-sm">Split Vault</CardTitle>
+                <CardTitle className="text-sm">Send From PQC Wallet</CardTitle>
               </CardHeader>
               <CardContent className="space-y-3">
                 <p className="text-xs text-muted-foreground">
-                  Partially withdraw from the onchain quantum vault. This consumes
-                  the one-time Winternitz authorization and closes the vault PDA.
+                  Send SOL from the onchain PQC wallet. The current Winternitz
+                  key authorizes this transfer and rolls the wallet to a fresh root.
                 </p>
 
                 <div>
@@ -1098,7 +1171,7 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
 
                 <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
                   <AlertTriangle className="h-3 w-3" />
-                  One-time authorization — the vault PDA is destroyed after the split
+                  One-time key use — the wallet root advances after this send
                 </div>
               </CardContent>
             </Card>
@@ -1121,7 +1194,7 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
                 ) : (
                   <Shield className="h-4 w-4" />
                 )}
-                Sign & Split
+                Sign & Send
               </Button>
             </div>
           </motion.div>

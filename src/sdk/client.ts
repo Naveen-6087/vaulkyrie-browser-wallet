@@ -5,6 +5,7 @@ import {
   decodePolicyReceiptState,
   decodeActionSessionState,
   decodeQuantumAuthority,
+  decodePqcWallet,
   decodeSpendOrchestration,
   decodeRecoveryState,
   decodeAuthorityProof,
@@ -14,6 +15,7 @@ import type {
   PolicyReceiptStateAccount,
   ActionSessionStateAccount,
   QuantumAuthorityAccount,
+  PqcWalletAccount,
   SpendOrchestrationAccount,
   RecoveryStateAccount,
   AuthorityProofAccount,
@@ -23,6 +25,7 @@ import {
   findPolicyReceiptPda,
   findActionSessionPda,
   findQuantumAuthorityPda,
+  findPqcWalletPda,
   findSpendOrchestrationPda,
 } from "./pda";
 
@@ -92,6 +95,18 @@ export class VaulkyrieClient {
     const data = await this.fetchAccount(pda);
     if (!data) return null;
     return { address: pda, account: decodeQuantumAuthority(data) };
+  }
+
+  async getPqcWallet(
+    walletId: Uint8Array
+  ): Promise<{
+    address: PublicKey;
+    account: PqcWalletAccount;
+  } | null> {
+    const [pda] = findPqcWalletPda(walletId, this.programId);
+    const data = await this.fetchAccount(pda);
+    if (!data) return null;
+    return { address: pda, account: decodePqcWallet(data) };
   }
 
   async getSpendOrchestration(

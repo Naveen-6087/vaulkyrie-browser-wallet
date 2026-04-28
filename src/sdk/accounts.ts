@@ -6,6 +6,7 @@ import type {
   PolicyReceiptStateAccount,
   ActionSessionStateAccount,
   QuantumAuthorityAccount,
+  PqcWalletAccount,
   AuthorityProofAccount,
   SpendOrchestrationAccount,
   RecoveryStateAccount,
@@ -136,6 +137,23 @@ export function decodeQuantumAuthority(
     nextSequence: readU64LE(data, 104),
     nextLeafIndex: readU32LE(data, 112),
     bump: readU8(data, 116),
+  };
+}
+
+export function decodePqcWallet(data: Uint8Array): PqcWalletAccount {
+  if (data.length < ACCOUNT_SIZE.PqcWalletState) {
+    throw new Error(
+      `PqcWallet: expected ${ACCOUNT_SIZE.PqcWalletState} bytes, got ${data.length}`
+    );
+  }
+  if (!matchDiscriminator(data, DISCRIMINATOR.PqcWallet)) {
+    throw new Error("PqcWallet: invalid discriminator");
+  }
+  return {
+    walletId: readBytes(data, 8, 32),
+    currentRoot: readBytes(data, 40, 32),
+    sequence: readU64LE(data, 72),
+    bump: readU8(data, 80),
   };
 }
 

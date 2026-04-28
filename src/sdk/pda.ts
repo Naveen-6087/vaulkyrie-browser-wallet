@@ -101,6 +101,20 @@ export function findQuantumVaultPda(
 }
 
 /**
+ * Derive the root-rolling PQC wallet PDA.
+ * Seeds: ["pqc_wallet", wallet_id]
+ */
+export function findPqcWalletPda(
+  walletId: Uint8Array,
+  programId: PublicKey = VAULKYRIE_CORE_PROGRAM_ID
+): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from(SEED.PqcWallet), Buffer.from(walletId)],
+    programId
+  );
+}
+
+/**
  * Derive the spend orchestration PDA.
  * Seeds: ["spend_orch", vault_id, action_hash]
  */

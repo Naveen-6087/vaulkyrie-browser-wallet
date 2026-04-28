@@ -490,6 +490,32 @@ export function quantumCloseMessage(refundPubkey: Uint8Array): Uint8Array {
 }
 
 /**
+ * Construct the root-rolling PQC wallet advance message.
+ * Matches vaulkyrie-protocol::pqc_wallet_advance_message.
+ */
+export async function pqcWalletAdvanceMessage(
+  walletId: Uint8Array,
+  currentRoot: Uint8Array,
+  nextRoot: Uint8Array,
+  destination: Uint8Array,
+  amount: bigint,
+  sequence: bigint,
+): Promise<Uint8Array> {
+  const domain = new TextEncoder().encode("VAULKYRIE_PQC_WALLET_ADVANCE_V1");
+  const domainHash = await sha256(domain);
+  const msg = new Uint8Array(176);
+  const view = new DataView(msg.buffer);
+  msg.set(domainHash, 0);
+  msg.set(walletId, 32);
+  msg.set(currentRoot, 64);
+  msg.set(nextRoot, 96);
+  msg.set(destination, 128);
+  view.setBigUint64(160, amount, true);
+  view.setBigUint64(168, sequence, true);
+  return msg;
+}
+
+/**
  * Compute the split digest for WOTS+ signing.
  */
 export async function quantumSplitDigest(

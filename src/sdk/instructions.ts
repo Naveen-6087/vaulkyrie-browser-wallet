@@ -12,6 +12,7 @@ import type {
   InitVaultParams,
   InitAuthorityParams,
   InitQuantumVaultParams,
+  InitPqcWalletParams,
   StageReceiptParams,
   OpenSessionParams,
   ActivateSessionParams,
@@ -23,6 +24,7 @@ import type {
   AdvanceWinterAuthorityParams,
   SplitQuantumVaultParams,
   CloseQuantumVaultParams,
+  AdvancePqcWalletParams,
   InitSpendOrchestrationParams,
   CommitSpendOrchestrationParams,
   CompleteSpendOrchestrationParams,
@@ -445,6 +447,29 @@ export function createRotateAuthorityStagedInstruction(
   );
 }
 
+export function createInitPqcWalletInstruction(
+  payer: PublicKey,
+  wallet: PublicKey,
+  params: InitPqcWalletParams,
+  programId: PublicKey = VAULKYRIE_CORE_PROGRAM_ID
+): TransactionInstruction {
+  const buf = new Uint8Array(65);
+  let off = 0;
+  off = writeBytes(buf, off, params.walletId);
+  off = writeBytes(buf, off, params.currentRoot);
+  writeU8(buf, off, params.bump);
+  return makeIx(
+    Instruction.InitPqcWallet,
+    buf,
+    [
+      { pubkey: payer, isSigner: true, isWritable: true },
+      { pubkey: wallet, isSigner: false, isWritable: true },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    ],
+    programId
+  );
+}
+
 export function createAdvanceWinterAuthorityInstruction(
   vault: PublicKey,
   authority: PublicKey,
@@ -508,6 +533,28 @@ export function createCloseQuantumVaultInstruction(
     [
       { pubkey: vault, isSigner: false, isWritable: true },
       { pubkey: refundDest, isSigner: false, isWritable: true },
+    ],
+    programId
+  );
+}
+
+export function createAdvancePqcWalletInstruction(
+  wallet: PublicKey,
+  destination: PublicKey,
+  params: AdvancePqcWalletParams,
+  programId: PublicKey = VAULKYRIE_CORE_PROGRAM_ID
+): TransactionInstruction {
+  const buf = new Uint8Array(params.signature.length + 32 + 8);
+  let off = 0;
+  off = writeBytes(buf, off, params.signature);
+  off = writeBytes(buf, off, params.nextRoot);
+  writeU64LE(buf, off, params.amount);
+  return makeIx(
+    Instruction.AdvancePqcWallet,
+    buf,
+    [
+      { pubkey: wallet, isSigner: false, isWritable: true },
+      { pubkey: destination, isSigner: false, isWritable: true },
     ],
     programId
   );

@@ -78,6 +78,13 @@ export interface QuantumAuthorityAccount {
   bump: number;
 }
 
+export interface PqcWalletAccount {
+  walletId: Uint8Array; // 32 bytes
+  currentRoot: Uint8Array; // 32 bytes
+  sequence: bigint;
+  bump: number;
+}
+
 export interface AuthorityProofAccount {
   statementDigest: Uint8Array; // 32 bytes
   proofCommitment: Uint8Array; // 32 bytes
@@ -157,6 +164,12 @@ export interface InitQuantumVaultParams {
   bump: number;
 }
 
+export interface InitPqcWalletParams {
+  walletId: Uint8Array;
+  currentRoot: Uint8Array;
+  bump: number;
+}
+
 export interface StageReceiptParams {
   receipt: PolicyReceipt;
 }
@@ -206,6 +219,12 @@ export interface SplitQuantumVaultParams {
 export interface CloseQuantumVaultParams {
   signature: Uint8Array; // 1417 bytes
   bump: number;
+}
+
+export interface AdvancePqcWalletParams {
+  signature: Uint8Array; // 1417 bytes
+  nextRoot: Uint8Array;
+  amount: bigint;
 }
 
 export interface InitSpendOrchestrationParams {
