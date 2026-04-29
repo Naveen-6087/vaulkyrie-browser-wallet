@@ -2,7 +2,7 @@
  * Shared utility for FROST-signing a Solana Transaction.
  *
  * Encapsulates the single-device (local) signing path used across
- * SendView, PolicyView, and any future view that submits transactions
+ * SendView, PrivacyView, and any future view that submits transactions
  * from the vault's threshold key.
  */
 

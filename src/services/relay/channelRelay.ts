@@ -74,7 +74,7 @@ export interface SignRequestPayload {
   initiator: string;
   network: string;
   createdAt: number;
-  purpose?: "send" | "bootstrap" | "policy";
+  purpose?: "send" | "bootstrap" | "privacy";
   summary?: string;
   estimatedFeeLamports?: number | null;
   computeUnitsConsumed?: number | null;

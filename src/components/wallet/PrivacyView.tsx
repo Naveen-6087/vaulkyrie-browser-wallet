@@ -1,5 +1,8 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { Connection, PublicKey } from "@solana/web3.js";
+import { Buffer } from "buffer";
 import {
+  AlertCircle,
   Check,
   Copy,
   Eye,
@@ -19,6 +22,24 @@ import { Input } from "@/components/ui/input";
 import { SelectField } from "@/components/ui/select-field";
 import { ScreenShell } from "@/components/layout/ScreenShell";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
+import { NETWORKS } from "@/lib/constants";
+import { shortenAddress } from "@/lib/utils";
+import {
+  createConnection,
+} from "@/services/solanaRpc";
+import {
+  executeEncifherSwap,
+  fetchEncifherOrderStatus,
+  fetchEncifherQuote,
+  fetchEncifherStatus,
+  prepareEncifherDepositTx,
+  prepareEncifherSwapTx,
+  prepareEncifherWithdrawTx,
+  type EncifherExecuteResult,
+  type EncifherQuote,
+  type EncifherStatus,
+} from "@/services/privacy/encifherClient";
+import { signSerializedTransaction } from "@/services/frost/signTransaction";
 import { useWalletStore } from "@/store/walletStore";
 import {
   PRIVACY_DECISION_LINKABILITY_WARNING,
@@ -35,24 +56,16 @@ import {
   type PrivacyPoolBucketId,
   type PrivacyRouteRiskId,
 } from "@/sdk/privacyEngine";
-import { shortenAddress } from "@/lib/utils";
 import type {
   PrivacyActionId,
   PrivacyAssetSymbol,
-  PrivacyProviderId,
+  PrivacyExecutionModelId,
   WalletView,
 } from "@/types";
 
 interface PrivacyViewProps {
   onNavigate: (view: WalletView) => void;
 }
-
-const PROVIDER_LABEL: Record<PrivacyProviderId, string> = {
-  nativeArcium: "Vaulkyrie Native",
-  houdini: "Houdini",
-  encifher: "Encifher",
-  umbra: "Umbra",
-};
 
 const ACTION_LABEL: Record<PrivacyActionId, string> = {
   deposit: "Shield deposit",
@@ -62,6 +75,18 @@ const ACTION_LABEL: Record<PrivacyActionId, string> = {
   sealReceipt: "Seal receipt",
 };
 
+const EXECUTION_LABEL: Record<PrivacyExecutionModelId, string> = {
+  shieldedState: "Shielded balance",
+  externalPrivateSwap: "Encifher private swap",
+  confidentialIntent: "Confidential intent",
+  oneTimeWallet: "One-time receive",
+};
+
+const ENCFIHER_MINTS = {
+  USDC: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+  USDT: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+} as const;
+
 function disclosureLabel(mode: PrivacyDisclosureModeId): string {
   if (mode === "businessAudit") return "Business audit";
   if (mode === "selectiveAudit") return "Selective audit";
@@ -69,23 +94,23 @@ function disclosureLabel(mode: PrivacyDisclosureModeId): string {
   return "None";
 }
 
-function privacyFlagsFor(
-  action: PrivacyActionId,
-  provider: PrivacyProviderId,
-  disclosureMode: PrivacyDisclosureModeId,
-): number {
+function executionModelFor(action: PrivacyActionId): PrivacyExecutionModelId {
+  if (action === "swapIntent") return "externalPrivateSwap";
+  if (action === "sealReceipt") return "oneTimeWallet";
+  if (action === "transfer") return "confidentialIntent";
+  return "shieldedState";
+}
+
+function privacyFlagsFor(action: PrivacyActionId, disclosureMode: PrivacyDisclosureModeId): number {
   let flags = PRIVACY_FLAG_STEALTH_RECIPIENT | PRIVACY_FLAG_ONE_TIME_ADDRESS;
 
-  if (provider === "nativeArcium") {
-    flags |= PRIVACY_FLAG_NATIVE_SHIELDED;
+  if (action === "swapIntent") {
+    flags |= PRIVACY_FLAG_PROVIDER_ROUTE | PRIVACY_FLAG_SWAP_INTENT;
   } else {
-    flags |= PRIVACY_FLAG_PROVIDER_ROUTE;
+    flags |= PRIVACY_FLAG_NATIVE_SHIELDED;
   }
   if (disclosureMode !== "none") {
     flags |= PRIVACY_FLAG_SELECTIVE_DISCLOSURE;
-  }
-  if (action === "swapIntent") {
-    flags |= PRIVACY_FLAG_SWAP_INTENT;
   }
   if (action === "withdraw") {
     flags |= PRIVACY_FLAG_WITHDRAW_LINKABLE;
@@ -94,10 +119,10 @@ function privacyFlagsFor(
   return flags;
 }
 
-function defaultRouteRisk(action: PrivacyActionId, provider: PrivacyProviderId): PrivacyRouteRiskId {
+function defaultRouteRisk(action: PrivacyActionId): PrivacyRouteRiskId {
   if (action === "withdraw") return "high";
-  if (provider === "nativeArcium") return "low";
-  return "medium";
+  if (action === "swapIntent") return "medium";
+  return "low";
 }
 
 function scoreTone(score: number): string {
@@ -106,14 +131,33 @@ function scoreTone(score: number): string {
   return "text-destructive";
 }
 
+function toBaseUnits(amount: number, decimals: number): string {
+  return BigInt(Math.max(0, Math.round(amount * 10 ** decimals))).toString();
+}
+
+function encifherModeLabel(status: EncifherStatus | null): string {
+  if (!status) return "Checking relay";
+  if (!status.enabled) return "Relay key missing";
+  return `${status.mode} rail`;
+}
+
+async function submitSignedBase64(connection: Connection, signedTransactionBase64: string): Promise<string> {
+  return connection.sendRawTransaction(Buffer.from(signedTransactionBase64, "base64"), {
+    skipPreflight: false,
+    preflightCommitment: "confirmed",
+  });
+}
+
 export function PrivacyView({ onNavigate }: PrivacyViewProps) {
   const {
     activeAccount,
     network,
+    relayUrl,
     privacyAccounts,
     privacyReceipts,
     upsertPrivacyAccount,
     recordPrivacyReceipt,
+    refreshBalances,
   } = useWalletStore();
   const { copy, isCopied, copyError } = useCopyToClipboard({ resetAfterMs: 1800 });
 
@@ -129,19 +173,39 @@ export function PrivacyView({ onNavigate }: PrivacyViewProps) {
 
   const [selectedAccountId, setSelectedAccountId] = useState("");
   const [accountLabel, setAccountLabel] = useState("Private account");
-  const [action, setAction] = useState<PrivacyActionId>("transfer");
-  const [asset, setAsset] = useState<PrivacyAssetSymbol>("SOL");
-  const [provider, setProvider] = useState<PrivacyProviderId>("nativeArcium");
+  const [action, setAction] = useState<PrivacyActionId>("swapIntent");
+  const [asset, setAsset] = useState<PrivacyAssetSymbol>("USDC");
   const [disclosureMode, setDisclosureMode] = useState<PrivacyDisclosureModeId>("selectiveAudit");
   const [amount, setAmount] = useState("");
   const [recipient, setRecipient] = useState("");
   const [isWorking, setIsWorking] = useState(false);
   const [error, setError] = useState("");
+  const [status, setStatus] = useState<EncifherStatus | null>(null);
+  const [quote, setQuote] = useState<EncifherQuote | null>(null);
+  const [txSignature, setTxSignature] = useState("");
+  const [orderStatus, setOrderStatus] = useState("");
 
   const activePrivacyAccount = accounts.find((item) => item.id === selectedAccountId) ?? accounts[0] ?? null;
   const poolBucket: PrivacyPoolBucketId = receipts.length > 8 ? "healthy" : receipts.length > 2 ? "building" : "thin";
   const parsedAmount = Number.parseFloat(amount) || 0;
+  const executionModel = executionModelFor(action);
   const canCreateIntent = Boolean(ownerPublicKey && activePrivacyAccount && parsedAmount > 0 && !isWorking);
+  const needsMainnet = action === "swapIntent" || action === "deposit" || action === "withdraw";
+  const encifherReady = Boolean(status?.enabled && status.mode === "Mainnet" && network === "mainnet");
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchEncifherStatus(relayUrl)
+      .then((nextStatus) => {
+        if (!cancelled) setStatus(nextStatus);
+      })
+      .catch((statusError) => {
+        if (!cancelled) setError(statusError instanceof Error ? statusError.message : String(statusError));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [relayUrl]);
 
   const handleCreateAccount = async () => {
     if (!ownerPublicKey) {
@@ -176,31 +240,150 @@ export function PrivacyView({ onNavigate }: PrivacyViewProps) {
     }
   };
 
-  const handleCreateIntent = async () => {
+  const createLocalReceipt = async (signatureHint?: string) => {
     if (!ownerPublicKey || !activePrivacyAccount) return;
 
+    const receipt = await createPrivacyReceipt({
+      accountId: activePrivacyAccount.id,
+      ownerPublicKey,
+      network,
+      action,
+      asset,
+      amount: parsedAmount,
+      executionModel,
+      recipientHint: signatureHint ?? (recipient.trim() || null),
+      disclosureMode,
+      poolBucket,
+      routeRisk: defaultRouteRisk(action),
+      flags: privacyFlagsFor(action, disclosureMode),
+    });
+    recordPrivacyReceipt(ownerPublicKey, receipt);
+  };
+
+  const handleQuote = async () => {
+    setError("");
+    setQuote(null);
+    if (!encifherReady) {
+      setError("Encifher private swaps require mainnet and ENCIFHER_SDK_KEY on the relay server.");
+      return;
+    }
+    if (parsedAmount <= 0) {
+      setError("Enter an amount first.");
+      return;
+    }
+
+    setIsWorking(true);
+    try {
+      const nextQuote = await fetchEncifherQuote({
+        relayUrl,
+        inMint: ENCFIHER_MINTS.USDC,
+        outMint: ENCFIHER_MINTS.USDT,
+        amountIn: toBaseUnits(parsedAmount, 6),
+      });
+      setQuote(nextQuote);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to fetch Encifher quote.");
+    } finally {
+      setIsWorking(false);
+    }
+  };
+
+  const handleCreateIntent = async () => {
     setIsWorking(true);
     setError("");
     try {
-      const receipt = await createPrivacyReceipt({
-        accountId: activePrivacyAccount.id,
-        ownerPublicKey,
-        network,
-        action,
-        asset,
-        amount: parsedAmount,
-        provider,
-        recipientHint: recipient.trim() || null,
-        disclosureMode,
-        poolBucket,
-        routeRisk: defaultRouteRisk(action, provider),
-        flags: privacyFlagsFor(action, provider, disclosureMode),
-      });
-      recordPrivacyReceipt(ownerPublicKey, receipt);
+      await createLocalReceipt();
       setAmount("");
       if (action !== "transfer") setRecipient("");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to create privacy intent.");
+      setError(e instanceof Error ? e.message : "Failed to create privacy receipt.");
+    } finally {
+      setIsWorking(false);
+    }
+  };
+
+  const handleExecuteEncifher = async () => {
+    if (!ownerPublicKey) {
+      setError("No active wallet selected.");
+      return;
+    }
+    if (!encifherReady) {
+      setError(`Encifher execution is available on mainnet only. Current network: ${NETWORKS[network].name}.`);
+      return;
+    }
+    if (parsedAmount <= 0) {
+      setError("Enter an amount first.");
+      return;
+    }
+
+    setIsWorking(true);
+    setError("");
+    setTxSignature("");
+    setOrderStatus("");
+    try {
+      const connection = createConnection(network);
+      const amountIn = toBaseUnits(parsedAmount, 6);
+      const owner = new PublicKey(ownerPublicKey).toBase58();
+
+      if (action === "deposit") {
+        const prepared = await prepareEncifherDepositTx({
+          relayUrl,
+          depositor: owner,
+          tokenSymbol: "USDC",
+          amount: amountIn,
+        });
+        const signed = await signSerializedTransaction(prepared.transaction, owner, prepared.transactionKind);
+        const signature = await submitSignedBase64(connection, signed.signedTransactionBase64);
+        setTxSignature(signature);
+        await createLocalReceipt(signature);
+        await refreshBalances();
+        return;
+      }
+
+      if (action === "withdraw") {
+        const receiver = recipient.trim() || owner;
+        const prepared = await prepareEncifherWithdrawTx({
+          relayUrl,
+          withdrawer: owner,
+          receiver,
+          tokenSymbol: "USDC",
+          amount: amountIn,
+        });
+        const signed = await signSerializedTransaction(prepared.transaction, owner, prepared.transactionKind);
+        const signature = await submitSignedBase64(connection, signed.signedTransactionBase64);
+        setTxSignature(signature);
+        await createLocalReceipt(signature);
+        await refreshBalances();
+        return;
+      }
+
+      if (action === "swapIntent") {
+        const receiver = recipient.trim() ? new PublicKey(recipient.trim()).toBase58() : owner;
+        const prepared = await prepareEncifherSwapTx({
+          relayUrl,
+          inMint: ENCFIHER_MINTS.USDC,
+          outMint: ENCFIHER_MINTS.USDT,
+          amountIn,
+          senderPubkey: owner,
+          receiverPubkey: receiver,
+          message: activePrivacyAccount?.receiveCode,
+        });
+        const signed = await signSerializedTransaction(prepared.transaction, owner, prepared.transactionKind);
+        const result: EncifherExecuteResult = await executeEncifherSwap({
+          relayUrl,
+          signedTransactionBase64: signed.signedTransactionBase64,
+          orderDetails: prepared.orderDetails,
+        });
+        setTxSignature(result.txHash);
+        await createLocalReceipt(result.txHash);
+        const nextStatus = await fetchEncifherOrderStatus({
+          relayUrl,
+          orderStatusIdentifier: result.orderStatusIdentifier,
+        });
+        setOrderStatus(nextStatus);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Encifher execution failed.");
     } finally {
       setIsWorking(false);
     }
@@ -209,12 +392,12 @@ export function PrivacyView({ onNavigate }: PrivacyViewProps) {
   return (
     <ScreenShell
       title="Privacy"
-      description="Create private receive identities, Arcium-ready intents, and sealed receipts for shielded wallet flows."
+      description="Shield balances, prepare private swaps, and keep audit receipts separate from public wallet history."
       onBack={() => onNavigate("dashboard")}
       backLabel="Back to dashboard"
       actions={(
         <span className="inline-flex items-center rounded-full bg-primary/10 px-2.5 py-1 text-[10px] font-semibold text-primary">
-          SOL + USDC
+          {encifherModeLabel(status)}
         </span>
       )}
     >
@@ -223,17 +406,17 @@ export function PrivacyView({ onNavigate }: PrivacyViewProps) {
           <Card className="p-3">
             <LockKeyhole className="mb-2 h-4 w-4 text-primary" />
             <p className="text-xs font-semibold">Shield</p>
-            <p className="mt-1 text-[10px] text-muted-foreground">Deposit into a private account.</p>
+            <p className="mt-1 text-[10px] text-muted-foreground">Wrap USDC into a private balance rail.</p>
           </Card>
           <Card className="p-3">
             <Shuffle className="mb-2 h-4 w-4 text-primary" />
-            <p className="text-xs font-semibold">Route</p>
-            <p className="mt-1 text-[10px] text-muted-foreground">Native or provider privacy paths.</p>
+            <p className="text-xs font-semibold">Swap</p>
+            <p className="mt-1 text-[10px] text-muted-foreground">Execute a private USDC to USDT order.</p>
           </Card>
           <Card className="p-3">
             <FileKey2 className="mb-2 h-4 w-4 text-primary" />
-            <p className="text-xs font-semibold">Disclose</p>
-            <p className="mt-1 text-[10px] text-muted-foreground">Seal receipts for audits.</p>
+            <p className="text-xs font-semibold">Receipt</p>
+            <p className="mt-1 text-[10px] text-muted-foreground">Keep selective disclosure commitments.</p>
           </Card>
         </div>
 
@@ -304,7 +487,7 @@ export function PrivacyView({ onNavigate }: PrivacyViewProps) {
                 <QrCode className="mx-auto mb-2 h-5 w-5 text-muted-foreground" />
                 <p className="text-sm font-medium">No privacy account yet</p>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  Create one to generate private receive codes and Arcium-bound intent commitments.
+                  Create one to generate receive codes and local disclosure commitments.
                 </p>
               </div>
             )}
@@ -314,30 +497,28 @@ export function PrivacyView({ onNavigate }: PrivacyViewProps) {
 
         <Card>
           <CardHeader>
-            <CardTitle className="text-sm">Create Private Intent</CardTitle>
+            <CardTitle className="text-sm">Private Swap Rail</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
             <div className="grid grid-cols-2 gap-2">
               <SelectField value={action} onChange={(event) => setAction(event.target.value as PrivacyActionId)}>
-                <option value="deposit">Shield deposit</option>
-                <option value="transfer">Private send</option>
-                <option value="withdraw">Withdraw</option>
-                <option value="swapIntent">Private swap</option>
+                <option value="swapIntent">Private USDC to USDT swap</option>
+                <option value="deposit">Shield USDC</option>
+                <option value="withdraw">Withdraw USDC</option>
+                <option value="transfer">Private send intent</option>
                 <option value="sealReceipt">Seal receipt</option>
               </SelectField>
               <SelectField value={asset} onChange={(event) => setAsset(event.target.value as PrivacyAssetSymbol)}>
-                <option value="SOL">SOL</option>
                 <option value="USDC">USDC</option>
+                <option value="SOL">SOL receipt only</option>
               </SelectField>
             </div>
 
             <div className="grid grid-cols-2 gap-2">
-              <SelectField value={provider} onChange={(event) => setProvider(event.target.value as PrivacyProviderId)}>
-                <option value="nativeArcium">Vaulkyrie Native</option>
-                <option value="houdini">Houdini</option>
-                <option value="encifher">Encifher</option>
-                <option value="umbra">Umbra</option>
-              </SelectField>
+              <div className="rounded-xl border border-border bg-background/60 px-3 py-2 text-xs">
+                <p className="text-[10px] text-muted-foreground">Execution</p>
+                <p className="mt-1 font-medium">{EXECUTION_LABEL[executionModel]}</p>
+              </div>
               <SelectField value={disclosureMode} onChange={(event) => setDisclosureMode(event.target.value as PrivacyDisclosureModeId)}>
                 <option value="selectiveAudit">Selective audit</option>
                 <option value="userReceipt">User receipt</option>
@@ -350,24 +531,66 @@ export function PrivacyView({ onNavigate }: PrivacyViewProps) {
               type="number"
               value={amount}
               onChange={(event) => setAmount(event.target.value)}
-              placeholder={`Amount in ${asset}`}
+              placeholder={action === "swapIntent" ? "USDC amount to swap" : `Amount in ${asset}`}
               min="0"
-              step={asset === "SOL" ? "0.000001" : "0.01"}
+              step="0.01"
             />
             <Input
               value={recipient}
               onChange={(event) => setRecipient(event.target.value)}
-              placeholder="Recipient private code, contact, or transparent address"
+              placeholder={action === "withdraw" ? "Optional receiver address" : "Optional receiver address or private note"}
             />
 
+            {needsMainnet && network !== "mainnet" && (
+              <div className="flex gap-2 rounded-xl border border-amber-400/30 bg-amber-400/10 px-3 py-3 text-xs text-amber-200">
+                <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                Encifher swaps are mainnet-only. Switch to Mainnet before executing deposits, swaps, or withdrawals.
+              </div>
+            )}
+            {status && !status.enabled && (
+              <div className="flex gap-2 rounded-xl border border-primary/20 bg-primary/5 px-3 py-3 text-xs text-muted-foreground">
+                <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                {status.reason}
+              </div>
+            )}
             {error && <p className="text-xs text-destructive">{error}</p>}
 
-            <Button className="w-full" onClick={handleCreateIntent} disabled={!canCreateIntent}>
-              {isWorking ? <Loader2 className="h-4 w-4 animate-spin" /> : <Shield className="h-4 w-4" />}
-              Build Arcium privacy intent
-            </Button>
+            {quote && (
+              <div className="rounded-xl border border-border bg-background/60 px-3 py-3 text-xs text-muted-foreground">
+                <div className="flex justify-between">
+                  <span>Estimated output</span>
+                  <span className="font-medium text-foreground">{Number(quote.amountOut) / 1_000_000} USDT</span>
+                </div>
+                <div className="mt-1 flex justify-between">
+                  <span>Router</span>
+                  <span>{quote.router}</span>
+                </div>
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-2">
+              <Button variant="secondary" onClick={handleCreateIntent} disabled={!canCreateIntent}>
+                {isWorking ? <Loader2 className="h-4 w-4 animate-spin" /> : <Shield className="h-4 w-4" />}
+                Seal receipt
+              </Button>
+              <Button onClick={action === "swapIntent" ? handleQuote : handleExecuteEncifher} disabled={!canCreateIntent || (needsMainnet && !encifherReady)}>
+                {isWorking ? <Loader2 className="h-4 w-4 animate-spin" /> : <Shuffle className="h-4 w-4" />}
+                {action === "swapIntent" ? "Quote" : "Execute"}
+              </Button>
+            </div>
+            {action === "swapIntent" && (
+              <Button className="w-full" onClick={handleExecuteEncifher} disabled={!canCreateIntent || !encifherReady}>
+                {isWorking ? <Loader2 className="h-4 w-4 animate-spin" /> : <Shuffle className="h-4 w-4" />}
+                Sign and execute private swap
+              </Button>
+            )}
+            {txSignature && (
+              <p className="break-all font-mono text-[10px] text-muted-foreground">
+                Submitted: {txSignature}{orderStatus ? ` · ${orderStatus}` : ""}
+              </p>
+            )}
             <p className="text-[10px] leading-relaxed text-muted-foreground">
-              Native settlement requires the next privacy MXE/program deployment. Provider routes are stored as adapter-ready commitments so the wallet can plug in API execution without changing the UX.
+              The relay constructs Encifher transactions with the server SDK key. The vault still signs the Solana transaction locally, so the private swap rail does not expose API secrets to the browser.
             </p>
           </CardContent>
         </Card>
@@ -382,7 +605,7 @@ export function PrivacyView({ onNavigate }: PrivacyViewProps) {
             <Card className="p-4 text-center">
               <WalletCards className="mx-auto mb-2 h-5 w-5 text-muted-foreground" />
               <p className="text-sm font-medium">No sealed receipts yet</p>
-              <p className="mt-1 text-xs text-muted-foreground">Create a private intent to produce the first Arcium-ready receipt.</p>
+              <p className="mt-1 text-xs text-muted-foreground">Create a private action to produce the first local receipt.</p>
             </Card>
           ) : (
             receipts.slice(0, 8).map((receipt) => {
@@ -395,7 +618,7 @@ export function PrivacyView({ onNavigate }: PrivacyViewProps) {
                         {ACTION_LABEL[receipt.action]} · {receipt.amount.toLocaleString(undefined, { maximumFractionDigits: 6 })} {receipt.asset}
                       </p>
                       <p className="mt-1 text-xs text-muted-foreground">
-                        {PROVIDER_LABEL[receipt.provider]} · {disclosureLabel(receipt.disclosureMode)} · {receipt.minConfirmations} confirmation{receipt.minConfirmations === 1 ? "" : "s"}
+                        {EXECUTION_LABEL[receipt.executionModel]} · {disclosureLabel(receipt.disclosureMode)} · {receipt.minConfirmations} confirmation{receipt.minConfirmations === 1 ? "" : "s"}
                       </p>
                       <p className="mt-2 break-all font-mono text-[10px] text-muted-foreground">
                         {receipt.receiptCommitment}

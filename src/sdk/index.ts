@@ -7,19 +7,5 @@ export * from "./pda";
 export * from "./instructions";
 export * from "./accounts";
 export * from "./errors";
-export * from "./policyEngine";
 export * from "./privacyEngine";
 export { VaulkyrieClient } from "./client";
-export { PolicyMxeClient, findPolicyConfigPda, findPolicyEvaluationPda } from "./policyClient";
-export {
-  createInitPolicyConfigInstruction,
-  createOpenPolicyEvaluationInstruction,
-  createFinalizePolicyEvaluationInstruction,
-  createAbortPolicyEvaluationInstruction,
-  createQueueArciumComputationInstruction,
-} from "./policyInstructions";
-export type {
-  InitPolicyConfigParams,
-  OpenPolicyEvaluationParams,
-  FinalizePolicyEvaluationParams,
-} from "./policyInstructions";

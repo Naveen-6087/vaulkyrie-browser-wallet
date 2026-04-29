@@ -144,7 +144,6 @@ export function RecoveryView({ onNavigate }: RecoveryViewProps) {
     relayUrl,
     accounts,
     contacts,
-    policyProfiles,
     orchestrationHistory,
     securityPreferences,
     setLocked,
@@ -1008,7 +1007,7 @@ export function RecoveryView({ onNavigate }: RecoveryViewProps) {
                   Accounts: {importPreview.accounts.map((account) => `${account.name} (${shortenAddress(account.publicKey)})`).join(", ")}
                 </p>
                 <p>
-                  Contacts: {importPreview.contactCount} · Policies: {importPreview.policyProfileCount} · Privacy: {importPreview.privacyAccountCount} · Activity: {importPreview.orchestrationActivityCount} · Recovery sessions: {importPreview.recoverySessionCount}
+                  Contacts: {importPreview.contactCount} · Privacy: {importPreview.privacyAccountCount} · Activity: {importPreview.orchestrationActivityCount} · Recovery sessions: {importPreview.recoverySessionCount}
                 </p>
               </div>
             )}
@@ -1186,7 +1185,7 @@ export function RecoveryView({ onNavigate }: RecoveryViewProps) {
         <Card className="p-4 text-xs text-muted-foreground">
           <p>
             Active vault: {activeAccount ? `${activeAccount.name} (${shortenAddress(activeAccount.publicKey)})` : "Locked"} ·
-            Network: {NETWORKS[network].name} · Contacts: {contacts.length} · Policies: {Object.values(policyProfiles).reduce((sum, profiles) => sum + profiles.length, 0)} · Activity records: {Object.values(orchestrationHistory).reduce((sum, history) => sum + history.length, 0)} · Auto-lock: {securityPreferences.autoLockMinutes}m
+            Network: {NETWORKS[network].name} · Contacts: {contacts.length} · Activity records: {Object.values(orchestrationHistory).reduce((sum, history) => sum + history.length, 0)} · Auto-lock: {securityPreferences.autoLockMinutes}m
           </p>
         </Card>
       </motion.div>

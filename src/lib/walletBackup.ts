@@ -20,7 +20,6 @@ export interface WalletBackupPreview {
   relayUrl: string;
   accounts: Array<{ name: string; publicKey: string }>;
   contactCount: number;
-  policyProfileCount: number;
   privacyAccountCount: number;
   privacyReceiptCount: number;
   orchestrationActivityCount: number;
@@ -96,7 +95,6 @@ function validatePersistedWalletState(value: unknown): PersistedWalletState {
     xmssTrees: candidate.xmssTrees ?? {},
     winterAuthorityStates: candidate.winterAuthorityStates ?? {},
     quantumVaultKeys: candidate.quantumVaultKeys ?? {},
-    policyProfiles: candidate.policyProfiles ?? {},
     privacyAccounts: candidate.privacyAccounts ?? {},
     privacyReceipts: candidate.privacyReceipts ?? {},
     orchestrationHistory: candidate.orchestrationHistory ?? {},
@@ -194,10 +192,6 @@ export async function previewEncryptedWalletBackup(
       publicKey: account.publicKey,
     })),
     contactCount: restoredState.contacts.length,
-    policyProfileCount: Object.values(restoredState.policyProfiles).reduce(
-      (sum, profiles) => sum + profiles.length,
-      0,
-    ),
     privacyAccountCount: Object.values(restoredState.privacyAccounts).reduce(
       (sum, accounts) => sum + accounts.length,
       0,
@@ -225,7 +219,6 @@ export async function importEncryptedWalletBackup(
   useWalletStore.setState({
     ...restoredState,
     currentView: "dashboard",
-    pendingPolicyRequest: null,
     tokens: [],
     transactions: [],
     collectibles: [],

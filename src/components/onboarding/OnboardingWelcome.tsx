@@ -23,8 +23,8 @@ const FEATURES = [
   },
   {
     icon: Zap,
-    title: "Private Policies",
-    desc: "Arcium MXE enforces rules without revealing them",
+    title: "Privacy Layer",
+    desc: "Shielded accounts and private swap flows",
   },
 ];
 

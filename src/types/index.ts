@@ -33,14 +33,6 @@ export interface Transaction {
   fee?: number;
 }
 
-export interface SpendOrchestrationPolicySnapshot {
-  evaluationAddress: string;
-  receiptCommitment: string;
-  decisionCommitment: string;
-  reasonCode: number;
-  delayUntilSlot: string;
-}
-
 export interface SpendOrchestrationActivity {
   id: string;
   kind: "spend-orchestration";
@@ -53,7 +45,6 @@ export interface SpendOrchestrationActivity {
   network: NetworkId;
   actionHash: string;
   orchestrationAddress: string;
-  policy?: SpendOrchestrationPolicySnapshot | null;
 }
 
 export interface RecoverySessionRecord {
@@ -98,42 +89,12 @@ export interface VaultState {
   pendingSessions: number;
 }
 
-export interface PolicyProfile {
-  id: string;
-  name: string;
-  actionType: "send" | "admin";
-  approvalMode: "allow" | "review" | "block";
-  privacyMode?: "localPreview" | "arciumPrivate";
-  template?:
-    | "standardWallet"
-    | "highSecurityWallet"
-    | "treasuryOps"
-    | "recoveryEscalation"
-    | "adminQuarantine";
-  tokenSymbol: string;
-  maxAmount: number | null;
-  allowedRecipients: string[];
-  defaultProtocolRisk?: "none" | "low" | "medium" | "high" | "critical";
-  defaultDeviceTrust?: "attested" | "trusted" | "degraded" | "unknown" | "compromised";
-  guardianPosture?: "none" | "optional" | "available" | "verifiedQuorum";
-  recipientMode?: "open" | "allowlist" | "sensitive";
-  forcePqcReview?: boolean;
-  notes: string;
-  createdAt: number;
-  updatedAt: number;
-}
-
-export interface PendingPolicyRequest {
-  profileId: string;
-  actionType: "send" | "admin";
-  recipient: string;
-  amount: number;
-  tokenSymbol: string;
-  createdAt: number;
-}
-
 export type PrivacyAssetSymbol = "SOL" | "USDC";
-export type PrivacyProviderId = "nativeArcium" | "houdini" | "encifher" | "umbra";
+export type PrivacyExecutionModelId =
+  | "shieldedState"
+  | "externalPrivateSwap"
+  | "confidentialIntent"
+  | "oneTimeWallet";
 export type PrivacyActionId = "deposit" | "transfer" | "withdraw" | "swapIntent" | "sealReceipt";
 
 export interface PrivacyAccountRecord {
@@ -158,7 +119,7 @@ export interface PrivacyReceiptRecord {
   action: PrivacyActionId;
   asset: PrivacyAssetSymbol;
   amount: number;
-  provider: PrivacyProviderId;
+  executionModel: PrivacyExecutionModelId;
   recipientHint?: string | null;
   intentCommitment: string;
   signalCommitment: string;
@@ -190,6 +151,5 @@ export type WalletView =
   | "join-ceremony"
   | "contacts"
   | "lock"
-  | "policy"
   | "privacy"
   | "approval";

@@ -353,9 +353,9 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
               <div className="p-1">
                 <SettingRow
                   icon={Shield}
-                  label="Policy Engine"
-                  value="Private Arcium MXE policy checks and receipts"
-                  onClick={() => onNavigate("policy")}
+                  label="Privacy"
+                  value="Shielded accounts and private swap tools"
+                  onClick={() => onNavigate("privacy")}
                 />
                 <SettingRow
                   icon={LifeBuoy}

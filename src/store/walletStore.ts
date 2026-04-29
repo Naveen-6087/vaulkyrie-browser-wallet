@@ -8,14 +8,11 @@ import type {
   Collectible,
   VaultState,
   WalletView,
-  PolicyProfile,
-  PendingPolicyRequest,
   SpendOrchestrationActivity,
   RecoverySessionRecord,
   PrivacyAccountRecord,
   PrivacyReceiptRecord,
 } from "../types";
-import type { WalletPolicySignals } from "../sdk/policyEngine";
 import { DEFAULT_NETWORK, type NetworkId } from "../lib/constants";
 import {
   createVaulkyrieClient,
@@ -83,7 +80,6 @@ export interface PersistedWalletState {
   xmssTrees: Record<string, string>;
   winterAuthorityStates: Record<string, string>;
   quantumVaultKeys: Record<string, string>;
-  policyProfiles: Record<string, PolicyProfile[]>;
   privacyAccounts: Record<string, PrivacyAccountRecord[]>;
   privacyReceipts: Record<string, PrivacyReceiptRecord[]>;
   orchestrationHistory: Record<string, SpendOrchestrationActivity[]>;
@@ -95,40 +91,6 @@ interface WalletState extends PersistedWalletState {
   hasHydrated: boolean;
 
   // Password (PBKDF2 hash + salt, hex-encoded)
-  // In-memory handoff from SendView to PolicyView
-  pendingPolicyRequest: PendingPolicyRequest | null;
-  policyEvaluationDrafts: Record<
-    string,
-    {
-      actionHashHex: string;
-      profileId: string | null;
-      actionType: "send" | "admin";
-      recipient: string;
-      amount: number;
-      tokenSymbol: string;
-      signalCommitmentHex: string;
-      packedSignalLanes: [string, string];
-      signals: WalletPolicySignals;
-      previewDecision: {
-        approved: boolean;
-        threshold: number;
-        delayUntilSlot: string;
-        reasonCode: number;
-        decisionFlags: number;
-        riskScore?: number;
-        riskTier?: "low" | "medium" | "high" | "critical";
-      } | null;
-      finalizedReceipt?: {
-        evaluationAddress: string;
-        policyVersion: string;
-        threshold: number;
-        nonce: string;
-        expirySlot: string;
-        finalizedAt: number;
-      };
-      createdAt: number;
-    }
-  >;
 
   // Tokens & transactions (real data from RPC)
   tokens: Token[];
@@ -197,14 +159,7 @@ interface WalletState extends PersistedWalletState {
   getQuantumVaultKey: (publicKey: string) => string | null;
   clearQuantumVaultKey: (publicKey: string) => void;
 
-  // Policy profile persistence
-  upsertPolicyProfile: (publicKey: string, profile: PolicyProfile) => void;
-  deletePolicyProfile: (publicKey: string, profileId: string) => void;
-  getPolicyProfiles: (publicKey: string) => PolicyProfile[];
-  setPendingPolicyRequest: (request: PendingPolicyRequest | null) => void;
-  stashPolicyEvaluationDraft: (draft: WalletState["policyEvaluationDrafts"][string]) => void;
-  getPolicyEvaluationDraft: (actionHashHex: string) => WalletState["policyEvaluationDrafts"][string] | null;
-  clearPolicyEvaluationDraft: (actionHashHex: string) => void;
+  // Privacy persistence
   upsertPrivacyAccount: (publicKey: string, account: PrivacyAccountRecord) => void;
   getPrivacyAccounts: (publicKey: string) => PrivacyAccountRecord[];
   recordPrivacyReceipt: (publicKey: string, receipt: PrivacyReceiptRecord) => void;
@@ -242,7 +197,6 @@ export function pickPersistedWalletState(state: WalletState): PersistedWalletSta
     xmssTrees: state.xmssTrees,
     winterAuthorityStates: state.winterAuthorityStates,
     quantumVaultKeys: state.quantumVaultKeys,
-    policyProfiles: state.policyProfiles,
     privacyAccounts: state.privacyAccounts,
     privacyReceipts: state.privacyReceipts,
     orchestrationHistory: state.orchestrationHistory,
@@ -273,13 +227,10 @@ export const useWalletStore = create<WalletState>()(
       xmssTrees: {},
       winterAuthorityStates: {},
       quantumVaultKeys: {},
-      policyProfiles: {},
       privacyAccounts: {},
       privacyReceipts: {},
       orchestrationHistory: {},
       recoverySessions: {},
-      pendingPolicyRequest: null,
-      policyEvaluationDrafts: {},
       tokens: [],
       transactions: [],
       collectibles: [],
@@ -356,7 +307,6 @@ export const useWalletStore = create<WalletState>()(
             transactions: [],
             collectibles: [],
             vaultState: null,
-            policyEvaluationDrafts: {},
             lastFetchedAt: null,
           });
         }
@@ -480,42 +430,6 @@ export const useWalletStore = create<WalletState>()(
           return { quantumVaultKeys: next };
         }),
 
-      upsertPolicyProfile: (publicKey, profile) =>
-        set((state) => {
-          const existing = state.policyProfiles[publicKey] ?? [];
-          const next = existing.some((item) => item.id === profile.id)
-            ? existing.map((item) => (item.id === profile.id ? profile : item))
-            : [profile, ...existing];
-          return {
-            policyProfiles: {
-              ...state.policyProfiles,
-              [publicKey]: next,
-            },
-          };
-        }),
-      deletePolicyProfile: (publicKey, profileId) =>
-        set((state) => ({
-          policyProfiles: {
-            ...state.policyProfiles,
-            [publicKey]: (state.policyProfiles[publicKey] ?? []).filter((item) => item.id !== profileId),
-          },
-        })),
-      getPolicyProfiles: (publicKey) => get().policyProfiles[publicKey] ?? [],
-      setPendingPolicyRequest: (pendingPolicyRequest) => set({ pendingPolicyRequest }),
-      stashPolicyEvaluationDraft: (draft) =>
-        set((state) => ({
-          policyEvaluationDrafts: {
-            ...state.policyEvaluationDrafts,
-            [draft.actionHashHex]: draft,
-          },
-        })),
-      getPolicyEvaluationDraft: (actionHashHex) => get().policyEvaluationDrafts[actionHashHex] ?? null,
-      clearPolicyEvaluationDraft: (actionHashHex) =>
-        set((state) => {
-          const next = { ...state.policyEvaluationDrafts };
-          delete next[actionHashHex];
-          return { policyEvaluationDrafts: next };
-        }),
       upsertPrivacyAccount: (publicKey, account) =>
         set((state) => {
           const existing = state.privacyAccounts[publicKey] ?? [];

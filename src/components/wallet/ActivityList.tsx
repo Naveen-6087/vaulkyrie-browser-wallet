@@ -31,12 +31,6 @@ function shortenHex(value: string, prefix: number = 10, suffix: number = 8): str
   return `${value.slice(0, prefix)}...${value.slice(-suffix)}`;
 }
 
-function formatReasonCode(code: number): string {
-  if (code === 0) return "0 · allow";
-  if (code === 1) return "1 · review";
-  return `${code} · custom`;
-}
-
 function transactionExplorerUrl(signature: string, network: string): string {
   return `https://explorer.solana.com/tx/${signature}?cluster=${network}`;
 }
@@ -98,9 +92,6 @@ export function ActivityList({ transactions }: ActivityListProps) {
           const status = tx?.status ?? "pending";
           const txUrl = transactionExplorerUrl(item.entry.signature, item.entry.network);
           const orchestrationUrl = accountExplorerUrl(item.entry.orchestrationAddress, item.entry.network);
-          const policyUrl = item.entry.policy
-            ? accountExplorerUrl(item.entry.policy.evaluationAddress, item.entry.network)
-            : null;
 
           return (
             <div
@@ -142,25 +133,7 @@ export function ActivityList({ transactions }: ActivityListProps) {
                   <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Orchestration</p>
                   <p className="mt-1 font-mono break-all">{shortenAddress(item.entry.orchestrationAddress, 6)}</p>
                 </div>
-                {item.entry.policy && (
-                  <>
-                    <div className="rounded-lg border border-border/70 bg-background/50 px-2.5 py-2">
-                      <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Receipt</p>
-                      <p className="mt-1 font-mono break-all">{shortenHex(item.entry.policy.receiptCommitment)}</p>
-                    </div>
-                    <div className="rounded-lg border border-border/70 bg-background/50 px-2.5 py-2">
-                      <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Reason code</p>
-                      <p className="mt-1">{formatReasonCode(item.entry.policy.reasonCode)}</p>
-                    </div>
-                  </>
-                )}
               </div>
-
-              {item.entry.policy && BigInt(item.entry.policy.delayUntilSlot) > 0n && (
-                <div className="rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-[11px] text-muted-foreground">
-                  Delay until slot {item.entry.policy.delayUntilSlot}
-                </div>
-              )}
 
               <div className="flex flex-wrap gap-3 text-[11px]">
                 <a
@@ -181,17 +154,6 @@ export function ActivityList({ transactions }: ActivityListProps) {
                   Orchestration PDA
                   <ExternalLink className="h-3 w-3" />
                 </a>
-                {policyUrl && (
-                  <a
-                    href={policyUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1 text-primary hover:underline"
-                  >
-                    Policy evaluation
-                    <ExternalLink className="h-3 w-3" />
-                  </a>
-                )}
               </div>
             </div>
           );

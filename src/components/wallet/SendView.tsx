@@ -1,10 +1,9 @@
-import { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { ArrowUpRight, AlertCircle, Loader2, Check, ExternalLink, Users, ChevronDown, Radio } from "lucide-react";
 import { PublicKey, SystemProgram, Transaction, LAMPORTS_PER_SOL } from "@solana/web3.js";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
-import { SelectField } from "@/components/ui/select-field";
 import { signLocal, hexToBytes, bytesToHex } from "@/services/frost/frostService";
 import { SigningOrchestrator } from "@/services/frost/signingOrchestrator";
 import { requestCosignerSignature, type VaultCosignerMetadata } from "@/services/cosigner/cosignerClient";
@@ -35,33 +34,23 @@ import {
 import { shortenAddress } from "@/lib/utils";
 import type { WalletView, Token } from "@/types";
 import { VaulkyrieClient } from "@/sdk/client";
-import { PolicyMxeClient } from "@/sdk/policyClient";
 import {
   createCommitSpendOrchestrationInstruction,
   createCompleteSpendOrchestrationInstruction,
-  createConsumeReceiptInstruction,
   createInitAuthorityInstruction,
   createInitSpendOrchestrationInstruction,
   createInitVaultInstruction,
-  createStageBridgedReceiptInstruction,
 } from "@/sdk/instructions";
-import { PolicyEvaluationStatus, VAULKYRIE_POLICY_MXE_PROGRAM_ID } from "@/sdk/constants";
-import { findPolicyReceiptPda, findQuantumAuthorityPda, findSpendOrchestrationPda, findVaultRegistryPda } from "@/sdk/pda";
-import type { PolicyReceipt } from "@/sdk/types";
+import { findQuantumAuthorityPda, findSpendOrchestrationPda, findVaultRegistryPda } from "@/sdk/pda";
 import {
   buildSpendActionHash,
   buildSpendOrchestrationBindings,
   generateSpendSessionNonce,
 } from "@/sdk/spendBindings";
 import {
-  buildWalletPolicyActionHash,
-  buildWalletPolicyActionPayload,
-} from "@/sdk/policyBindings";
-import {
   analyzeLegacyTransaction,
   type TransactionAnalysis,
 } from "@/services/transactionAnalysis";
-import { deriveWalletPolicySignals, evaluateWalletPolicy } from "@/sdk/policyEngine";
 
 interface SendViewProps {
   balance: number;
@@ -80,41 +69,9 @@ type ReviewAnalysisState =
   | { status: "ready"; data: TransactionAnalysis }
   | { status: "error"; error: string };
 
-interface PreparedPolicySnapshot {
-  evaluationAddress: string;
-  receiptCommitment: string;
-  decisionCommitment: string;
-  reasonCode: number;
-  delayUntilSlot: string;
-}
-
 interface PreparedSpendActivityContext {
   actionHash: string;
   orchestrationAddress: string;
-  policy: PreparedPolicySnapshot | null;
-}
-
-function formatThresholdPreview(threshold: number): string {
-  switch (threshold) {
-    case 1:
-      return "1-of-3";
-    case 2:
-      return "2-of-3";
-    case 3:
-      return "3-of-3";
-    case 255:
-      return "PQC required";
-    default:
-      return `Threshold ${threshold}`;
-  }
-}
-
-function formatPolicyBucket(value: string): string {
-  return value.replace(/([A-Z])/g, " $1");
-}
-
-function formatRiskTier(tier: string): string {
-  return tier.replace(/^\w/, (char) => char.toUpperCase());
 }
 
 // ── Custom token dropdown with icons ────────────────────────────────
@@ -283,7 +240,6 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
   const [pendingSignRequest, setPendingSignRequest] = useState<SignRequestPayload | null>(null);
   const [reviewAnalysis, setReviewAnalysis] = useState<ReviewAnalysisState>({ status: "idle" });
   const [selectedToken, setSelectedToken] = useState("SOL");
-  const [selectedPolicyProfileId, setSelectedPolicyProfileId] = useState("");
   const [showContacts, setShowContacts] = useState(false);
   const {
     activeAccount,
@@ -291,9 +247,6 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
     relayUrl,
     tokens,
     contacts,
-    policyProfiles,
-    pendingPolicyRequest,
-    setPendingPolicyRequest,
     getXmssTree,
     storeXmssTree,
     getWinterAuthorityState,
@@ -302,7 +255,6 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
     refreshTransactions,
     refreshVaultState,
     recordOrchestrationActivity,
-    getPolicyEvaluationDraft,
   } = useWalletStore();
   const relayRef = useRef<RelayAdapter | null>(null);
   const orchestratorRef = useRef<SigningOrchestrator | null>(null);
@@ -317,64 +269,6 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
   const parsedJoinSession = parseSessionInvite(joinSessionCode);
   const isValid =
     recipient.length >= 32 && parsedAmount > 0 && parsedAmount <= tokenBalance;
-  const savedPolicyProfiles = useMemo(
-    () => (activeAccount?.publicKey
-      ? (policyProfiles[activeAccount.publicKey] ?? []).filter((profile) => profile.actionType === "send")
-      : []),
-    [activeAccount?.publicKey, policyProfiles],
-  );
-  const selectedPolicyProfile = savedPolicyProfiles.find((profile) => profile.id === selectedPolicyProfileId) ?? null;
-  const selectedPolicyPreview = useMemo(() => {
-    if (!selectedPolicyProfile) return null;
-    const signals = deriveWalletPolicySignals({
-      policyProfile: selectedPolicyProfile,
-      actionType: "send",
-      recipient,
-      amount: parsedAmount,
-      tokenSymbol: selectedToken,
-      accountPublicKey: activeAccount?.publicKey,
-      tokenBalance,
-      totalBalance: balance,
-      contacts,
-    });
-    return {
-      signals,
-      decision: evaluateWalletPolicy(signals, 0n, 200n),
-    };
-  }, [
-    activeAccount?.publicKey,
-    balance,
-    contacts,
-    parsedAmount,
-    recipient,
-    selectedPolicyProfile,
-    selectedToken,
-    tokenBalance,
-  ]);
-  const policyMismatch = useMemo(() => {
-    if (!selectedPolicyProfile) return null;
-    if (selectedPolicyProfile.tokenSymbol !== selectedToken) {
-      return `Policy ${selectedPolicyProfile.name} only covers ${selectedPolicyProfile.tokenSymbol} transfers.`;
-    }
-    if (
-      selectedPolicyProfile.maxAmount !== null &&
-      parsedAmount > selectedPolicyProfile.maxAmount
-    ) {
-      return `This transfer exceeds the ${selectedPolicyProfile.maxAmount} ${selectedPolicyProfile.tokenSymbol} limit in ${selectedPolicyProfile.name}.`;
-    }
-    if (
-      selectedPolicyProfile.allowedRecipients.length > 0 &&
-      recipient.trim().length > 0 &&
-      !selectedPolicyProfile.allowedRecipients.some(
-        (allowed) => allowed.toLowerCase() === recipient.trim().toLowerCase(),
-      )
-    ) {
-      return `Recipient is not in the allowlist for ${selectedPolicyProfile.name}.`;
-    }
-    return null;
-  }, [selectedPolicyProfile, selectedToken, parsedAmount, recipient]);
-  const needsPolicyReview = selectedPolicyProfile?.approvalMode === "review" && !policyMismatch;
-  const blockedByPolicy = selectedPolicyProfile?.approvalMode === "block" && !policyMismatch;
 
   const matchingContacts = contacts.filter(
     (c) =>
@@ -509,16 +403,11 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
       setError("Invalid Solana address");
       return;
     }
-    if (policyMismatch) {
-      setError(policyMismatch);
-      return;
-    }
     setPhase("review");
   };
 
   const prepareSpendTransaction = useCallback(async (options: {
     signerIds: number[];
-    requireFinalizedPolicyEvaluation: boolean;
     onStatus?: (message: string) => void;
   }) => {
     const dkg = loadDkgState();
@@ -559,81 +448,13 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
     }
 
     const client = new VaulkyrieClient(connection);
-    const policyClient = new PolicyMxeClient(connection);
     const existingVault = await client.getVaultRegistry(fromPubkey);
     const [vaultRegistryPda, vaultBump] = findVaultRegistryPda(fromPubkey);
     const [authorityPda, authorityBump] = findQuantumAuthorityPda(vaultRegistryPda);
     const existingAuthority = existingVault
       ? await client.getQuantumAuthority(vaultRegistryPda)
       : null;
-    let reviewedActionHash: Uint8Array | null = null;
-    let finalizedPolicySnapshot: PreparedPolicySnapshot | null = null;
-    let finalizedPolicyReceipt: PolicyReceipt | null = null;
-    let finalizedPolicyEvaluationAddress: PublicKey | null = null;
-    let policyVersion = existingVault?.account.policyVersion ?? 1n;
-
-    if (needsPolicyReview) {
-      const policyConfig = await policyClient.getPolicyConfig(fromPubkey);
-      if (!policyConfig) {
-        throw new Error("Initialize the Policy Engine before signing this reviewed transfer.");
-      }
-
-      policyVersion = existingVault?.account.policyVersion ?? policyConfig.account.policyVersion;
-      const reviewActionHash = await buildWalletPolicyActionHash(
-        buildWalletPolicyActionPayload({
-          profile: selectedPolicyProfile,
-          actionType: "send",
-          recipient,
-          amount: parsedAmount,
-          token: selectedToken,
-        }),
-      );
-
-      if (options.requireFinalizedPolicyEvaluation) {
-        const evaluation = await policyClient.getPolicyEvaluation(
-          policyConfig.address,
-          reviewActionHash,
-        );
-        if (!evaluation || evaluation.account.status !== PolicyEvaluationStatus.Finalized) {
-          throw new Error(
-            "No finalized policy evaluation matches this transfer yet. Open the Policy Engine first.",
-          );
-        }
-
-        const currentPolicySlot = await connection.getSlot();
-        if (evaluation.account.delayUntilSlot > BigInt(currentPolicySlot)) {
-          throw new Error(
-            `This policy approval is time-locked until slot ${evaluation.account.delayUntilSlot.toString()}.`,
-          );
-        }
-
-        const draft = getPolicyEvaluationDraft(bytesToHex(reviewActionHash));
-        const storedReceipt = draft?.finalizedReceipt;
-        const threshold = storedReceipt?.evaluationAddress === evaluation.address.toBase58()
-          ? storedReceipt.threshold
-          : dkg.threshold;
-        if (![1, 2, 3, 255].includes(threshold)) {
-          throw new Error(`Unsupported policy receipt threshold ${threshold}.`);
-        }
-        finalizedPolicyReceipt = {
-          actionHash: reviewActionHash,
-          policyVersion: evaluation.account.policyVersion,
-          threshold: threshold as PolicyReceipt["threshold"],
-          nonce: evaluation.account.requestNonce,
-          expirySlot: evaluation.account.expirySlot,
-        };
-        finalizedPolicyEvaluationAddress = evaluation.address;
-        finalizedPolicySnapshot = {
-          evaluationAddress: evaluation.address.toBase58(),
-          receiptCommitment: bytesToHex(evaluation.account.receiptCommitment),
-          decisionCommitment: bytesToHex(evaluation.account.decisionCommitment),
-          reasonCode: evaluation.account.reasonCode,
-          delayUntilSlot: evaluation.account.delayUntilSlot.toString(),
-        };
-      }
-
-      reviewedActionHash = reviewActionHash;
-    }
+    const policyVersion = existingVault?.account.policyVersion ?? 1n;
 
     let authorityHash = existingVault?.account.currentAuthorityHash ?? null;
     let authorityRoot = existingAuthority?.account.currentAuthorityRoot ?? null;
@@ -714,7 +535,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
     }
 
     const sessionNonce = generateSpendSessionNonce();
-    const actionHash = reviewedActionHash ?? await buildSpendActionHash({
+    const actionHash = await buildSpendActionHash({
       vaultId: fromPubkey.toBytes(),
       recipient: toPubkey.toBase58(),
       amountAtomic: amountAtomic.toString(),
@@ -748,7 +569,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
         authorityHash,
         policyVersion,
         bump: vaultBump,
-        policyMxeProgram: VAULKYRIE_POLICY_MXE_PROGRAM_ID,
+        policyMxeProgram: SystemProgram.programId,
       }));
     }
     if (!existingAuthority) {
@@ -776,22 +597,6 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
       actionHash,
       signingPackageHash: bindings.signingPackageHash,
     }));
-    if (finalizedPolicyReceipt && finalizedPolicyEvaluationAddress) {
-      const [receiptPda] = findPolicyReceiptPda(vaultRegistryPda, finalizedPolicyReceipt.actionHash);
-      tx.add(createStageBridgedReceiptInstruction(
-        vaultRegistryPda,
-        receiptPda,
-        fromPubkey,
-        finalizedPolicyEvaluationAddress,
-        { receipt: finalizedPolicyReceipt },
-      ));
-      tx.add(createConsumeReceiptInstruction(
-        vaultRegistryPda,
-        receiptPda,
-        fromPubkey,
-        { receipt: finalizedPolicyReceipt },
-      ));
-    }
     baseTransferTx.instructions.forEach((instruction) => tx.add(instruction));
     tx.add(createCompleteSpendOrchestrationInstruction(orchPda, vaultRegistryPda, fromPubkey, {
       actionHash,
@@ -808,19 +613,15 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
       activityContext: {
         actionHash: bytesToHex(actionHash),
         orchestrationAddress: orchPda.toBase58(),
-        policy: finalizedPolicySnapshot,
       } satisfies PreparedSpendActivityContext,
     };
   }, [
     activeAccount,
-    getPolicyEvaluationDraft,
     getWinterAuthorityState,
     getXmssTree,
     network,
-    needsPolicyReview,
     parsedAmount,
     recipient,
-    selectedPolicyProfile,
     selectedToken,
     storeWinterAuthorityState,
     storeXmssTree,
@@ -829,7 +630,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
   ]);
 
   useEffect(() => {
-    if (phase !== "review" || !activeAccount || !isValid || blockedByPolicy || needsPolicyReview) {
+    if (phase !== "review" || !activeAccount || !isValid) {
       setReviewAnalysis({ status: "idle" });
       return;
     }
@@ -853,7 +654,6 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
         );
         const prepared = await prepareSpendTransaction({
           signerIds,
-          requireFinalizedPolicyEvaluation: false,
         });
         const analysis = await analyzeLegacyTransaction(
           prepared.connection,
@@ -879,10 +679,8 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
     };
   }, [
     activeAccount,
-    blockedByPolicy,
     isValid,
     loadDkgState,
-    needsPolicyReview,
     phase,
     prepareSpendTransaction,
   ]);
@@ -919,7 +717,6 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
         const signerIds = availableKeyIds.slice(0, dkg.threshold);
         const prepared = await prepareSpendTransaction({
           signerIds,
-          requireFinalizedPolicyEvaluation: true,
           onStatus: setSigningMessage,
         });
         finalTx = prepared.tx;
@@ -958,7 +755,6 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
           async (signerIds) => {
             const prepared = await prepareSpendTransaction({
               signerIds,
-              requireFinalizedPolicyEvaluation: true,
               onStatus: setSigningMessage,
             });
             const analysis = await analyzeLegacyTransaction(
@@ -1016,11 +812,9 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
           network,
           actionHash: activityContext.actionHash,
           orchestrationAddress: activityContext.orchestrationAddress,
-          policy: activityContext.policy,
         });
       }
       setPhase("success");
-      setPendingPolicyRequest(null);
       await Promise.all([refreshBalances(), refreshTransactions(), refreshVaultState()]);
     } catch (err) {
       cleanupRelayState();
@@ -1348,37 +1142,6 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
     }
   }, [cleanupRelayState, loadDkgState, pendingSignRequest, runSigningOrchestrator]);
 
-  const handleOpenPolicyEvaluation = useCallback(() => {
-    if (!selectedPolicyProfile) return;
-
-    setPendingPolicyRequest({
-      profileId: selectedPolicyProfile.id,
-      actionType: "send",
-      recipient: recipient.trim(),
-      amount: parsedAmount,
-      tokenSymbol: selectedToken,
-      createdAt: Date.now(),
-    });
-    onNavigate("policy");
-  }, [onNavigate, parsedAmount, recipient, selectedPolicyProfile, selectedToken, setPendingPolicyRequest]);
-
-  useEffect(() => {
-    if (!selectedPolicyProfileId) return;
-    if (!savedPolicyProfiles.some((profile) => profile.id === selectedPolicyProfileId)) {
-      setSelectedPolicyProfileId("");
-    }
-  }, [savedPolicyProfiles, selectedPolicyProfileId]);
-
-  useEffect(() => {
-    if (!pendingPolicyRequest || pendingPolicyRequest.actionType !== "send") {
-      return;
-    }
-    setRecipient(pendingPolicyRequest.recipient);
-    setAmount(pendingPolicyRequest.amount.toString());
-    setSelectedToken(pendingPolicyRequest.tokenSymbol);
-    setSelectedPolicyProfileId(pendingPolicyRequest.profileId);
-  }, [pendingPolicyRequest]);
-
   const explorerUrl = txSignature
     ? `https://explorer.solana.com/tx/${txSignature}?cluster=${network}`
     : "";
@@ -1693,78 +1456,11 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
           Signing via FROST {useWalletStore.getState().vaultState?.threshold ?? 2}-of-{useWalletStore.getState().vaultState?.participants ?? 3} threshold ceremony
         </p>
 
-        {selectedPolicyProfile && (
-          <Card>
-            <CardContent className="pt-4 space-y-2 text-xs">
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Policy profile</span>
-                <span className="font-medium">{selectedPolicyProfile.name}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Decision mode</span>
-                <span className="font-medium capitalize">{selectedPolicyProfile.approvalMode}</span>
-              </div>
-              {selectedPolicyPreview && (
-                <>
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Privacy mode</span>
-                    <span className="font-medium">
-                      {selectedPolicyProfile.privacyMode === "localPreview" ? "Local preview" : "Arcium private"}
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Preview threshold</span>
-                    <span className="font-medium">{formatThresholdPreview(selectedPolicyPreview.decision.threshold)}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Risk score</span>
-                    <span className="font-medium">
-                      {selectedPolicyPreview.decision.riskScore}/100 · {formatRiskTier(selectedPolicyPreview.decision.riskTier)}
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Recipient posture</span>
-                    <span className="font-medium">{formatPolicyBucket(selectedPolicyPreview.signals.recipientClass)}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Delay</span>
-                    <span className="font-medium">{selectedPolicyPreview.decision.delayUntilSlot.toString()} slots</span>
-                  </div>
-                </>
-              )}
-              {selectedPolicyProfile.notes && (
-                <p className="text-[10px] text-muted-foreground">{selectedPolicyProfile.notes}</p>
-              )}
-            </CardContent>
-          </Card>
-        )}
-
         <div className="mt-auto space-y-2">
-          {blockedByPolicy ? (
-            <>
-              <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-3 text-xs text-destructive">
-                This transfer is blocked by the selected policy profile.
-              </div>
-              <Button className="w-full" variant="secondary" onClick={() => setPhase("form")}>
-                Choose another policy
-              </Button>
-            </>
-          ) : needsPolicyReview ? (
-            <>
-              <div className="rounded-xl border border-primary/20 bg-primary/5 px-3 py-3 text-xs text-muted-foreground">
-                This transfer matches a review-only policy. Open the Policy Engine to create an evaluation before signing.
-              </div>
-              <Button className="w-full gap-2" size="lg" onClick={handleOpenPolicyEvaluation}>
-                <ArrowUpRight className="h-4 w-4" />
-                Open Policy Evaluation
-              </Button>
-            </>
-          ) : (
-            <Button className="w-full gap-2" size="lg" onClick={handleSign}>
-              <ArrowUpRight className="h-4 w-4" />
-              Confirm & Sign
-            </Button>
-          )}
+          <Button className="w-full gap-2" size="lg" onClick={handleSign}>
+            <ArrowUpRight className="h-4 w-4" />
+            Confirm & Sign
+          </Button>
         </div>
       </div>
     );
@@ -1904,85 +1600,6 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
             </CardContent>
           </Card>
 
-          <Card>
-            <CardHeader>
-              <div className="flex items-center justify-between">
-                <CardTitle className="text-sm">Policy profile</CardTitle>
-                <button
-                  onClick={() => onNavigate("policy")}
-                  className="text-xs text-primary hover:text-primary/80 font-medium cursor-pointer"
-                >
-                  Manage
-                </button>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <SelectField
-                value={selectedPolicyProfileId}
-                onChange={(event) => {
-                  setSelectedPolicyProfileId(event.target.value);
-                  setError("");
-                }}
-              >
-                <option value="">No policy profile</option>
-                {savedPolicyProfiles.map((profile) => (
-                  <option key={profile.id} value={profile.id}>
-                    {profile.name}
-                  </option>
-                ))}
-              </SelectField>
-              {selectedPolicyProfile ? (
-                <div className="rounded-xl border border-border bg-background/60 px-3 py-3 text-[11px] text-muted-foreground space-y-2">
-                  <p className="font-medium text-foreground">{selectedPolicyProfile.name}</p>
-                  <p>
-                    {selectedPolicyProfile.approvalMode === "allow"
-                      ? "Can sign directly"
-                      : selectedPolicyProfile.approvalMode === "review"
-                        ? "Requires policy evaluation"
-                        : "Blocked by policy"}
-                  </p>
-                  <p>
-                    Token: {selectedPolicyProfile.tokenSymbol} · Max: {selectedPolicyProfile.maxAmount ?? "No cap"} · Recipients: {selectedPolicyProfile.allowedRecipients.length || "Any"}
-                  </p>
-                  <p>
-                    Template: {selectedPolicyProfile.template ?? "standardWallet"} · Privacy: {selectedPolicyProfile.privacyMode === "localPreview" ? "local" : "Arcium"} · Risk: {selectedPolicyProfile.defaultProtocolRisk ?? "low"} · Device: {selectedPolicyProfile.defaultDeviceTrust ?? "trusted"}
-                  </p>
-                  {selectedPolicyPreview && (
-                    <div className="grid grid-cols-2 gap-2 pt-1">
-                      <div className="rounded-lg border border-border/70 bg-card/80 px-2.5 py-2">
-                        <p className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Recipient</p>
-                        <p className="mt-1 text-foreground">{formatPolicyBucket(selectedPolicyPreview.signals.recipientClass)}</p>
-                      </div>
-                      <div className="rounded-lg border border-border/70 bg-card/80 px-2.5 py-2">
-                        <p className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Threshold</p>
-                        <p className="mt-1 text-foreground">{formatThresholdPreview(selectedPolicyPreview.decision.threshold)}</p>
-                      </div>
-                      <div className="rounded-lg border border-border/70 bg-card/80 px-2.5 py-2">
-                        <p className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Risk posture</p>
-                        <p className="mt-1 text-foreground">
-                          {formatPolicyBucket(selectedPolicyPreview.signals.protocolRisk)} · {formatPolicyBucket(selectedPolicyPreview.signals.deviceTrust)}
-                        </p>
-                      </div>
-                      <div className="rounded-lg border border-border/70 bg-card/80 px-2.5 py-2">
-                        <p className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Score</p>
-                        <p className="mt-1 text-foreground">
-                          {selectedPolicyPreview.decision.riskScore}/100 · {formatRiskTier(selectedPolicyPreview.decision.riskTier)}
-                        </p>
-                      </div>
-                      <div className="rounded-lg border border-border/70 bg-card/80 px-2.5 py-2">
-                        <p className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Delay</p>
-                        <p className="mt-1 text-foreground">{selectedPolicyPreview.decision.delayUntilSlot.toString()} slots</p>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <p className="text-[11px] text-muted-foreground">
-                  Choose a saved send policy if you want this transfer to follow a reusable rule.
-                </p>
-              )}
-            </CardContent>
-          </Card>
         </>
       ) : (
         <Card>

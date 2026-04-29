@@ -5,7 +5,6 @@ import type {
   OrchestrationStatus,
   RecoveryStatus,
   ThresholdRequirement,
-  PolicyEvaluationStatus,
 } from "./constants";
 
 // ── Wire-format types (match Rust encoding exactly) ──────────────────
@@ -116,34 +115,6 @@ export interface RecoveryStateAccount {
   newParticipantCount: number;
   status: RecoveryStatus;
   bump: number;
-}
-
-export interface PolicyConfigAccount {
-  coreProgram: PublicKey;
-  arciumProgram: PublicKey;
-  mxeAccount: PublicKey;
-  policyVersion: bigint;
-  nextRequestNonce: bigint;
-  bump: number;
-}
-
-export interface PolicyEvaluationAccount {
-  requestCommitment: Uint8Array; // 32 bytes
-  vaultId: Uint8Array; // 32 bytes
-  actionHash: Uint8Array; // 32 bytes
-  encryptedInputCommitment: Uint8Array; // 32 bytes
-  policyVersion: bigint;
-  requestNonce: bigint;
-  expirySlot: bigint;
-  computationOffset: bigint;
-  receiptCommitment: Uint8Array; // 32 bytes
-  decisionCommitment: Uint8Array; // 32 bytes
-  delayUntilSlot: bigint;
-  status: PolicyEvaluationStatus;
-  reasonCode: number;
-  decisionFlags: number;
-  riskScore: number;
-  riskTier: number;
 }
 
 // ── Instruction parameter types ──────────────────────────────────────

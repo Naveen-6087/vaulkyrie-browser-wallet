@@ -5,10 +5,6 @@ export const VAULKYRIE_CORE_PROGRAM_ID = new PublicKey(
   "HUf5TWL4H18qJigd9m7h6MihX1xnzr2BVbbyGYFLEGPx"
 );
 
-export const VAULKYRIE_POLICY_MXE_PROGRAM_ID = new PublicKey(
-  "85DVk7pAZKxJGcqfN9WARt8HYPT89tjpgiQkdnca14sc"
-);
-
 // ── Instruction discriminators (single u8) ───────────────────────────
 export const Instruction = {
   Ping: 0,
@@ -52,8 +48,6 @@ export const DISCRIMINATOR = {
   AuthorityProof: new Uint8Array([65, 85, 84, 72, 80, 82, 70, 49]), // "AUTHPRF1"
   SpendOrchestration: new Uint8Array([83, 80, 78, 68, 79, 82, 67, 49]), // "SPNDORC1"
   Recovery: new Uint8Array([82, 69, 67, 79, 86, 48, 48, 49]), // "RECOV001"
-  PolicyConfig: new Uint8Array([80, 79, 76, 67, 70, 71, 48, 49]), // "POLCFG01"
-  PolicyEvaluation: new Uint8Array([80, 79, 76, 69, 86, 65, 76, 49]), // "POLEVAL1"
 } as const;
 
 // ── Account sizes ────────────────────────────────────────────────────
@@ -66,8 +60,6 @@ export const ACCOUNT_SIZE = {
   AuthorityProofState: 1364, // 80 header + 1284 proof
   SpendOrchestrationState: 184,
   RecoveryState: 152,
-  PolicyConfigState: 128,
-  PolicyEvaluationState: 256,
 } as const;
 
 // ── Enums ────────────────────────────────────────────────────────────
@@ -118,15 +110,6 @@ export const ActionKind = {
 } as const;
 export type ActionKind = (typeof ActionKind)[keyof typeof ActionKind];
 
-export const PolicyEvaluationStatus = {
-  Pending: 1,
-  Finalized: 2,
-  Aborted: 3,
-  ComputationQueued: 4,
-} as const;
-export type PolicyEvaluationStatus =
-  (typeof PolicyEvaluationStatus)[keyof typeof PolicyEvaluationStatus];
-
 // ── PDA seeds ────────────────────────────────────────────────────────
 export const SEED = {
   VaultRegistry: "vault_registry",
@@ -137,8 +120,6 @@ export const SEED = {
   QuantumVault: "quantum_vault",
   PqcWallet: "pqc_wallet",
   SpendOrchestration: "spend_orch",
-  PolicyConfig: "policy_config",
-  PolicyEvaluation: "policy_eval",
 } as const;
 
 // ── Crypto constants ─────────────────────────────────────────────────

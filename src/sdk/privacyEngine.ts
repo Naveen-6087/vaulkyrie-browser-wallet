@@ -1,7 +1,7 @@
 import type {
   PrivacyActionId,
   PrivacyAssetSymbol,
-  PrivacyProviderId,
+  PrivacyExecutionModelId,
   PrivacyReceiptRecord,
 } from "@/types";
 
@@ -17,7 +17,7 @@ export interface WalletPrivacySignals {
   poolBucket: PrivacyPoolBucketId;
   routeRisk: PrivacyRouteRiskId;
   disclosureMode: PrivacyDisclosureModeId;
-  provider: PrivacyProviderId;
+  executionModel: PrivacyExecutionModelId;
   flags: number;
 }
 
@@ -27,7 +27,7 @@ export interface WalletPrivacyIntent {
   asset: PrivacyAssetSymbol;
   amount: number;
   counterpartyCommitment: string;
-  provider: PrivacyProviderId;
+  executionModel: PrivacyExecutionModelId;
   nonce: bigint;
   expirySlot: bigint;
   flags: number;
@@ -35,7 +35,7 @@ export interface WalletPrivacyIntent {
 
 export interface WalletPrivacyDecision {
   approved: boolean;
-  provider: PrivacyProviderId;
+  executionModel: PrivacyExecutionModelId;
   decisionFlags: number;
   privacyScore: number;
   minConfirmations: number;
@@ -63,11 +63,11 @@ const ASSET_CODE: Record<PrivacyAssetSymbol, number> = {
   USDC: 2,
 };
 
-const PROVIDER_CODE: Record<PrivacyProviderId, number> = {
-  nativeArcium: 1,
-  houdini: 2,
-  encifher: 3,
-  umbra: 4,
+const EXECUTION_MODEL_CODE: Record<PrivacyExecutionModelId, number> = {
+  shieldedState: 1,
+  externalPrivateSwap: 2,
+  confidentialIntent: 3,
+  oneTimeWallet: 4,
 };
 
 const AMOUNT_BUCKET_CODE: Record<PrivacyAmountBucketId, number> = {
@@ -207,7 +207,7 @@ export function packPrivacySignals(signals: WalletPrivacySignals): [bigint, bigi
     (BigInt(POOL_BUCKET_CODE[signals.poolBucket]) << 24n) |
     (BigInt(ROUTE_RISK_CODE[signals.routeRisk]) << 32n) |
     (BigInt(DISCLOSURE_CODE[signals.disclosureMode]) << 40n) |
-    (BigInt(PROVIDER_CODE[signals.provider]) << 48n) |
+    (BigInt(EXECUTION_MODEL_CODE[signals.executionModel]) << 48n) |
     (BigInt(signals.flags & 0xffff) << 56n);
 
   return [lane0, 0n];
@@ -229,7 +229,7 @@ export async function privacyIntentCommitment(intent: WalletPrivacyIntent): Prom
     new Uint8Array([ACTION_CODE[intent.action], ASSET_CODE[intent.asset]]),
     u64Le(amountAtoms(intent.amount, intent.asset)),
     hexToBytes(intent.counterpartyCommitment),
-    new Uint8Array([PROVIDER_CODE[intent.provider]]),
+    new Uint8Array([EXECUTION_MODEL_CODE[intent.executionModel]]),
     u64Le(intent.nonce),
     u64Le(intent.expirySlot),
     u16Le(intent.flags),
@@ -264,7 +264,7 @@ export function evaluatePrivacy(signals: WalletPrivacySignals): WalletPrivacyDec
     }
   }
   if (signals.disclosureMode !== "none") flags |= PRIVACY_DECISION_DISCLOSURE_AVAILABLE;
-  flags |= signals.provider === "nativeArcium" ? PRIVACY_DECISION_ROUTE_NATIVE : PRIVACY_DECISION_ROUTE_PROVIDER;
+  flags |= signals.executionModel === "shieldedState" ? PRIVACY_DECISION_ROUTE_NATIVE : PRIVACY_DECISION_ROUTE_PROVIDER;
   if (signals.action === "transfer" || signals.action === "swapIntent") flags |= PRIVACY_DECISION_NEEDS_SHIELDING;
 
   const approved = signals.routeRisk !== "blocked";
@@ -272,7 +272,7 @@ export function evaluatePrivacy(signals: WalletPrivacySignals): WalletPrivacyDec
 
   return {
     approved,
-    provider: signals.provider,
+    executionModel: signals.executionModel,
     decisionFlags: flags,
     privacyScore: approved ? Math.max(0, Math.min(100, score)) : 0,
     minConfirmations: ({ thin: 8, building: 4, healthy: 2, deep: 1 } as const)[signals.poolBucket],
@@ -297,7 +297,7 @@ export async function buildPrivacyArtifacts(
   const receiptCommitment = await sha256([
     PRIVACY_DOMAIN_RECEIPT,
     requestCommitment,
-    new Uint8Array([decision.approved ? 1 : 0, PROVIDER_CODE[decision.provider]]),
+    new Uint8Array([decision.approved ? 1 : 0, EXECUTION_MODEL_CODE[decision.executionModel]]),
     u16Le(decision.decisionFlags),
     new Uint8Array([decision.privacyScore, decision.minConfirmations]),
     u64Le(0n),
@@ -345,7 +345,7 @@ export async function createPrivacyReceipt(params: {
   action: PrivacyActionId;
   asset: PrivacyAssetSymbol;
   amount: number;
-  provider: PrivacyProviderId;
+  executionModel: PrivacyExecutionModelId;
   recipientHint?: string | null;
   disclosureMode: PrivacyDisclosureModeId;
   poolBucket: PrivacyPoolBucketId;
@@ -361,7 +361,7 @@ export async function createPrivacyReceipt(params: {
     asset: params.asset,
     amount: params.amount,
     counterpartyCommitment: counterparty,
-    provider: params.provider,
+    executionModel: params.executionModel,
     nonce,
     expirySlot: BigInt(Math.floor(now / 1000) + 60 * 30),
     flags: params.flags,
@@ -373,7 +373,7 @@ export async function createPrivacyReceipt(params: {
     poolBucket: params.poolBucket,
     routeRisk: params.routeRisk,
     disclosureMode: params.disclosureMode,
-    provider: params.provider,
+    executionModel: params.executionModel,
     flags: params.flags,
   };
   const artifacts = await buildPrivacyArtifacts(intent, signals, nonce);
@@ -386,7 +386,7 @@ export async function createPrivacyReceipt(params: {
     action: params.action,
     asset: params.asset,
     amount: params.amount,
-    provider: params.provider,
+    executionModel: params.executionModel,
     recipientHint: params.recipientHint ?? null,
     intentCommitment: artifacts.intentCommitment,
     signalCommitment: artifacts.signalCommitment,

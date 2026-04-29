@@ -1,6 +1,6 @@
 import { PublicKey } from "@solana/web3.js";
 import { DISCRIMINATOR, ACCOUNT_SIZE } from "./constants";
-import type { VaultStatus, SessionStatus, OrchestrationStatus, RecoveryStatus, PolicyEvaluationStatus } from "./constants";
+import type { VaultStatus, SessionStatus, OrchestrationStatus, RecoveryStatus } from "./constants";
 import type {
   VaultRegistryAccount,
   PolicyReceiptStateAccount,
@@ -10,8 +10,6 @@ import type {
   AuthorityProofAccount,
   SpendOrchestrationAccount,
   RecoveryStateAccount,
-  PolicyConfigAccount,
-  PolicyEvaluationAccount,
 } from "./types";
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -23,11 +21,6 @@ function readU8(buf: Uint8Array, offset: number): number {
 function readU32LE(buf: Uint8Array, offset: number): number {
   const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
   return dv.getUint32(offset, true);
-}
-
-function readU16LE(buf: Uint8Array, offset: number): number {
-  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-  return dv.getUint16(offset, true);
 }
 
 function readU64LE(buf: Uint8Array, offset: number): bigint {
@@ -227,54 +220,3 @@ export function decodeRecoveryState(
   };
 }
 
-export function decodePolicyConfig(
-  data: Uint8Array
-): PolicyConfigAccount {
-  if (data.length < ACCOUNT_SIZE.PolicyConfigState) {
-    throw new Error(
-      `PolicyConfig: expected ${ACCOUNT_SIZE.PolicyConfigState} bytes, got ${data.length}`
-    );
-  }
-  if (!matchDiscriminator(data, DISCRIMINATOR.PolicyConfig)) {
-    throw new Error("PolicyConfig: invalid discriminator");
-  }
-  return {
-    coreProgram: readPubkey(data, 8),
-    arciumProgram: readPubkey(data, 40),
-    mxeAccount: readPubkey(data, 72),
-    policyVersion: readU64LE(data, 104),
-    nextRequestNonce: readU64LE(data, 112),
-    bump: readU8(data, 120),
-  };
-}
-
-export function decodePolicyEvaluation(
-  data: Uint8Array
-): PolicyEvaluationAccount {
-  if (data.length < ACCOUNT_SIZE.PolicyEvaluationState) {
-    throw new Error(
-      `PolicyEvaluation: expected ${ACCOUNT_SIZE.PolicyEvaluationState} bytes, got ${data.length}`
-    );
-  }
-  if (!matchDiscriminator(data, DISCRIMINATOR.PolicyEvaluation)) {
-    throw new Error("PolicyEvaluation: invalid discriminator");
-  }
-  return {
-    requestCommitment: readBytes(data, 8, 32),
-    vaultId: readBytes(data, 40, 32),
-    actionHash: readBytes(data, 72, 32),
-    encryptedInputCommitment: readBytes(data, 104, 32),
-    policyVersion: readU64LE(data, 136),
-    requestNonce: readU64LE(data, 144),
-    expirySlot: readU64LE(data, 152),
-    computationOffset: readU64LE(data, 160),
-    receiptCommitment: readBytes(data, 168, 32),
-    decisionCommitment: readBytes(data, 200, 32),
-    delayUntilSlot: readU64LE(data, 232),
-    status: readU8(data, 240) as PolicyEvaluationStatus,
-    reasonCode: readU16LE(data, 241),
-    decisionFlags: readU16LE(data, 243),
-    riskScore: readU16LE(data, 245),
-    riskTier: readU8(data, 247),
-  };
-}

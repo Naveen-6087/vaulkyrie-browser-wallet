@@ -7,15 +7,12 @@ import {
   VersionedTransaction,
 } from "@solana/web3.js";
 import { VaulkyrieClient } from "@/sdk/client";
-import { PolicyMxeClient, findPolicyConfigPda } from "@/sdk/policyClient";
 import {
   createInitAuthorityInstruction,
   createInitVaultInstruction,
 } from "@/sdk/instructions";
-import { createInitPolicyConfigInstruction } from "@/sdk/policyInstructions";
 import {
   VAULKYRIE_CORE_PROGRAM_ID,
-  VAULKYRIE_POLICY_MXE_PROGRAM_ID,
   ACCOUNT_SIZE,
 } from "@/sdk/constants";
 import { findQuantumAuthorityPda, findVaultRegistryPda } from "@/sdk/pda";
@@ -137,15 +134,12 @@ export async function prepareVaultBootstrapTransaction(params: {
   } = params;
 
   const coreClient = new VaulkyrieClient(connection);
-  const policyClient = new PolicyMxeClient(connection);
 
   const existingVault = await coreClient.getVaultRegistry(walletPubkey);
   const [vaultRegistryPda, vaultBump] = findVaultRegistryPda(walletPubkey);
   const existingAuthority = existingVault
     ? await coreClient.getQuantumAuthority(vaultRegistryPda)
     : null;
-  const existingPolicyConfig = await policyClient.getPolicyConfig(walletPubkey);
-  const [policyConfigPda, policyConfigBump] = findPolicyConfigPda(walletPubkey);
 
   let authorityHash = existingVault?.account.currentAuthorityHash ?? null;
   let authorityRoot = existingAuthority?.account.currentAuthorityRoot ?? null;
@@ -231,7 +225,7 @@ export async function prepareVaultBootstrapTransaction(params: {
       authorityHash,
       policyVersion: defaultPolicyVersion,
       bump: vaultBump,
-      policyMxeProgram: VAULKYRIE_POLICY_MXE_PROGRAM_ID,
+      policyMxeProgram: SystemProgram.programId,
     }));
     actions.push("vault registry");
   }
@@ -251,21 +245,6 @@ export async function prepareVaultBootstrapTransaction(params: {
       bump: authorityBump,
     }));
     actions.push("quantum authority");
-  }
-
-  if (!existingPolicyConfig) {
-    requiredFundingLamports += await connection.getMinimumBalanceForRentExemption(
-      ACCOUNT_SIZE.PolicyConfigState,
-    );
-    const policyVersion = existingVault?.account.policyVersion ?? defaultPolicyVersion;
-    transaction.add(createInitPolicyConfigInstruction(policyConfigPda, walletPubkey, {
-      coreProgram: VAULKYRIE_CORE_PROGRAM_ID.toBytes(),
-      arciumProgram: VAULKYRIE_POLICY_MXE_PROGRAM_ID.toBytes(),
-      mxeAccount: VAULKYRIE_POLICY_MXE_PROGRAM_ID.toBytes(),
-      policyVersion,
-      bump: policyConfigBump,
-    }));
-    actions.push("policy config");
   }
 
   if (transaction.instructions.length === 0) {
