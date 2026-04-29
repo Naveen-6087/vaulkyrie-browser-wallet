@@ -10,18 +10,16 @@ import type {
   WalletView,
   SpendOrchestrationActivity,
   RecoverySessionRecord,
-  PrivacyAccountRecord,
-  PrivacyReceiptRecord,
 } from "../types";
 import { DEFAULT_NETWORK, type NetworkId } from "../lib/constants";
 import {
-  createVaulkyrieClient,
   fetchTokenBalances,
   fetchTransactionHistory,
   fetchCollectibles,
   fetchTokenPrices,
   withRpcFallback,
 } from "../services/solanaRpc";
+import { VaulkyrieClient } from "../sdk/client";
 import { walletPersistStorage } from "../lib/walletPersistStorage";
 import { DEFAULT_RELAY_URL } from "../services/relay/relayAdapter";
 import type { VaultCosignerMetadata } from "../services/cosigner/cosignerClient";
@@ -80,8 +78,6 @@ export interface PersistedWalletState {
   xmssTrees: Record<string, string>;
   winterAuthorityStates: Record<string, string>;
   quantumVaultKeys: Record<string, string>;
-  privacyAccounts: Record<string, PrivacyAccountRecord[]>;
-  privacyReceipts: Record<string, PrivacyReceiptRecord[]>;
   orchestrationHistory: Record<string, SpendOrchestrationActivity[]>;
   recoverySessions: Record<string, RecoverySessionRecord[]>;
 }
@@ -159,11 +155,6 @@ interface WalletState extends PersistedWalletState {
   getQuantumVaultKey: (publicKey: string) => string | null;
   clearQuantumVaultKey: (publicKey: string) => void;
 
-  // Privacy persistence
-  upsertPrivacyAccount: (publicKey: string, account: PrivacyAccountRecord) => void;
-  getPrivacyAccounts: (publicKey: string) => PrivacyAccountRecord[];
-  recordPrivacyReceipt: (publicKey: string, receipt: PrivacyReceiptRecord) => void;
-  getPrivacyReceipts: (publicKey: string) => PrivacyReceiptRecord[];
   recordOrchestrationActivity: (publicKey: string, activity: SpendOrchestrationActivity) => void;
   getOrchestrationHistory: (publicKey: string) => SpendOrchestrationActivity[];
   upsertRecoverySession: (publicKey: string, session: RecoverySessionRecord) => void;
@@ -197,8 +188,6 @@ export function pickPersistedWalletState(state: WalletState): PersistedWalletSta
     xmssTrees: state.xmssTrees,
     winterAuthorityStates: state.winterAuthorityStates,
     quantumVaultKeys: state.quantumVaultKeys,
-    privacyAccounts: state.privacyAccounts,
-    privacyReceipts: state.privacyReceipts,
     orchestrationHistory: state.orchestrationHistory,
     recoverySessions: state.recoverySessions,
   };
@@ -227,8 +216,6 @@ export const useWalletStore = create<WalletState>()(
       xmssTrees: {},
       winterAuthorityStates: {},
       quantumVaultKeys: {},
-      privacyAccounts: {},
-      privacyReceipts: {},
       orchestrationHistory: {},
       recoverySessions: {},
       tokens: [],
@@ -269,10 +256,6 @@ export const useWalletStore = create<WalletState>()(
           delete winterAuthorityStates[publicKey];
           const quantumVaultKeys = { ...state.quantumVaultKeys };
           delete quantumVaultKeys[publicKey];
-          const privacyAccounts = { ...state.privacyAccounts };
-          delete privacyAccounts[publicKey];
-          const privacyReceipts = { ...state.privacyReceipts };
-          delete privacyReceipts[publicKey];
           const orchestrationHistory = { ...state.orchestrationHistory };
           delete orchestrationHistory[publicKey];
           const recoverySessions = { ...state.recoverySessions };
@@ -288,8 +271,6 @@ export const useWalletStore = create<WalletState>()(
             xmssTrees,
             winterAuthorityStates,
             quantumVaultKeys,
-            privacyAccounts,
-            privacyReceipts,
             orchestrationHistory,
             recoverySessions,
             activeAccount,
@@ -429,32 +410,6 @@ export const useWalletStore = create<WalletState>()(
           delete next[publicKey];
           return { quantumVaultKeys: next };
         }),
-
-      upsertPrivacyAccount: (publicKey, account) =>
-        set((state) => {
-          const existing = state.privacyAccounts[publicKey] ?? [];
-          const next = existing.some((item) => item.id === account.id)
-            ? existing.map((item) => (item.id === account.id ? account : item))
-            : [account, ...existing];
-          return {
-            privacyAccounts: {
-              ...state.privacyAccounts,
-              [publicKey]: next,
-            },
-          };
-        }),
-      getPrivacyAccounts: (publicKey) => get().privacyAccounts[publicKey] ?? [],
-      recordPrivacyReceipt: (publicKey, receipt) =>
-        set((state) => ({
-          privacyReceipts: {
-            ...state.privacyReceipts,
-            [publicKey]: [
-              receipt,
-              ...(state.privacyReceipts[publicKey] ?? []).filter((item) => item.id !== receipt.id),
-            ].slice(0, 100),
-          },
-        })),
-      getPrivacyReceipts: (publicKey) => get().privacyReceipts[publicKey] ?? [],
       recordOrchestrationActivity: (publicKey, activity) =>
         set((state) => ({
           orchestrationHistory: {
@@ -565,29 +520,31 @@ export const useWalletStore = create<WalletState>()(
         if (!activeAccount) return;
 
         try {
-          const client = createVaulkyrieClient(network);
           const pubkey = new PublicKey(activeAccount.publicKey);
-          const exists = await client.vaultExists(pubkey);
-
-          if (exists) {
+          const vaultState = await withRpcFallback(network, async (connection) => {
+            const client = new VaulkyrieClient(connection);
             const result = await client.getVaultRegistry(pubkey);
-            if (result) {
-              const { account } = result;
-              const authority = await client.getQuantumAuthority(result.address);
-              const localVaultConfig = vaultConfigs[activeAccount.publicKey];
-              const localDkg = dkgResults[activeAccount.publicKey];
-              set({
-                vaultState: {
-                  address: activeAccount.publicKey,
-                  threshold: localVaultConfig?.threshold ?? localDkg?.threshold ?? 0,
-                  participants: localVaultConfig?.totalParticipants ?? localDkg?.participants ?? 0,
-                  policyConfigHash: Array.from(account.policyMxeProgram.toBytes()).map((b) => b.toString(16).padStart(2, "0")).join(""),
-                  authorityLeafIndex: authority?.account.nextLeafIndex ?? 0,
-                  pendingSessions: 0,
-                },
-              });
-              return;
+            if (!result) {
+              return null;
             }
+
+            const { account } = result;
+            const authority = await client.getQuantumAuthority(result.address);
+            const localVaultConfig = vaultConfigs[activeAccount.publicKey];
+            const localDkg = dkgResults[activeAccount.publicKey];
+            return {
+              address: activeAccount.publicKey,
+              threshold: localVaultConfig?.threshold ?? localDkg?.threshold ?? 0,
+              participants: localVaultConfig?.totalParticipants ?? localDkg?.participants ?? 0,
+              authorityHash: Array.from(account.currentAuthorityHash).map((b) => b.toString(16).padStart(2, "0")).join(""),
+              authorityLeafIndex: authority?.account.nextLeafIndex ?? 0,
+              pendingSessions: 0,
+            } satisfies VaultState;
+          });
+
+          if (vaultState) {
+            set({ vaultState });
+            return;
           }
           set({ vaultState: null });
         } catch (err) {

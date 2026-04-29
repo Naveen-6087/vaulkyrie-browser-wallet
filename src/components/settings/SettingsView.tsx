@@ -352,12 +352,6 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
               </div>
               <div className="p-1">
                 <SettingRow
-                  icon={Shield}
-                  label="Privacy"
-                  value="Shielded accounts and private swap tools"
-                  onClick={() => onNavigate("privacy")}
-                />
-                <SettingRow
                   icon={LifeBuoy}
                   label="Recovery & Restore"
                   value="Open recovery coordination and import/export tools"

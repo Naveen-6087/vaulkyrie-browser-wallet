@@ -1,18 +1,18 @@
 import { PublicKey } from "@solana/web3.js";
-import { DISCRIMINATOR, ACCOUNT_SIZE } from "./constants";
-import type { VaultStatus, SessionStatus, OrchestrationStatus, RecoveryStatus } from "./constants";
+import { ACCOUNT_SIZE, DISCRIMINATOR } from "./constants";
 import type {
-  VaultRegistryAccount,
-  PolicyReceiptStateAccount,
-  ActionSessionStateAccount,
-  QuantumAuthorityAccount,
-  PqcWalletAccount,
+  OrchestrationStatus,
+  RecoveryStatus,
+  VaultStatus,
+} from "./constants";
+import type {
   AuthorityProofAccount,
-  SpendOrchestrationAccount,
+  PqcWalletAccount,
+  QuantumAuthorityAccount,
   RecoveryStateAccount,
+  SpendOrchestrationAccount,
+  VaultRegistryAccount,
 } from "./types";
-
-// ── Helpers ──────────────────────────────────────────────────────────
 
 function readU8(buf: Uint8Array, offset: number): number {
   return buf[offset];
@@ -36,26 +36,21 @@ function readPubkey(buf: Uint8Array, offset: number): PublicKey {
   return new PublicKey(buf.slice(offset, offset + 32));
 }
 
-function matchDiscriminator(
-  data: Uint8Array,
-  expected: Uint8Array
-): boolean {
-  if (data.length < 8) return false;
-  for (let i = 0; i < 8; i++) {
-    if (data[i] !== expected[i]) return false;
+function matchDiscriminator(data: Uint8Array, expected: Uint8Array): boolean {
+  if (data.length < 8) {
+    return false;
+  }
+  for (let index = 0; index < 8; index += 1) {
+    if (data[index] !== expected[index]) {
+      return false;
+    }
   }
   return true;
 }
 
-// ── Decoders ─────────────────────────────────────────────────────────
-
-export function decodeVaultRegistry(
-  data: Uint8Array
-): VaultRegistryAccount {
+export function decodeVaultRegistry(data: Uint8Array): VaultRegistryAccount {
   if (data.length < ACCOUNT_SIZE.VaultRegistry) {
-    throw new Error(
-      `VaultRegistry: expected ${ACCOUNT_SIZE.VaultRegistry} bytes, got ${data.length}`
-    );
+    throw new Error(`VaultRegistry: expected ${ACCOUNT_SIZE.VaultRegistry} bytes, got ${data.length}`);
   }
   if (!matchDiscriminator(data, DISCRIMINATOR.VaultRegistry)) {
     throw new Error("VaultRegistry: invalid discriminator");
@@ -63,62 +58,15 @@ export function decodeVaultRegistry(
   return {
     walletPubkey: readPubkey(data, 8),
     currentAuthorityHash: readBytes(data, 40, 32),
-    policyVersion: readU64LE(data, 72),
-    lastConsumedReceiptNonce: readU64LE(data, 80),
-    status: readU8(data, 88) as VaultStatus,
-    bump: readU8(data, 89),
-    policyMxeProgram: readPubkey(data, 90),
+    status: readU8(data, 72) as VaultStatus,
+    bump: readU8(data, 73),
+    reserved: readBytes(data, 74, 54),
   };
 }
 
-export function decodePolicyReceiptState(
-  data: Uint8Array
-): PolicyReceiptStateAccount {
-  if (data.length < ACCOUNT_SIZE.PolicyReceiptState) {
-    throw new Error(
-      `PolicyReceiptState: expected ${ACCOUNT_SIZE.PolicyReceiptState} bytes, got ${data.length}`
-    );
-  }
-  if (!matchDiscriminator(data, DISCRIMINATOR.PolicyReceipt)) {
-    throw new Error("PolicyReceiptState: invalid discriminator");
-  }
-  return {
-    receiptCommitment: readBytes(data, 8, 32),
-    actionHash: readBytes(data, 40, 32),
-    nonce: readU64LE(data, 72),
-    expirySlot: readU64LE(data, 80),
-    consumed: readU8(data, 88) !== 0,
-  };
-}
-
-export function decodeActionSessionState(
-  data: Uint8Array
-): ActionSessionStateAccount {
-  if (data.length < ACCOUNT_SIZE.ActionSessionState) {
-    throw new Error(
-      `ActionSessionState: expected ${ACCOUNT_SIZE.ActionSessionState} bytes, got ${data.length}`
-    );
-  }
-  if (!matchDiscriminator(data, DISCRIMINATOR.ActionSession)) {
-    throw new Error("ActionSessionState: invalid discriminator");
-  }
-  return {
-    receiptCommitment: readBytes(data, 8, 32),
-    actionHash: readBytes(data, 40, 32),
-    policyVersion: readU64LE(data, 72),
-    expirySlot: readU64LE(data, 80),
-    threshold: readU8(data, 88),
-    status: readU8(data, 89) as SessionStatus,
-  };
-}
-
-export function decodeQuantumAuthority(
-  data: Uint8Array
-): QuantumAuthorityAccount {
+export function decodeQuantumAuthority(data: Uint8Array): QuantumAuthorityAccount {
   if (data.length < ACCOUNT_SIZE.QuantumAuthorityState) {
-    throw new Error(
-      `QuantumAuthority: expected ${ACCOUNT_SIZE.QuantumAuthorityState} bytes, got ${data.length}`
-    );
+    throw new Error(`QuantumAuthority: expected ${ACCOUNT_SIZE.QuantumAuthorityState} bytes, got ${data.length}`);
   }
   if (!matchDiscriminator(data, DISCRIMINATOR.QuantumAuthority)) {
     throw new Error("QuantumAuthority: invalid discriminator");
@@ -135,9 +83,7 @@ export function decodeQuantumAuthority(
 
 export function decodePqcWallet(data: Uint8Array): PqcWalletAccount {
   if (data.length < ACCOUNT_SIZE.PqcWalletState) {
-    throw new Error(
-      `PqcWallet: expected ${ACCOUNT_SIZE.PqcWalletState} bytes, got ${data.length}`
-    );
+    throw new Error(`PqcWallet: expected ${ACCOUNT_SIZE.PqcWalletState} bytes, got ${data.length}`);
   }
   if (!matchDiscriminator(data, DISCRIMINATOR.PqcWallet)) {
     throw new Error("PqcWallet: invalid discriminator");
@@ -150,13 +96,9 @@ export function decodePqcWallet(data: Uint8Array): PqcWalletAccount {
   };
 }
 
-export function decodeAuthorityProof(
-  data: Uint8Array
-): AuthorityProofAccount {
+export function decodeAuthorityProof(data: Uint8Array): AuthorityProofAccount {
   if (data.length < 80) {
-    throw new Error(
-      `AuthorityProof: expected at least 80 bytes, got ${data.length}`
-    );
+    throw new Error(`AuthorityProof: expected at least 80 bytes, got ${data.length}`);
   }
   if (!matchDiscriminator(data, DISCRIMINATOR.AuthorityProof)) {
     throw new Error("AuthorityProof: invalid discriminator");
@@ -171,13 +113,9 @@ export function decodeAuthorityProof(
   };
 }
 
-export function decodeSpendOrchestration(
-  data: Uint8Array
-): SpendOrchestrationAccount {
+export function decodeSpendOrchestration(data: Uint8Array): SpendOrchestrationAccount {
   if (data.length < ACCOUNT_SIZE.SpendOrchestrationState) {
-    throw new Error(
-      `SpendOrchestration: expected ${ACCOUNT_SIZE.SpendOrchestrationState} bytes, got ${data.length}`
-    );
+    throw new Error(`SpendOrchestration: expected ${ACCOUNT_SIZE.SpendOrchestrationState} bytes, got ${data.length}`);
   }
   if (!matchDiscriminator(data, DISCRIMINATOR.SpendOrchestration)) {
     throw new Error("SpendOrchestration: invalid discriminator");
@@ -196,13 +134,9 @@ export function decodeSpendOrchestration(
   };
 }
 
-export function decodeRecoveryState(
-  data: Uint8Array
-): RecoveryStateAccount {
+export function decodeRecoveryState(data: Uint8Array): RecoveryStateAccount {
   if (data.length < ACCOUNT_SIZE.RecoveryState) {
-    throw new Error(
-      `RecoveryState: expected ${ACCOUNT_SIZE.RecoveryState} bytes, got ${data.length}`
-    );
+    throw new Error(`RecoveryState: expected ${ACCOUNT_SIZE.RecoveryState} bytes, got ${data.length}`);
   }
   if (!matchDiscriminator(data, DISCRIMINATOR.Recovery)) {
     throw new Error("RecoveryState: invalid discriminator");
@@ -219,4 +153,3 @@ export function decodeRecoveryState(
     bump: readU8(data, 147),
   };
 }
-

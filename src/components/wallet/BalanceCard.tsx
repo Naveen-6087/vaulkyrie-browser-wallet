@@ -1,4 +1,4 @@
-import { ArrowUpRight, ArrowDownLeft, ArrowLeftRight, Shield } from "lucide-react";
+import { ArrowUpRight, ArrowDownLeft, ArrowLeftRight, RadioTower } from "lucide-react";
 import { formatUsd } from "@/lib/utils";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -72,10 +72,10 @@ export function BalanceCard({
             variant="secondary"
             size="sm"
             className="gap-1.5"
-            onClick={() => onNavigate("privacy")}
+            onClick={() => onNavigate("activity")}
           >
-            <Shield className="h-3.5 w-3.5" />
-            Privacy
+            <RadioTower className="h-3.5 w-3.5" />
+            Activity
           </Button>
         </div>
       </div>

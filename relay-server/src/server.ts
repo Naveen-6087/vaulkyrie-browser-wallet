@@ -23,15 +23,6 @@ import {
   registerCosignerShare,
   requestCosignerSignature,
 } from "./cosigner.js";
-import {
-  executeEncifherSwap,
-  getEncifherOrderStatus,
-  getEncifherQuote,
-  getEncifherStatus,
-  prepareEncifherDeposit,
-  prepareEncifherSwap,
-  prepareEncifherWithdraw,
-} from "./encifher.js";
 import { getPqcSponsorStatus, sponsorPqcWalletInit } from "./pqcSponsor.js";
 
 // ── Configuration ────────────────────────────────────────────────────
@@ -199,53 +190,11 @@ const httpServer = http.createServer(async (req, res) => {
       return;
     }
 
-    if (req.method === "GET" && url.pathname === "/privacy/encifher/status") {
-      writeJson(res, 200, { status: "ok", encifher: getEncifherStatus() });
-      return;
-    }
-
-    if (req.method === "POST" && url.pathname === "/privacy/encifher/quote") {
-      const body = await readJsonBody(req);
-      writeJson(res, 200, { status: "ok", quote: await getEncifherQuote(body as Parameters<typeof getEncifherQuote>[0]) });
-      return;
-    }
-
-    if (req.method === "POST" && url.pathname === "/privacy/encifher/deposit-tx") {
-      const body = await readJsonBody(req);
-      writeJson(res, 200, { status: "ok", ...(await prepareEncifherDeposit(body as Parameters<typeof prepareEncifherDeposit>[0])) });
-      return;
-    }
-
-    if (req.method === "POST" && url.pathname === "/privacy/encifher/withdraw-tx") {
-      const body = await readJsonBody(req);
-      writeJson(res, 200, { status: "ok", ...(await prepareEncifherWithdraw(body as Parameters<typeof prepareEncifherWithdraw>[0])) });
-      return;
-    }
-
-    if (req.method === "POST" && url.pathname === "/privacy/encifher/swap-tx") {
-      const body = await readJsonBody(req);
-      writeJson(res, 200, { status: "ok", ...(await prepareEncifherSwap(body as Parameters<typeof prepareEncifherSwap>[0])) });
-      return;
-    }
-
-    if (req.method === "POST" && url.pathname === "/privacy/encifher/execute-swap") {
-      const body = await readJsonBody(req);
-      writeJson(res, 202, { status: "accepted", result: await executeEncifherSwap(body as Parameters<typeof executeEncifherSwap>[0]) });
-      return;
-    }
-
-    if (req.method === "POST" && url.pathname === "/privacy/encifher/order-status") {
-      const body = await readJsonBody(req);
-      writeJson(res, 200, { status: "ok", order: await getEncifherOrderStatus(body as Parameters<typeof getEncifherOrderStatus>[0]) });
-      return;
-    }
-
     writeJson(res, 200, {
       status: "ok",
       sessions: sessions.size,
       cosigners: getCosignerCount(),
       pqcSponsor: await getPqcSponsorStatus().catch(() => null),
-      encifher: getEncifherStatus(),
       uptime: process.uptime(),
     });
   } catch (error) {

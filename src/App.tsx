@@ -9,7 +9,6 @@ import { QuantumVault } from "@/pages/QuantumVault";
 import { SendView } from "@/components/wallet/SendView";
 import { ReceiveView } from "@/components/wallet/ReceiveView";
 import { SwapView } from "@/components/wallet/SwapView";
-import { PrivacyView } from "@/components/wallet/PrivacyView";
 import { RecoveryView } from "@/components/wallet/RecoveryView";
 import { ActivityList } from "@/components/wallet/ActivityList";
 import { AddressBook } from "@/components/wallet/AddressBook";
@@ -324,9 +323,6 @@ function App() {
 
       case "contacts":
         return <AddressBook onNavigate={setView} />;
-
-      case "privacy":
-        return <PrivacyView onNavigate={setView} />;
 
       case "approval":
         return <ApprovalCenter onNavigate={setView} />;

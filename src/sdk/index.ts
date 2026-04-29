@@ -7,5 +7,4 @@ export * from "./pda";
 export * from "./instructions";
 export * from "./accounts";
 export * from "./errors";
-export * from "./privacyEngine";
 export { VaulkyrieClient } from "./client";

@@ -1,103 +1,48 @@
 import type { PublicKey } from "@solana/web3.js";
 import type {
-  VaultStatus,
-  SessionStatus,
   OrchestrationStatus,
   RecoveryStatus,
-  ThresholdRequirement,
+  VaultStatus,
 } from "./constants";
-
-// ── Wire-format types (match Rust encoding exactly) ──────────────────
-
-export interface PolicyReceipt {
-  actionHash: Uint8Array; // 32 bytes
-  policyVersion: bigint; // u64
-  threshold: ThresholdRequirement; // u8
-  nonce: bigint; // u64
-  expirySlot: bigint; // u64
-}
-
-export interface AuthorityRotationStatement {
-  actionHash: Uint8Array; // 32 bytes
-  nextAuthorityHash: Uint8Array; // 32 bytes
-  sequence: bigint; // u64
-  expirySlot: bigint; // u64
-}
-
-export interface WinterAuthorityAdvanceStatement {
-  actionHash: Uint8Array; // 32 bytes
-  currentRoot: Uint8Array; // 32 bytes
-  nextRoot: Uint8Array; // 32 bytes
-  sequence: bigint; // u64
-  expirySlot: bigint; // u64
-}
-
-export interface WotsAuthProof {
-  publicKey: Uint8Array; // 512 bytes
-  signature: Uint8Array; // 512 bytes
-  leafIndex: number; // u32
-  authPath: Uint8Array; // 256 bytes
-}
-
-// ── On-chain account state types ─────────────────────────────────────
 
 export interface VaultRegistryAccount {
   walletPubkey: PublicKey;
-  currentAuthorityHash: Uint8Array; // 32 bytes
-  policyVersion: bigint;
-  lastConsumedReceiptNonce: bigint;
+  currentAuthorityHash: Uint8Array;
   status: VaultStatus;
   bump: number;
-  policyMxeProgram: PublicKey;
-}
-
-export interface PolicyReceiptStateAccount {
-  receiptCommitment: Uint8Array; // 32 bytes
-  actionHash: Uint8Array; // 32 bytes
-  nonce: bigint;
-  expirySlot: bigint;
-  consumed: boolean;
-}
-
-export interface ActionSessionStateAccount {
-  receiptCommitment: Uint8Array; // 32 bytes
-  actionHash: Uint8Array; // 32 bytes
-  policyVersion: bigint;
-  expirySlot: bigint;
-  threshold: number;
-  status: SessionStatus;
+  reserved: Uint8Array;
 }
 
 export interface QuantumAuthorityAccount {
-  currentAuthorityHash: Uint8Array; // 32 bytes
-  currentAuthorityRoot: Uint8Array; // 32 bytes
-  lastConsumedDigest: Uint8Array; // 32 bytes
+  currentAuthorityHash: Uint8Array;
+  currentAuthorityRoot: Uint8Array;
+  lastConsumedDigest: Uint8Array;
   nextSequence: bigint;
-  nextLeafIndex: number; // u32
+  nextLeafIndex: number;
   bump: number;
 }
 
 export interface PqcWalletAccount {
-  walletId: Uint8Array; // 32 bytes
-  currentRoot: Uint8Array; // 32 bytes
+  walletId: Uint8Array;
+  currentRoot: Uint8Array;
   sequence: bigint;
   bump: number;
 }
 
 export interface AuthorityProofAccount {
-  statementDigest: Uint8Array; // 32 bytes
-  proofCommitment: Uint8Array; // 32 bytes
-  bytesWritten: number; // u32
+  statementDigest: Uint8Array;
+  proofCommitment: Uint8Array;
+  bytesWritten: number;
   consumed: boolean;
-  proofBytes: Uint8Array; // variable, up to 1284 bytes
+  proofBytes: Uint8Array;
 }
 
 export interface SpendOrchestrationAccount {
-  actionHash: Uint8Array; // 32 bytes
-  sessionCommitment: Uint8Array; // 32 bytes
-  signersCommitment: Uint8Array; // 32 bytes
-  signingPackageHash: Uint8Array; // 32 bytes
-  txBinding: Uint8Array; // 32 bytes
+  actionHash: Uint8Array;
+  sessionCommitment: Uint8Array;
+  signersCommitment: Uint8Array;
+  signingPackageHash: Uint8Array;
+  txBinding: Uint8Array;
   expirySlot: bigint;
   threshold: number;
   participantCount: number;
@@ -107,9 +52,9 @@ export interface SpendOrchestrationAccount {
 
 export interface RecoveryStateAccount {
   vaultPubkey: PublicKey;
-  recoveryCommitment: Uint8Array; // 32 bytes
-  newGroupKey: Uint8Array; // 32 bytes
-  newAuthorityHash: Uint8Array; // 32 bytes
+  recoveryCommitment: Uint8Array;
+  newGroupKey: Uint8Array;
+  newAuthorityHash: Uint8Array;
   expirySlot: bigint;
   newThreshold: number;
   newParticipantCount: number;
@@ -117,24 +62,15 @@ export interface RecoveryStateAccount {
   bump: number;
 }
 
-// ── Instruction parameter types ──────────────────────────────────────
-
 export interface InitVaultParams {
   walletPubkey: PublicKey;
   authorityHash: Uint8Array;
-  policyVersion: bigint;
   bump: number;
-  policyMxeProgram: PublicKey;
 }
 
 export interface InitAuthorityParams {
   currentAuthorityHash: Uint8Array;
   currentAuthorityRoot: Uint8Array;
-  bump: number;
-}
-
-export interface InitQuantumVaultParams {
-  hash: Uint8Array;
   bump: number;
 }
 
@@ -144,61 +80,14 @@ export interface InitPqcWalletParams {
   bump: number;
 }
 
-export interface StageReceiptParams {
-  receipt: PolicyReceipt;
-}
-
-export interface OpenSessionParams {
-  receipt: PolicyReceipt;
-}
-
-export interface ActivateSessionParams {
-  actionHash: Uint8Array;
+export interface AdvancePqcWalletParams {
+  signature: Uint8Array;
+  nextRoot: Uint8Array;
+  amount: bigint;
 }
 
 export interface SetVaultStatusParams {
   status: VaultStatus;
-}
-
-export interface RotateAuthorityParams {
-  statement: AuthorityRotationStatement;
-  proof: WotsAuthProof;
-}
-
-export interface InitAuthorityProofParams {
-  statementDigest: Uint8Array;
-  proofCommitment: Uint8Array;
-}
-
-export interface WriteAuthorityProofChunkParams {
-  offset: number;
-  chunk: Uint8Array;
-}
-
-export interface RotateAuthorityStagedParams {
-  statement: AuthorityRotationStatement;
-}
-
-export interface AdvanceWinterAuthorityParams {
-  statement: WinterAuthorityAdvanceStatement;
-  signature: Uint8Array; // 768 bytes
-}
-
-export interface SplitQuantumVaultParams {
-  signature: Uint8Array; // 1417 bytes
-  amount: bigint;
-  bump: number;
-}
-
-export interface CloseQuantumVaultParams {
-  signature: Uint8Array; // 1417 bytes
-  bump: number;
-}
-
-export interface AdvancePqcWalletParams {
-  signature: Uint8Array; // 1417 bytes
-  nextRoot: Uint8Array;
-  amount: bigint;
 }
 
 export interface InitSpendOrchestrationParams {
@@ -222,15 +111,6 @@ export interface CompleteSpendOrchestrationParams {
   txBinding: Uint8Array;
 }
 
-export interface FailSpendOrchestrationParams {
-  actionHash: Uint8Array;
-  reasonCode: number;
-}
-
-export interface StageBridgedReceiptParams {
-  receipt: PolicyReceipt;
-}
-
 export interface InitRecoveryParams {
   vaultPubkey: PublicKey;
   recoveryCommitment: Uint8Array;
@@ -243,12 +123,4 @@ export interface InitRecoveryParams {
 export interface CompleteRecoveryParams {
   newGroupKey: Uint8Array;
   newAuthorityHash: Uint8Array;
-}
-
-export interface MigrateAuthorityParams {
-  newAuthorityRoot: Uint8Array;
-}
-
-export interface AdvancePolicyVersionParams {
-  newVersion: bigint;
 }

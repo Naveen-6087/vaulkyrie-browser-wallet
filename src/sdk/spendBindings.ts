@@ -46,7 +46,6 @@ export async function buildSpendActionHash(params: {
   amountAtomic: string;
   tokenSymbol: string;
   tokenMint: string | null;
-  policyVersion: bigint;
   sessionNonce: bigint;
 }): Promise<Uint8Array> {
   const payloadHash = await sha256Bytes(
@@ -60,9 +59,10 @@ export async function buildSpendActionHash(params: {
   );
 
   return sha256Bytes(
+    utf8("vaulkyrie:action:v1"),
     params.vaultId,
     payloadHash,
-    u64ToLeBytes(params.policyVersion),
+    u64ToLeBytes(params.sessionNonce),
     Uint8Array.of(ActionKind.Spend),
   );
 }

@@ -123,14 +123,12 @@ export async function prepareVaultBootstrapTransaction(params: {
   walletPubkey: PublicKey;
   existingXmssTree: string | null;
   existingWinterAuthorityState?: string | null;
-  defaultPolicyVersion?: bigint;
 }): Promise<PreparedVaultBootstrap> {
   const {
     connection,
     walletPubkey,
     existingXmssTree,
     existingWinterAuthorityState = null,
-    defaultPolicyVersion = 1n,
   } = params;
 
   const coreClient = new VaulkyrieClient(connection);
@@ -223,9 +221,7 @@ export async function prepareVaultBootstrapTransaction(params: {
     transaction.add(createInitVaultInstruction(vaultRegistryPda, walletPubkey, {
       walletPubkey,
       authorityHash,
-      policyVersion: defaultPolicyVersion,
       bump: vaultBump,
-      policyMxeProgram: SystemProgram.programId,
     }));
     actions.push("vault registry");
   }

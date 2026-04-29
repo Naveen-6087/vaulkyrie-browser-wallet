@@ -4,7 +4,7 @@ export const NETWORKS = {
     rpcUrl: "https://api.mainnet-beta.solana.com",
     rpcUrls: [
       "https://api.mainnet-beta.solana.com",
-      "https://rpc.ankr.com/solana",
+      "https://solana-rpc.publicnode.com",
     ],
     explorerUrl: "https://explorer.solana.com",
     color: "#14F195",

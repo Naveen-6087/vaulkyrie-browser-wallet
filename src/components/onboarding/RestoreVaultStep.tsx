@@ -166,7 +166,7 @@ export function RestoreVaultStep({ onBack, onRestored }: RestoreVaultStepProps) 
                 <p>Network: {preview.network}</p>
                 <p>Accounts: {preview.accounts.map((account) => `${account.name} (${shortenAddress(account.publicKey)})`).join(", ")}</p>
                 <p>
-                  Contacts: {preview.contactCount} · Privacy: {preview.privacyAccountCount} · Activity: {preview.orchestrationActivityCount} · Recovery sessions: {preview.recoverySessionCount}
+                  Contacts: {preview.contactCount} · Activity: {preview.orchestrationActivityCount} · Recovery sessions: {preview.recoverySessionCount}
                 </p>
               </div>
             )}

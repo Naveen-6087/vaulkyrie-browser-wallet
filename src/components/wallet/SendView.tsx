@@ -454,7 +454,6 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
     const existingAuthority = existingVault
       ? await client.getQuantumAuthority(vaultRegistryPda)
       : null;
-    const policyVersion = existingVault?.account.policyVersion ?? 1n;
 
     let authorityHash = existingVault?.account.currentAuthorityHash ?? null;
     let authorityRoot = existingAuthority?.account.currentAuthorityRoot ?? null;
@@ -541,7 +540,6 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
       amountAtomic: amountAtomic.toString(),
       tokenSymbol: selectedToken,
       tokenMint,
-      policyVersion,
       sessionNonce,
     });
     const [orchPda, orchBump] = findSpendOrchestrationPda(vaultRegistryPda, actionHash);
@@ -567,9 +565,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
       tx.add(createInitVaultInstruction(vaultRegistryPda, fromPubkey, {
         walletPubkey: fromPubkey,
         authorityHash,
-        policyVersion,
         bump: vaultBump,
-        policyMxeProgram: SystemProgram.programId,
       }));
     }
     if (!existingAuthority) {

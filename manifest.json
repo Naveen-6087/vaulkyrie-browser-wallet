@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Vaulkyrie Wallet",
-  "description": "Solana threshold wallet with private policy engine and post-quantum security",
+  "description": "Solana threshold wallet with post-quantum security",
   "version": "0.1.0",
   "icons": {
     "16": "favicon.svg",
@@ -38,14 +38,14 @@
     "notifications"
   ],
   "content_security_policy": {
-    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; base-uri 'self'; connect-src 'self' http://localhost:8765 http://127.0.0.1:8765 ws://localhost:8765 ws://127.0.0.1:8765 https://api.mainnet-beta.solana.com https://api.devnet.solana.com https://api.testnet.solana.com https://rpc.ankr.com;"
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; base-uri 'self'; connect-src 'self' http://localhost:8765 http://127.0.0.1:8765 ws://localhost:8765 ws://127.0.0.1:8765 https://api.mainnet-beta.solana.com https://solana-rpc.publicnode.com https://api.devnet.solana.com https://api.testnet.solana.com;"
   },
   "host_permissions": [
     "http://localhost:8765/*",
     "http://127.0.0.1:8765/*",
     "https://api.mainnet-beta.solana.com/*",
+    "https://solana-rpc.publicnode.com/*",
     "https://api.devnet.solana.com/*",
-    "https://api.testnet.solana.com/*",
-    "https://rpc.ankr.com/*"
+    "https://api.testnet.solana.com/*"
   ]
 }

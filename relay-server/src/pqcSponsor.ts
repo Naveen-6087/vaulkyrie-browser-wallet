@@ -83,17 +83,52 @@ function resolveNetwork(network?: string): "devnet" | "testnet" | "mainnet-beta"
   return "devnet";
 }
 
-function resolveRpcUrl(network?: string): string {
+function resolveRpcUrls(network?: string): string[] {
   const resolved = resolveNetwork(network);
   if (resolved === "mainnet-beta" && process.env.PQC_SPONSOR_ALLOW_MAINNET !== "true") {
     throw new Error("PQC sponsorship is disabled for mainnet.");
   }
 
-  if (process.env.PQC_SPONSOR_RPC_URL) {
-    return process.env.PQC_SPONSOR_RPC_URL;
+  return [...new Set([
+    process.env.PQC_SPONSOR_RPC_URL?.trim(),
+    clusterApiUrl(resolved),
+  ].filter((value): value is string => Boolean(value)))];
+}
+
+function isRetryableRpcError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  const normalized = message.toLowerCase();
+
+  return (
+    normalized.includes("403") ||
+    normalized.includes("429") ||
+    normalized.includes("access forbidden") ||
+    normalized.includes("api key is not allowed to access blockchain") ||
+    normalized.includes("failed to fetch") ||
+    normalized.includes("network request failed")
+  );
+}
+
+async function withSponsorRpc<T>(
+  network: string | undefined,
+  operation: (connection: Connection, rpcUrl: string) => Promise<T>,
+): Promise<T> {
+  const rpcUrls = resolveRpcUrls(network);
+  let lastError: unknown;
+
+  for (const rpcUrl of rpcUrls) {
+    try {
+      return await operation(new Connection(rpcUrl, "confirmed"), rpcUrl);
+    } catch (error) {
+      lastError = error;
+      if (!isRetryableRpcError(error) || rpcUrl === rpcUrls[rpcUrls.length - 1]) {
+        throw error;
+      }
+      console.warn(`[Vaulkyrie] PQC sponsor RPC ${rpcUrl} failed, retrying cluster fallback.`, error);
+    }
   }
 
-  return clusterApiUrl(resolved);
+  throw lastError instanceof Error ? lastError : new Error("All PQC sponsor RPC endpoints failed");
 }
 
 function readSponsorKeypair(): Keypair {
@@ -155,8 +190,9 @@ export async function getPqcSponsorStatus(network?: string) {
   const store = readStore();
   const used = Object.keys(store.records).length;
   const limit = Number.isFinite(FREE_SPONSOR_LIMIT) && FREE_SPONSOR_LIMIT > 0 ? FREE_SPONSOR_LIMIT : 0;
-  const connection = new Connection(resolveRpcUrl(network), "confirmed");
-  const balanceLamports = await connection.getBalance(sponsor.publicKey);
+  const balanceLamports = await withSponsorRpc(network, (connection) =>
+    connection.getBalance(sponsor.publicKey),
+  );
 
   return {
     enabled: limit > 0,
@@ -185,35 +221,37 @@ export async function sponsorPqcWalletInit(input: SponsorPqcInitInput) {
 
   const sponsor = readSponsorKeypair();
   const network = resolveNetwork(input.network);
-  const connection = new Connection(resolveRpcUrl(network), "confirmed");
   const programId = getProgramId();
   const [walletPda, bump] = findPqcWalletPda(walletId, programId);
-  const existingAccount = await connection.getAccountInfo(walletPda);
-  if (existingAccount) {
-    throw new Error("PQC wallet account already exists.");
-  }
+  const signature = await withSponsorRpc(network, async (connection) => {
+    const existingAccount = await connection.getAccountInfo(walletPda);
+    if (existingAccount) {
+      throw new Error("PQC wallet account already exists.");
+    }
 
-  const rentLamports = await connection.getMinimumBalanceForRentExemption(PQC_WALLET_SPACE);
-  const balanceLamports = await connection.getBalance(sponsor.publicKey);
-  if (balanceLamports < rentLamports + 10_000) {
-    throw new Error(
-      `PQC sponsor needs funding. Send SOL to ${sponsor.publicKey.toBase58()} and retry.`,
+    const rentLamports = await connection.getMinimumBalanceForRentExemption(PQC_WALLET_SPACE);
+    const balanceLamports = await connection.getBalance(sponsor.publicKey);
+    if (balanceLamports < rentLamports + 10_000) {
+      throw new Error(
+        `PQC sponsor needs funding. Send SOL to ${sponsor.publicKey.toBase58()} and retry.`,
+      );
+    }
+
+    const tx = new Transaction().add(
+      createInitPqcWalletInstruction(sponsor.publicKey, walletPda, walletId, currentRoot, bump),
     );
-  }
+    tx.feePayer = sponsor.publicKey;
+    const latest = await connection.getLatestBlockhash();
+    tx.recentBlockhash = latest.blockhash;
+    tx.sign(sponsor);
 
-  const tx = new Transaction().add(
-    createInitPqcWalletInstruction(sponsor.publicKey, walletPda, walletId, currentRoot, bump),
-  );
-  tx.feePayer = sponsor.publicKey;
-  const latest = await connection.getLatestBlockhash();
-  tx.recentBlockhash = latest.blockhash;
-  tx.sign(sponsor);
-
-  const signature = await connection.sendRawTransaction(tx.serialize(), {
-    skipPreflight: false,
-    preflightCommitment: "confirmed",
+    const signature = await connection.sendRawTransaction(tx.serialize(), {
+      skipPreflight: false,
+      preflightCommitment: "confirmed",
+    });
+    await connection.confirmTransaction({ signature, ...latest }, "confirmed");
+    return signature;
   });
-  await connection.confirmTransaction({ signature, ...latest }, "confirmed");
 
   const record: SponsoredWalletRecord = {
     walletIdHex: input.walletIdHex!.toLowerCase(),
