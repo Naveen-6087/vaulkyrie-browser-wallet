@@ -111,6 +111,8 @@ interface WalletState extends PersistedWalletState {
         delayUntilSlot: string;
         reasonCode: number;
         decisionFlags: number;
+        riskScore?: number;
+        riskTier?: "low" | "medium" | "high" | "critical";
       } | null;
       finalizedReceipt?: {
         evaluationAddress: string;

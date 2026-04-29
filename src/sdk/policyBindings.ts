@@ -143,6 +143,8 @@ export async function buildWalletPolicyResultCommitment(params: {
   delayUntilSlot: bigint | number;
   approved: boolean;
   decisionFlags?: number;
+  riskScore?: number;
+  riskTier?: number | "low" | "medium" | "high" | "critical";
   reasonCode: number;
 }): Promise<Uint8Array> {
   return buildPolicyResultCommitment({
@@ -152,6 +154,8 @@ export async function buildWalletPolicyResultCommitment(params: {
     delayUntilSlot: params.delayUntilSlot,
     reasonCode: params.reasonCode,
     decisionFlags: params.decisionFlags ?? 0,
+    riskScore: params.riskScore ?? 0,
+    riskTier: params.riskTier ?? "low",
     approved: params.approved,
   });
 }

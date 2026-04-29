@@ -127,12 +127,82 @@ function formatApprovalMode(mode: PolicyProfile["approvalMode"]): string {
   }
 }
 
+function formatPrivacyMode(mode: PolicyProfile["privacyMode"] | undefined): string {
+  return mode === "localPreview" ? "Local preview" : "Arcium private";
+}
+
+function formatRiskTier(tier: string | number | undefined): string {
+  if (tier === 0 || tier === "low") return "Low";
+  if (tier === 1 || tier === "medium") return "Medium";
+  if (tier === 2 || tier === "high") return "High";
+  if (tier === 3 || tier === "critical") return "Critical";
+  return "Unknown";
+}
+
 function normalizeRecipients(input: string): string[] {
   return input
     .split(/[\n,]/)
     .map((item) => item.trim())
     .filter(Boolean);
 }
+
+const POLICY_TEMPLATE_PRESETS: Array<{
+  id: string;
+  label: string;
+  template: NonNullable<PolicyProfile["template"]>;
+  actionType: PolicyProfile["actionType"];
+  approvalMode: PolicyProfile["approvalMode"];
+  defaultProtocolRisk: NonNullable<PolicyProfile["defaultProtocolRisk"]>;
+  defaultDeviceTrust: NonNullable<PolicyProfile["defaultDeviceTrust"]>;
+  guardianPosture: NonNullable<PolicyProfile["guardianPosture"]>;
+  recipientMode: NonNullable<PolicyProfile["recipientMode"]>;
+  maxAmount: string;
+  forcePqcReview: boolean;
+  notes: string;
+}> = [
+  {
+    id: "private-everyday",
+    label: "Private Everyday",
+    template: "standardWallet",
+    actionType: "send",
+    approvalMode: "review",
+    defaultProtocolRisk: "low",
+    defaultDeviceTrust: "trusted",
+    guardianPosture: "optional",
+    recipientMode: "allowlist",
+    maxAmount: "1",
+    forcePqcReview: false,
+    notes: "Default private send policy. Arcium scores recipient, amount, device, velocity, and history before approval.",
+  },
+  {
+    id: "defi-shield",
+    label: "DeFi Shield",
+    template: "highSecurityWallet",
+    actionType: "send",
+    approvalMode: "review",
+    defaultProtocolRisk: "medium",
+    defaultDeviceTrust: "trusted",
+    guardianPosture: "available",
+    recipientMode: "sensitive",
+    maxAmount: "5",
+    forcePqcReview: false,
+    notes: "Use for swaps, bridges, and unknown protocols. High protocol risk pushes the decision toward delay or stronger quorum.",
+  },
+  {
+    id: "private-treasury",
+    label: "Private Treasury",
+    template: "treasuryOps",
+    actionType: "admin",
+    approvalMode: "review",
+    defaultProtocolRisk: "high",
+    defaultDeviceTrust: "attested",
+    guardianPosture: "verifiedQuorum",
+    recipientMode: "sensitive",
+    maxAmount: "",
+    forcePqcReview: true,
+    notes: "Treasury/admin flow with PQC escalation and private risk scoring for high-value operations.",
+  },
+];
 
 async function canReachRelay(url: string): Promise<boolean> {
   try {
@@ -209,6 +279,8 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
   const [profileName, setProfileName] = useState("");
   const [profileActionType, setProfileActionType] = useState<PolicyProfile["actionType"]>("send");
   const [profileApprovalMode, setProfileApprovalMode] = useState<PolicyProfile["approvalMode"]>("review");
+  const [profilePrivacyMode, setProfilePrivacyMode] =
+    useState<NonNullable<PolicyProfile["privacyMode"]>>("arciumPrivate");
   const [profileTemplate, setProfileTemplate] = useState<NonNullable<PolicyProfile["template"]>>("standardWallet");
   const [profileTokenSymbol, setProfileTokenSymbol] = useState("SOL");
   const [profileMaxAmount, setProfileMaxAmount] = useState("");
@@ -629,6 +701,7 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
     setProfileName("");
     setProfileActionType("send");
     setProfileApprovalMode("review");
+    setProfilePrivacyMode("arciumPrivate");
     setProfileTemplate("standardWallet");
     setProfileTokenSymbol("SOL");
     setProfileMaxAmount("");
@@ -639,6 +712,22 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
     setProfileRecipientMode("open");
     setProfileForcePqcReview(false);
     setProfileNotes("");
+  }, []);
+
+  const applyPolicyPreset = useCallback((preset: (typeof POLICY_TEMPLATE_PRESETS)[number]) => {
+    setProfileName(preset.label);
+    setProfileActionType(preset.actionType);
+    setProfileApprovalMode(preset.approvalMode);
+    setProfilePrivacyMode("arciumPrivate");
+    setProfileTemplate(preset.template);
+    setProfileTokenSymbol("SOL");
+    setProfileMaxAmount(preset.maxAmount);
+    setProfileProtocolRisk(preset.defaultProtocolRisk);
+    setProfileDeviceTrust(preset.defaultDeviceTrust);
+    setProfileGuardianPosture(preset.guardianPosture);
+    setProfileRecipientMode(preset.recipientMode);
+    setProfileForcePqcReview(preset.forcePqcReview);
+    setProfileNotes(preset.notes);
   }, []);
 
   const handleSaveProfile = () => {
@@ -663,6 +752,7 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
       name: trimmedName,
       actionType: profileActionType,
       approvalMode: profileApprovalMode,
+      privacyMode: profilePrivacyMode,
       template: profileTemplate,
       tokenSymbol: profileTokenSymbol.trim().toUpperCase() || "SOL",
       maxAmount: maxAmountValue,
@@ -787,6 +877,8 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
               delayUntilSlot: evaluationDraft.preview.delayUntilSlot.toString(),
               reasonCode: evaluationDraft.preview.reasonCode,
               decisionFlags: evaluationDraft.preview.decisionFlags,
+              riskScore: evaluationDraft.preview.riskScore,
+              riskTier: evaluationDraft.preview.riskTier,
             }
           : null,
         createdAt: Date.now(),
@@ -996,6 +1088,8 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
             : configuredDelayUntilSlot;
         const threshold = mode === "review" && draftDecision ? draftDecision.threshold : configuredThreshold;
         const decisionFlags = mode === "review" && draftDecision ? draftDecision.decisionFlags : 0;
+        const riskScore = mode === "review" && draftDecision ? draftDecision.riskScore ?? 0 : 0;
+        const riskTier = mode === "review" && draftDecision ? draftDecision.riskTier ?? "low" : "low";
         const finalReasonCode = mode === "review" && draftDecision ? draftDecision.reasonCode : reasonCode;
         const resultCommitment = await buildWalletPolicyResultCommitment({
           requestCommitment: evaluation.requestCommitment,
@@ -1004,6 +1098,8 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
           delayUntilSlot,
           approved: true,
           decisionFlags,
+          riskScore,
+          riskTier,
           reasonCode: finalReasonCode,
         });
         const ix = createFinalizePolicyEvaluationInstruction(
@@ -1164,6 +1260,21 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
 
         <Card>
           <CardContent className="pt-4 space-y-4">
+            <div className="grid grid-cols-3 gap-2">
+              {POLICY_TEMPLATE_PRESETS.map((preset) => (
+                <Button
+                  key={preset.id}
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-auto min-h-10 whitespace-normal px-2 py-2 text-[11px]"
+                  onClick={() => applyPolicyPreset(preset)}
+                >
+                  {preset.label}
+                </Button>
+              ))}
+            </div>
+
             <div>
               <label htmlFor="policy-profile-name" className="text-xs text-muted-foreground mb-1 block">Policy name</label>
               <Input
@@ -1201,6 +1312,19 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
                   <option value="block">Block</option>
                 </SelectField>
               </div>
+            </div>
+
+            <div>
+              <label htmlFor="policy-profile-privacy-mode" className="text-xs text-muted-foreground mb-1 block">Privacy mode</label>
+              <SelectField
+                id="policy-profile-privacy-mode"
+                name="policyProfilePrivacyMode"
+                value={profilePrivacyMode}
+                onChange={(event) => setProfilePrivacyMode(event.target.value as NonNullable<PolicyProfile["privacyMode"]>)}
+              >
+                <option value="arciumPrivate">Arcium private computation</option>
+                <option value="localPreview">Local preview only</option>
+              </SelectField>
             </div>
 
             <div className="grid grid-cols-2 gap-3">
@@ -1352,8 +1476,8 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
         <div className="bg-primary/5 rounded-xl px-4 py-3 text-[10px] text-muted-foreground">
           <p className="font-medium text-foreground/70 mb-1">What this saves</p>
           <p>
-            Policy profiles now carry Vaulkyrie templates plus private signal defaults so Arcium can
-            evaluate richer encrypted inputs instead of a single placeholder byte.
+            Private profiles encrypt packed signal lanes for Arcium. The browser preview is only
+            a planning view; queued review decisions should come back from the MXE callback.
           </p>
         </div>
       </div>
@@ -1540,7 +1664,7 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
             {selectedProfile && (
               <div className="rounded-xl border border-border bg-background/60 px-3 py-3 text-[11px] text-muted-foreground space-y-1">
                 <p className="font-medium text-foreground">{selectedProfile.name}</p>
-                 <p>{formatApprovalMode(selectedProfile.approvalMode)} · {selectedProfile.actionType} · {selectedProfile.tokenSymbol}</p>
+                 <p>{formatApprovalMode(selectedProfile.approvalMode)} · {formatPrivacyMode(selectedProfile.privacyMode)} · {selectedProfile.actionType} · {selectedProfile.tokenSymbol}</p>
                  <p>
                    Max amount: {selectedProfile.maxAmount ?? "No cap"} · Allowed recipients: {selectedProfile.allowedRecipients.length || "Any"}
                  </p>
@@ -1571,6 +1695,12 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
                     <p className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Risk</p>
                     <p className="mt-1 text-foreground">
                       {formatSignalLabel("protocolRisk", policyPreview.signals)} · {formatSignalLabel("deviceTrust", policyPreview.signals)}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border border-border/70 bg-background/70 px-3 py-2">
+                    <p className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Score</p>
+                    <p className="mt-1 text-foreground">
+                      {policyPreview.decision.riskScore}/100 · {formatRiskTier(policyPreview.decision.riskTier)}
                     </p>
                   </div>
                   <div className="rounded-lg border border-border/70 bg-background/70 px-3 py-2">
@@ -1626,7 +1756,7 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
             <div className="grid grid-cols-2 gap-2 text-[11px] text-muted-foreground">
               <div className="rounded-lg bg-background/70 px-3 py-2 border border-border">
                 <p className="font-medium text-foreground">1. Local policy profiles</p>
-                <p>Reusable Vaulkyrie templates with private signal defaults.</p>
+                <p>Plug-and-play templates choose private signals and thresholds.</p>
               </div>
               <div className="rounded-lg bg-background/70 px-3 py-2 border border-border">
                 <p className="font-medium text-foreground">2. On-chain bridge</p>
@@ -1638,7 +1768,7 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
               </div>
               <div className="rounded-lg bg-background/70 px-3 py-2 border border-border">
                 <p className="font-medium text-foreground">4. Queue computation</p>
-                <p>Hands the request into the Arcium computation stage.</p>
+                <p>Arcium reveals only risk score, tier, flags, delay, and decision.</p>
               </div>
             </div>
           </div>
@@ -1687,6 +1817,8 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
                     <span className="text-right">{profile.actionType}</span>
                     <span>Decision</span>
                     <span className="text-right">{formatApprovalMode(profile.approvalMode)}</span>
+                    <span>Privacy</span>
+                    <span className="text-right">{formatPrivacyMode(profile.privacyMode)}</span>
                      <span>Token / cap</span>
                      <span className="text-right">
                        {profile.tokenSymbol} / {profile.maxAmount ?? "No cap"}
@@ -1802,8 +1934,8 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
               </div>
               <div className="rounded-lg border border-border bg-background/60 px-3 py-2 text-[10px] text-muted-foreground">
                 {evaluations.some((ev) => ev.account.status === PolicyEvaluationStatus.ComputationQueued)
-                  ? "Arcium queue step has been exercised for this vault. Wait for the bridge/callback side to finalize decisions."
-                  : "Next test step: open an evaluation, then queue it into the Arcium computation stage."}
+                  ? "A private Arcium evaluation is queued. The callback will reveal only approval, threshold, delay, flags, and risk tier."
+                  : "Open an evaluation, then queue encrypted signal lanes into Arcium for the private decision."}
               </div>
             </div>
           ) : (
@@ -1886,6 +2018,10 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
                   <span className="font-mono text-right">{ev.account.computationOffset.toString()}</span>
                   <span>Decision flags</span>
                   <span className="font-mono text-right">0x{ev.account.decisionFlags.toString(16).padStart(4, "0")}</span>
+                  <span>Risk score</span>
+                  <span className="font-mono text-right">
+                    {ev.account.riskScore}/100 · {formatRiskTier(ev.account.riskTier)}
+                  </span>
                 </div>
                 {ev.account.status === PolicyEvaluationStatus.Pending && (
                   <div className="mt-3 flex gap-2">
@@ -1922,9 +2058,9 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
                 {ev.account.status === PolicyEvaluationStatus.ComputationQueued && (
                   <div className="mt-3 space-y-3">
                     <div className="rounded-lg border border-blue-400/20 bg-blue-400/5 px-3 py-2 text-[10px] text-muted-foreground">
-                      This request has been queued into the Arcium stage. You can now finalize it from
-                      the wallet with a deterministic prototype decision commitment while the full
-                      private callback consumer is still being wired.
+                      This request is waiting for the Arcium callback. The controls below are an
+                      explicit local fallback for development networks and should not be the normal
+                      approval path for private profiles.
                     </div>
                     <div className="grid grid-cols-2 gap-2">
                       <div>
@@ -1976,7 +2112,7 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
                       ) : (
                         <Check className="h-3.5 w-3.5 mr-1" />
                       )}
-                      Finalize decision
+                      Use local fallback
                     </Button>
                   </div>
                 )}
@@ -1991,8 +2127,8 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
         <p>
           1. Create a local policy profile. 2. Initialize the on-chain bridge once per vault. 3. Open
           an evaluation from a send flow or manually here. 4. Queue the evaluation into the Arcium
-          computation stage. 5. Finalize the queued result from the wallet while the bridge-side
-          callback consumer remains the next integration step.
+          computation stage. 5. Wait for the callback to finalize the private decision, using the
+          local fallback only for devnet troubleshooting.
         </p>
       </div>
     </div>

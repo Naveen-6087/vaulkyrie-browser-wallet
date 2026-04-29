@@ -28,6 +28,7 @@ export type PolicyDeviceTrustBucketId =
   | "compromised";
 export type PolicyHistoryBucketId = "clean" | "warned" | "challenged" | "recoveryLinked";
 export type PolicyGuardianPostureId = "none" | "optional" | "available" | "verifiedQuorum";
+export type PolicyRiskTierId = "low" | "medium" | "high" | "critical";
 
 export interface WalletPolicySignals {
   template: PolicyTemplateId;
@@ -50,6 +51,8 @@ export interface WalletPolicyDecision {
   delayUntilSlot: bigint;
   reasonCode: number;
   decisionFlags: number;
+  riskScore: number;
+  riskTier: PolicyRiskTierId;
 }
 
 export interface WalletPolicySignalContext {
@@ -107,6 +110,20 @@ export const DECISION_FLAG_PQC_REQUIRED = 1 << 7;
 export const DECISION_FLAG_DENIED = 1 << 8;
 export const DECISION_FLAG_ADMIN_SCOPE = 1 << 9;
 export const DECISION_FLAG_RECOVERY_SCOPE = 1 << 10;
+
+export const RISK_TIER_CODE: Record<PolicyRiskTierId, number> = {
+  low: 0,
+  medium: 1,
+  high: 2,
+  critical: 3,
+};
+
+export const RISK_TIER_LABEL: Record<PolicyRiskTierId, string> = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  critical: "Critical",
+};
 
 const POLICY_REASON_CODE = {
   approved: 0,
@@ -476,6 +493,18 @@ function severityScore(signals: WalletPolicySignals): number {
   );
 }
 
+export function riskTierFromScore(score: number): PolicyRiskTierId {
+  if (score < 25) return "low";
+  if (score < 50) return "medium";
+  if (score < 85) return "high";
+  return "critical";
+}
+
+function riskScoreFromSeverity(severity: number, denied: boolean): number {
+  if (denied) return 100;
+  return Math.min(Math.max(Math.trunc(severity * 3), 0), 100);
+}
+
 export function deriveWalletPolicySignals(context: WalletPolicySignalContext): WalletPolicySignals {
   const profile = normalizeProfile(context.policyProfile);
   const now = context.now ?? new Date();
@@ -698,6 +727,8 @@ export function evaluateWalletPolicy(
   if (delayUntilSlot > currentSlotBig) {
     decisionFlags |= DECISION_FLAG_DELAY_APPLIED;
   }
+  const riskScore = riskScoreFromSeverity(severity, !approved);
+  const riskTier = riskTierFromScore(riskScore);
 
   return {
     approved,
@@ -705,6 +736,8 @@ export function evaluateWalletPolicy(
     delayUntilSlot,
     reasonCode,
     decisionFlags,
+    riskScore,
+    riskTier,
   };
 }
 
@@ -715,8 +748,12 @@ export async function buildPolicyResultCommitment(params: {
   delayUntilSlot: bigint | number;
   reasonCode: number;
   decisionFlags: number;
+  riskScore: number;
+  riskTier: PolicyRiskTierId | number;
   approved: boolean;
 }): Promise<Uint8Array> {
+  const riskTierCode =
+    typeof params.riskTier === "number" ? params.riskTier : RISK_TIER_CODE[params.riskTier];
   return sha256Parts([
     new TextEncoder().encode("VAULKYRIE_POLICY_RESULT_V1"),
     params.requestCommitment,
@@ -725,6 +762,8 @@ export async function buildPolicyResultCommitment(params: {
     u64Le(toBigInt(params.delayUntilSlot)),
     u16Le(params.reasonCode),
     u16Le(params.decisionFlags),
+    u16Le(params.riskScore),
+    new Uint8Array([riskTierCode & 0xff]),
     new Uint8Array([params.approved ? 1 : 0]),
   ]);
 }

@@ -142,6 +142,8 @@ export interface PolicyEvaluationAccount {
   status: PolicyEvaluationStatus;
   reasonCode: number;
   decisionFlags: number;
+  riskScore: number;
+  riskTier: number;
 }
 
 // ── Instruction parameter types ──────────────────────────────────────

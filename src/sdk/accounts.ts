@@ -274,5 +274,7 @@ export function decodePolicyEvaluation(
     status: readU8(data, 240) as PolicyEvaluationStatus,
     reasonCode: readU16LE(data, 241),
     decisionFlags: readU16LE(data, 243),
+    riskScore: readU16LE(data, 245),
+    riskTier: readU8(data, 247),
   };
 }

@@ -113,6 +113,10 @@ function formatPolicyBucket(value: string): string {
   return value.replace(/([A-Z])/g, " $1");
 }
 
+function formatRiskTier(tier: string): string {
+  return tier.replace(/^\w/, (char) => char.toUpperCase());
+}
+
 // ── Custom token dropdown with icons ────────────────────────────────
 function TokenDropdown({
   selectedToken,
@@ -1703,8 +1707,20 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
               {selectedPolicyPreview && (
                 <>
                   <div className="flex justify-between">
+                    <span className="text-muted-foreground">Privacy mode</span>
+                    <span className="font-medium">
+                      {selectedPolicyProfile.privacyMode === "localPreview" ? "Local preview" : "Arcium private"}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
                     <span className="text-muted-foreground">Preview threshold</span>
                     <span className="font-medium">{formatThresholdPreview(selectedPolicyPreview.decision.threshold)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Risk score</span>
+                    <span className="font-medium">
+                      {selectedPolicyPreview.decision.riskScore}/100 · {formatRiskTier(selectedPolicyPreview.decision.riskTier)}
+                    </span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">Recipient posture</span>
@@ -1929,7 +1945,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
                     Token: {selectedPolicyProfile.tokenSymbol} · Max: {selectedPolicyProfile.maxAmount ?? "No cap"} · Recipients: {selectedPolicyProfile.allowedRecipients.length || "Any"}
                   </p>
                   <p>
-                    Template: {selectedPolicyProfile.template ?? "standardWallet"} · Risk: {selectedPolicyProfile.defaultProtocolRisk ?? "low"} · Device: {selectedPolicyProfile.defaultDeviceTrust ?? "trusted"}
+                    Template: {selectedPolicyProfile.template ?? "standardWallet"} · Privacy: {selectedPolicyProfile.privacyMode === "localPreview" ? "local" : "Arcium"} · Risk: {selectedPolicyProfile.defaultProtocolRisk ?? "low"} · Device: {selectedPolicyProfile.defaultDeviceTrust ?? "trusted"}
                   </p>
                   {selectedPolicyPreview && (
                     <div className="grid grid-cols-2 gap-2 pt-1">
@@ -1945,6 +1961,12 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
                         <p className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Risk posture</p>
                         <p className="mt-1 text-foreground">
                           {formatPolicyBucket(selectedPolicyPreview.signals.protocolRisk)} · {formatPolicyBucket(selectedPolicyPreview.signals.deviceTrust)}
+                        </p>
+                      </div>
+                      <div className="rounded-lg border border-border/70 bg-card/80 px-2.5 py-2">
+                        <p className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Score</p>
+                        <p className="mt-1 text-foreground">
+                          {selectedPolicyPreview.decision.riskScore}/100 · {formatRiskTier(selectedPolicyPreview.decision.riskTier)}
                         </p>
                       </div>
                       <div className="rounded-lg border border-border/70 bg-card/80 px-2.5 py-2">

@@ -103,6 +103,7 @@ export interface PolicyProfile {
   name: string;
   actionType: "send" | "admin";
   approvalMode: "allow" | "review" | "block";
+  privacyMode?: "localPreview" | "arciumPrivate";
   template?:
     | "standardWallet"
     | "highSecurityWallet"
