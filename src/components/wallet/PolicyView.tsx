@@ -780,6 +780,15 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
           evaluationDraft.packedSignalLanes[1].toString(),
         ],
         signals: evaluationDraft.signals,
+        previewDecision: evaluationDraft.preview
+          ? {
+              approved: evaluationDraft.preview.approved,
+              threshold: evaluationDraft.preview.threshold,
+              delayUntilSlot: evaluationDraft.preview.delayUntilSlot.toString(),
+              reasonCode: evaluationDraft.preview.reasonCode,
+              decisionFlags: evaluationDraft.preview.decisionFlags,
+            }
+          : null,
         createdAt: Date.now(),
       });
 
@@ -977,15 +986,25 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
 
       await withRpcFallback(network, async (connection) => {
         const currentSlot = await connection.getSlot();
-        const delayUntilSlot = BigInt(currentSlot + delaySlots);
+        const draft = getPolicyEvaluationDraft(bytesToHex(evaluation.actionHash));
+        const draftDecision = draft?.previewDecision ?? null;
+        const configuredDelayUntilSlot = BigInt(currentSlot + delaySlots);
+        const previewDelayUntilSlot = draftDecision ? BigInt(draftDecision.delayUntilSlot) : configuredDelayUntilSlot;
+        const delayUntilSlot =
+          mode === "review" && previewDelayUntilSlot > configuredDelayUntilSlot
+            ? previewDelayUntilSlot
+            : configuredDelayUntilSlot;
+        const threshold = mode === "review" && draftDecision ? draftDecision.threshold : configuredThreshold;
+        const decisionFlags = mode === "review" && draftDecision ? draftDecision.decisionFlags : 0;
+        const finalReasonCode = mode === "review" && draftDecision ? draftDecision.reasonCode : reasonCode;
         const resultCommitment = await buildWalletPolicyResultCommitment({
           requestCommitment: evaluation.requestCommitment,
           signalCommitment: evaluation.encryptedInputCommitment,
-          threshold: configuredThreshold,
+          threshold,
           delayUntilSlot,
           approved: true,
-          decisionFlags: 0,
-          reasonCode,
+          decisionFlags,
+          reasonCode: finalReasonCode,
         });
         const ix = createFinalizePolicyEvaluationInstruction(
           evalAddress,
@@ -994,11 +1013,11 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
             requestCommitment: evaluation.requestCommitment,
             actionHash: evaluation.actionHash,
             policyVersion: evaluation.policyVersion,
-            threshold: configuredThreshold,
+            threshold,
             nonce: evaluation.requestNonce,
             receiptExpirySlot: evaluation.expirySlot,
             delayUntilSlot,
-            reasonCode,
+            reasonCode: finalReasonCode,
             computationOffset: evaluation.computationOffset,
             resultCommitment,
           },
@@ -1012,6 +1031,23 @@ export function PolicyView({ onNavigate }: PolicyViewProps) {
           `Finalize this policy evaluation as ${mode}.`,
         );
       });
+
+      const draft = getPolicyEvaluationDraft(bytesToHex(evaluation.actionHash));
+      if (draft) {
+        const draftDecision = draft.previewDecision ?? null;
+        const threshold = mode === "review" && draftDecision ? draftDecision.threshold : configuredThreshold;
+        stashPolicyEvaluationDraft({
+          ...draft,
+          finalizedReceipt: {
+            evaluationAddress: evalAddress.toBase58(),
+            policyVersion: evaluation.policyVersion.toString(),
+            threshold,
+            nonce: evaluation.requestNonce.toString(),
+            expirySlot: evaluation.expirySlot.toString(),
+            finalizedAt: Date.now(),
+          },
+        });
+      }
 
       await fetchPolicyData();
     } catch (e) {

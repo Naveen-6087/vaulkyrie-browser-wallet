@@ -39,12 +39,15 @@ import { PolicyMxeClient } from "@/sdk/policyClient";
 import {
   createCommitSpendOrchestrationInstruction,
   createCompleteSpendOrchestrationInstruction,
+  createConsumeReceiptInstruction,
   createInitAuthorityInstruction,
   createInitSpendOrchestrationInstruction,
   createInitVaultInstruction,
+  createStageBridgedReceiptInstruction,
 } from "@/sdk/instructions";
 import { PolicyEvaluationStatus, VAULKYRIE_POLICY_MXE_PROGRAM_ID } from "@/sdk/constants";
-import { findQuantumAuthorityPda, findSpendOrchestrationPda, findVaultRegistryPda } from "@/sdk/pda";
+import { findPolicyReceiptPda, findQuantumAuthorityPda, findSpendOrchestrationPda, findVaultRegistryPda } from "@/sdk/pda";
+import type { PolicyReceipt } from "@/sdk/types";
 import {
   buildSpendActionHash,
   buildSpendOrchestrationBindings,
@@ -295,6 +298,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
     refreshTransactions,
     refreshVaultState,
     recordOrchestrationActivity,
+    getPolicyEvaluationDraft,
   } = useWalletStore();
   const relayRef = useRef<RelayAdapter | null>(null);
   const orchestratorRef = useRef<SigningOrchestrator | null>(null);
@@ -560,6 +564,8 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
       : null;
     let reviewedActionHash: Uint8Array | null = null;
     let finalizedPolicySnapshot: PreparedPolicySnapshot | null = null;
+    let finalizedPolicyReceipt: PolicyReceipt | null = null;
+    let finalizedPolicyEvaluationAddress: PublicKey | null = null;
     let policyVersion = existingVault?.account.policyVersion ?? 1n;
 
     if (needsPolicyReview) {
@@ -597,6 +603,22 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
           );
         }
 
+        const draft = getPolicyEvaluationDraft(bytesToHex(reviewActionHash));
+        const storedReceipt = draft?.finalizedReceipt;
+        const threshold = storedReceipt?.evaluationAddress === evaluation.address.toBase58()
+          ? storedReceipt.threshold
+          : dkg.threshold;
+        if (![1, 2, 3, 255].includes(threshold)) {
+          throw new Error(`Unsupported policy receipt threshold ${threshold}.`);
+        }
+        finalizedPolicyReceipt = {
+          actionHash: reviewActionHash,
+          policyVersion: evaluation.account.policyVersion,
+          threshold: threshold as PolicyReceipt["threshold"],
+          nonce: evaluation.account.requestNonce,
+          expirySlot: evaluation.account.expirySlot,
+        };
+        finalizedPolicyEvaluationAddress = evaluation.address;
         finalizedPolicySnapshot = {
           evaluationAddress: evaluation.address.toBase58(),
           receiptCommitment: bytesToHex(evaluation.account.receiptCommitment),
@@ -750,6 +772,22 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
       actionHash,
       signingPackageHash: bindings.signingPackageHash,
     }));
+    if (finalizedPolicyReceipt && finalizedPolicyEvaluationAddress) {
+      const [receiptPda] = findPolicyReceiptPda(vaultRegistryPda, finalizedPolicyReceipt.actionHash);
+      tx.add(createStageBridgedReceiptInstruction(
+        vaultRegistryPda,
+        receiptPda,
+        fromPubkey,
+        finalizedPolicyEvaluationAddress,
+        { receipt: finalizedPolicyReceipt },
+      ));
+      tx.add(createConsumeReceiptInstruction(
+        vaultRegistryPda,
+        receiptPda,
+        fromPubkey,
+        { receipt: finalizedPolicyReceipt },
+      ));
+    }
     baseTransferTx.instructions.forEach((instruction) => tx.add(instruction));
     tx.add(createCompleteSpendOrchestrationInstruction(orchPda, vaultRegistryPda, fromPubkey, {
       actionHash,
@@ -771,6 +809,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
     };
   }, [
     activeAccount,
+    getPolicyEvaluationDraft,
     getWinterAuthorityState,
     getXmssTree,
     network,

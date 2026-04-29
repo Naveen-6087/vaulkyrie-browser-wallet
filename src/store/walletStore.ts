@@ -105,6 +105,21 @@ interface WalletState extends PersistedWalletState {
       signalCommitmentHex: string;
       packedSignalLanes: [string, string];
       signals: WalletPolicySignals;
+      previewDecision: {
+        approved: boolean;
+        threshold: number;
+        delayUntilSlot: string;
+        reasonCode: number;
+        decisionFlags: number;
+      } | null;
+      finalizedReceipt?: {
+        evaluationAddress: string;
+        policyVersion: string;
+        threshold: number;
+        nonce: string;
+        expirySlot: string;
+        finalizedAt: number;
+      };
       createdAt: number;
     }
   >;

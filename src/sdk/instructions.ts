@@ -231,7 +231,8 @@ export function createStageReceiptInstruction(
     [
       { pubkey: vault, isSigner: false, isWritable: false },
       { pubkey: receiptAccount, isSigner: false, isWritable: true },
-      { pubkey: walletSigner, isSigner: true, isWritable: false },
+      { pubkey: walletSigner, isSigner: true, isWritable: true },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
     ],
     programId
   );
@@ -673,8 +674,9 @@ export function createStageBridgedReceiptInstruction(
     [
       { pubkey: vault, isSigner: false, isWritable: false },
       { pubkey: receiptAccount, isSigner: false, isWritable: true },
-      { pubkey: walletSigner, isSigner: true, isWritable: false },
+      { pubkey: walletSigner, isSigner: true, isWritable: true },
       { pubkey: policyEvalAccount, isSigner: false, isWritable: false },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
     ],
     programId
   );
