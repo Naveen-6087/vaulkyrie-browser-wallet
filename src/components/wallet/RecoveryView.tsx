@@ -1008,7 +1008,7 @@ export function RecoveryView({ onNavigate }: RecoveryViewProps) {
                   Accounts: {importPreview.accounts.map((account) => `${account.name} (${shortenAddress(account.publicKey)})`).join(", ")}
                 </p>
                 <p>
-                  Contacts: {importPreview.contactCount} · Policies: {importPreview.policyProfileCount} · Activity: {importPreview.orchestrationActivityCount} · Recovery sessions: {importPreview.recoverySessionCount}
+                  Contacts: {importPreview.contactCount} · Policies: {importPreview.policyProfileCount} · Privacy: {importPreview.privacyAccountCount} · Activity: {importPreview.orchestrationActivityCount} · Recovery sessions: {importPreview.recoverySessionCount}
                 </p>
               </div>
             )}

@@ -21,6 +21,8 @@ export interface WalletBackupPreview {
   accounts: Array<{ name: string; publicKey: string }>;
   contactCount: number;
   policyProfileCount: number;
+  privacyAccountCount: number;
+  privacyReceiptCount: number;
   orchestrationActivityCount: number;
   recoverySessionCount: number;
 }
@@ -95,6 +97,8 @@ function validatePersistedWalletState(value: unknown): PersistedWalletState {
     winterAuthorityStates: candidate.winterAuthorityStates ?? {},
     quantumVaultKeys: candidate.quantumVaultKeys ?? {},
     policyProfiles: candidate.policyProfiles ?? {},
+    privacyAccounts: candidate.privacyAccounts ?? {},
+    privacyReceipts: candidate.privacyReceipts ?? {},
     orchestrationHistory: candidate.orchestrationHistory ?? {},
     recoverySessions: candidate.recoverySessions ?? {},
   });
@@ -192,6 +196,14 @@ export async function previewEncryptedWalletBackup(
     contactCount: restoredState.contacts.length,
     policyProfileCount: Object.values(restoredState.policyProfiles).reduce(
       (sum, profiles) => sum + profiles.length,
+      0,
+    ),
+    privacyAccountCount: Object.values(restoredState.privacyAccounts).reduce(
+      (sum, accounts) => sum + accounts.length,
+      0,
+    ),
+    privacyReceiptCount: Object.values(restoredState.privacyReceipts).reduce(
+      (sum, receipts) => sum + receipts.length,
       0,
     ),
     orchestrationActivityCount: Object.values(restoredState.orchestrationHistory).reduce(

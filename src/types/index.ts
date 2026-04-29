@@ -132,6 +132,47 @@ export interface PendingPolicyRequest {
   createdAt: number;
 }
 
+export type PrivacyAssetSymbol = "SOL" | "USDC";
+export type PrivacyProviderId = "nativeArcium" | "houdini" | "encifher" | "umbra";
+export type PrivacyActionId = "deposit" | "transfer" | "withdraw" | "swapIntent" | "sealReceipt";
+
+export interface PrivacyAccountRecord {
+  id: string;
+  ownerPublicKey: string;
+  label: string;
+  network: NetworkId;
+  receiveCode: string;
+  scanPublicKey: string;
+  spendPublicKeyCommitment: string;
+  viewingKeyCommitment: string;
+  supportedAssets: PrivacyAssetSymbol[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface PrivacyReceiptRecord {
+  id: string;
+  accountId: string;
+  ownerPublicKey: string;
+  network: NetworkId;
+  action: PrivacyActionId;
+  asset: PrivacyAssetSymbol;
+  amount: number;
+  provider: PrivacyProviderId;
+  recipientHint?: string | null;
+  intentCommitment: string;
+  signalCommitment: string;
+  requestCommitment: string;
+  receiptCommitment: string;
+  packedSignalLanes: [string, string];
+  privacyScore: number;
+  minConfirmations: number;
+  decisionFlags: number;
+  status: "draft" | "queued" | "sealed" | "settled" | "failed";
+  disclosureMode: "none" | "userReceipt" | "selectiveAudit" | "businessAudit";
+  createdAt: number;
+}
+
 export type WalletView =
   | "dashboard"
   | "send"
@@ -150,4 +191,5 @@ export type WalletView =
   | "contacts"
   | "lock"
   | "policy"
+  | "privacy"
   | "approval";

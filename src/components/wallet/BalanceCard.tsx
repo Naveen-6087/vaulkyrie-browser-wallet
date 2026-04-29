@@ -1,4 +1,4 @@
-import { ArrowUpRight, ArrowDownLeft, ArrowLeftRight } from "lucide-react";
+import { ArrowUpRight, ArrowDownLeft, ArrowLeftRight, Shield } from "lucide-react";
 import { formatUsd } from "@/lib/utils";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -40,11 +40,11 @@ export function BalanceCard({
           </span>
         </div>
 
-        <div className="flex gap-2 mt-5">
+        <div className="grid grid-cols-2 gap-2 mt-5">
           <Button
             variant="default"
             size="sm"
-            className="flex-1 gap-1.5"
+            className="gap-1.5"
             onClick={() => onNavigate("send")}
           >
             <ArrowUpRight className="h-3.5 w-3.5" />
@@ -53,7 +53,7 @@ export function BalanceCard({
           <Button
             variant="secondary"
             size="sm"
-            className="flex-1 gap-1.5"
+            className="gap-1.5"
             onClick={() => onNavigate("receive")}
           >
             <ArrowDownLeft className="h-3.5 w-3.5" />
@@ -62,11 +62,20 @@ export function BalanceCard({
           <Button
             variant="secondary"
             size="sm"
-            className="flex-1 gap-1.5"
+            className="gap-1.5"
             onClick={() => onNavigate("swap")}
           >
             <ArrowLeftRight className="h-3.5 w-3.5" />
             Swap
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            className="gap-1.5"
+            onClick={() => onNavigate("privacy")}
+          >
+            <Shield className="h-3.5 w-3.5" />
+            Privacy
           </Button>
         </div>
       </div>

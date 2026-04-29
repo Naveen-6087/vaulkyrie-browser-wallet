@@ -4,6 +4,7 @@ import {
   ArrowDownLeft,
   Settings,
   Atom,
+  Shield,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { WalletView } from "@/types";
@@ -16,6 +17,7 @@ interface BottomNavProps {
 const navItems: { view: WalletView; icon: typeof Home; label: string }[] = [
   { view: "dashboard", icon: Home, label: "Home" },
   { view: "send", icon: ArrowUpRight, label: "Send" },
+  { view: "privacy", icon: Shield, label: "Privacy" },
   { view: "quantum-vault", icon: Atom, label: "PQC" },
   { view: "receive", icon: ArrowDownLeft, label: "Receive" },
   { view: "settings", icon: Settings, label: "Settings" },
@@ -23,7 +25,7 @@ const navItems: { view: WalletView; icon: typeof Home; label: string }[] = [
 
 export function BottomNav({ active, onNavigate }: BottomNavProps) {
   return (
-    <nav className="grid grid-cols-5 gap-1 border-t border-border/70 bg-card/80 px-2 py-2 backdrop-blur-md">
+    <nav className="grid grid-cols-6 gap-1 border-t border-border/70 bg-card/80 px-2 py-2 backdrop-blur-md">
       {navItems.map(({ view, icon: Icon, label }) => {
         const isActive = active === view;
         return (

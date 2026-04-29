@@ -8,6 +8,7 @@ export * from "./instructions";
 export * from "./accounts";
 export * from "./errors";
 export * from "./policyEngine";
+export * from "./privacyEngine";
 export { VaulkyrieClient } from "./client";
 export { PolicyMxeClient, findPolicyConfigPda, findPolicyEvaluationPda } from "./policyClient";
 export {

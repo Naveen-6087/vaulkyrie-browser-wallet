@@ -12,6 +12,8 @@ import type {
   PendingPolicyRequest,
   SpendOrchestrationActivity,
   RecoverySessionRecord,
+  PrivacyAccountRecord,
+  PrivacyReceiptRecord,
 } from "../types";
 import type { WalletPolicySignals } from "../sdk/policyEngine";
 import { DEFAULT_NETWORK, type NetworkId } from "../lib/constants";
@@ -82,6 +84,8 @@ export interface PersistedWalletState {
   winterAuthorityStates: Record<string, string>;
   quantumVaultKeys: Record<string, string>;
   policyProfiles: Record<string, PolicyProfile[]>;
+  privacyAccounts: Record<string, PrivacyAccountRecord[]>;
+  privacyReceipts: Record<string, PrivacyReceiptRecord[]>;
   orchestrationHistory: Record<string, SpendOrchestrationActivity[]>;
   recoverySessions: Record<string, RecoverySessionRecord[]>;
 }
@@ -201,6 +205,10 @@ interface WalletState extends PersistedWalletState {
   stashPolicyEvaluationDraft: (draft: WalletState["policyEvaluationDrafts"][string]) => void;
   getPolicyEvaluationDraft: (actionHashHex: string) => WalletState["policyEvaluationDrafts"][string] | null;
   clearPolicyEvaluationDraft: (actionHashHex: string) => void;
+  upsertPrivacyAccount: (publicKey: string, account: PrivacyAccountRecord) => void;
+  getPrivacyAccounts: (publicKey: string) => PrivacyAccountRecord[];
+  recordPrivacyReceipt: (publicKey: string, receipt: PrivacyReceiptRecord) => void;
+  getPrivacyReceipts: (publicKey: string) => PrivacyReceiptRecord[];
   recordOrchestrationActivity: (publicKey: string, activity: SpendOrchestrationActivity) => void;
   getOrchestrationHistory: (publicKey: string) => SpendOrchestrationActivity[];
   upsertRecoverySession: (publicKey: string, session: RecoverySessionRecord) => void;
@@ -235,6 +243,8 @@ export function pickPersistedWalletState(state: WalletState): PersistedWalletSta
     winterAuthorityStates: state.winterAuthorityStates,
     quantumVaultKeys: state.quantumVaultKeys,
     policyProfiles: state.policyProfiles,
+    privacyAccounts: state.privacyAccounts,
+    privacyReceipts: state.privacyReceipts,
     orchestrationHistory: state.orchestrationHistory,
     recoverySessions: state.recoverySessions,
   };
@@ -264,6 +274,8 @@ export const useWalletStore = create<WalletState>()(
       winterAuthorityStates: {},
       quantumVaultKeys: {},
       policyProfiles: {},
+      privacyAccounts: {},
+      privacyReceipts: {},
       orchestrationHistory: {},
       recoverySessions: {},
       pendingPolicyRequest: null,
@@ -306,6 +318,10 @@ export const useWalletStore = create<WalletState>()(
           delete winterAuthorityStates[publicKey];
           const quantumVaultKeys = { ...state.quantumVaultKeys };
           delete quantumVaultKeys[publicKey];
+          const privacyAccounts = { ...state.privacyAccounts };
+          delete privacyAccounts[publicKey];
+          const privacyReceipts = { ...state.privacyReceipts };
+          delete privacyReceipts[publicKey];
           const orchestrationHistory = { ...state.orchestrationHistory };
           delete orchestrationHistory[publicKey];
           const recoverySessions = { ...state.recoverySessions };
@@ -321,6 +337,8 @@ export const useWalletStore = create<WalletState>()(
             xmssTrees,
             winterAuthorityStates,
             quantumVaultKeys,
+            privacyAccounts,
+            privacyReceipts,
             orchestrationHistory,
             recoverySessions,
             activeAccount,
@@ -498,6 +516,31 @@ export const useWalletStore = create<WalletState>()(
           delete next[actionHashHex];
           return { policyEvaluationDrafts: next };
         }),
+      upsertPrivacyAccount: (publicKey, account) =>
+        set((state) => {
+          const existing = state.privacyAccounts[publicKey] ?? [];
+          const next = existing.some((item) => item.id === account.id)
+            ? existing.map((item) => (item.id === account.id ? account : item))
+            : [account, ...existing];
+          return {
+            privacyAccounts: {
+              ...state.privacyAccounts,
+              [publicKey]: next,
+            },
+          };
+        }),
+      getPrivacyAccounts: (publicKey) => get().privacyAccounts[publicKey] ?? [],
+      recordPrivacyReceipt: (publicKey, receipt) =>
+        set((state) => ({
+          privacyReceipts: {
+            ...state.privacyReceipts,
+            [publicKey]: [
+              receipt,
+              ...(state.privacyReceipts[publicKey] ?? []).filter((item) => item.id !== receipt.id),
+            ].slice(0, 100),
+          },
+        })),
+      getPrivacyReceipts: (publicKey) => get().privacyReceipts[publicKey] ?? [],
       recordOrchestrationActivity: (publicKey, activity) =>
         set((state) => ({
           orchestrationHistory: {
