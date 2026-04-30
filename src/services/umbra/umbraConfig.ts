@@ -13,6 +13,8 @@ export interface UmbraClientNetworkConfig {
   network: UmbraNetworkId;
   rpcUrl: string;
   rpcSubscriptionsUrl: string;
+  indexerApiEndpoint?: string;
+  relayerApiEndpoint?: string;
 }
 
 export const UMBRA_SUPPORTED_TOKENS: Record<UmbraNetworkId, UmbraTokenConfig[]> = {
@@ -68,6 +70,8 @@ export function getUmbraClientNetworkConfig(network: NetworkId): UmbraClientNetw
     network: umbraNetwork,
     rpcUrl,
     rpcSubscriptionsUrl: toWebsocketRpcUrl(rpcUrl),
+    indexerApiEndpoint: getUmbraIndexerEndpoint(umbraNetwork),
+    relayerApiEndpoint: getUmbraRelayerEndpoint(umbraNetwork),
   };
 }
 
@@ -84,4 +88,22 @@ function toWebsocketRpcUrl(rpcUrl: string): string {
     return rpcUrl.replace("http://", "ws://");
   }
   return rpcUrl;
+}
+
+function getUmbraIndexerEndpoint(network: UmbraNetworkId): string | undefined {
+  const configured = import.meta.env.VITE_UMBRA_INDEXER_URL?.trim();
+  if (configured) return configured;
+
+  if (network === "mainnet") return "https://utxo-indexer.api.umbraprivacy.com";
+  if (network === "devnet") return "https://utxo-indexer.api-devnet.umbraprivacy.com";
+  return undefined;
+}
+
+function getUmbraRelayerEndpoint(network: UmbraNetworkId): string | undefined {
+  const configured = import.meta.env.VITE_UMBRA_RELAYER_URL?.trim();
+  if (configured) return configured;
+
+  if (network === "mainnet") return "https://relayer.api.umbraprivacy.com";
+  if (network === "devnet") return "https://relayer.api-devnet.umbraprivacy.com";
+  return undefined;
 }

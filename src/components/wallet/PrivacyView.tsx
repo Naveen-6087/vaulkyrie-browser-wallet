@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Check, Copy, EyeOff, LockKeyhole, QrCode, RefreshCw, Repeat2, Shield, WalletCards } from "lucide-react";
+import { Check, Copy, EyeOff, Inbox, LockKeyhole, QrCode, RefreshCw, Repeat2, Send, Shield, WalletCards } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -13,6 +13,7 @@ import {
   createUmbraWalletClient,
   formatAtomicAmount,
   parseUiAmount,
+  type UmbraIncomingUtxos,
 } from "@/services/umbra/umbraClient";
 import { getUmbraTokens, toUmbraNetwork, type UmbraTokenConfig } from "@/services/umbra/umbraConfig";
 import { createConnection } from "@/services/solanaRpc";
@@ -36,6 +37,8 @@ export function PrivacyView({ onNavigate }: PrivacyViewProps) {
   const { copy, isCopied } = useCopyToClipboard({ resetAfterMs: 2000 });
   const [amount, setAmount] = useState("");
   const [destination, setDestination] = useState("");
+  const [privateDestination, setPrivateDestination] = useState("");
+  const [incomingUtxos, setIncomingUtxos] = useState<UmbraIncomingUtxos | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isBusy, setIsBusy] = useState(false);
@@ -60,6 +63,7 @@ export function PrivacyView({ onNavigate }: PrivacyViewProps) {
   const record = owner && umbraNetwork ? getUmbraAccount(owner, umbraNetwork) : null;
   const activities = owner ? getUmbraActivities(owner).filter((activity) => activity.network === umbraNetwork) : [];
   const balance = selectedToken ? record?.balances[selectedToken.mint] : null;
+  const receivedUtxos = incomingUtxos ? [...incomingUtxos.received, ...incomingUtxos.publicReceived] : [];
   const isUnsupportedNetwork = umbraNetwork === null;
   const isWrappedSol = selectedToken?.mint === "So11111111111111111111111111111111111111112";
   const publicSolBalance = tokens.find((token) => token.symbol === "SOL")?.balance ?? activeAccount?.balance ?? 0;
@@ -125,7 +129,7 @@ export function PrivacyView({ onNavigate }: PrivacyViewProps) {
     const signatures = await client.registerConfidential();
     persistAccount({
       registeredConfidential: true,
-      registeredAnonymous: false,
+      registeredAnonymous: true,
       masterSeedCreatedAt: record?.masterSeedCreatedAt ?? Date.now(),
     });
     recordActivity({
@@ -201,6 +205,102 @@ export function PrivacyView({ onNavigate }: PrivacyViewProps) {
     setDestination("");
     await handlePostMutationRefresh(client, selectedToken);
     void refreshAll();
+  });
+
+  const handlePrivateSend = (source: "encrypted" | "public") => runAction(
+    source === "encrypted" ? "Creating private UTXO from encrypted balance..." : "Creating private UTXO from public balance...",
+    async () => {
+      ensureToken(selectedToken);
+      if (!owner || !umbraNetwork) throw new Error("Create or unlock a Vaulkyrie wallet first.");
+      const recipient = privateDestination.trim();
+      if (!recipient) throw new Error("Enter a registered Umbra recipient address.");
+      const amountAtomic = parseUiAmount(amount, selectedToken.decimals);
+      const client = await createUmbraWalletClient(owner, network);
+      if (source === "encrypted") {
+        const result = await client.privateSendFromEncryptedBalance({
+          destinationAddress: recipient,
+          mint: selectedToken.mint,
+          amountAtomic,
+        });
+        recordActivity({
+          kind: "private-send",
+          status: result.callbackStatus === "timed-out" || result.callbackStatus === "pruned" ? "pending" : "confirmed",
+          mint: selectedToken.mint,
+          symbol: selectedToken.symbol,
+          amountAtomic: amountAtomic.toString(),
+          amountUi: formatAtomicAmount(amountAtomic, selectedToken.decimals),
+          recipient,
+          queueSignature: result.queueSignature,
+          callbackSignature: result.callbackSignature,
+          callbackStatus: result.callbackStatus,
+        });
+      } else {
+        const result = await client.privateSendFromPublicBalance({
+          destinationAddress: recipient,
+          mint: selectedToken.mint,
+          amountAtomic,
+        });
+        recordActivity({
+          kind: "private-send",
+          status: "confirmed",
+          mint: selectedToken.mint,
+          symbol: selectedToken.symbol,
+          amountAtomic: amountAtomic.toString(),
+          amountUi: formatAtomicAmount(amountAtomic, selectedToken.decimals),
+          recipient,
+          queueSignature: result.createUtxoSignature,
+        });
+      }
+      setAmount("");
+      setPrivateDestination("");
+      await handlePostMutationRefresh(client, selectedToken);
+      void refreshAll();
+    },
+  );
+
+  const handleScanIncoming = () => runAction("Scanning Umbra mixer for incoming notes...", async () => {
+    if (!owner || !umbraNetwork) throw new Error("Create or unlock a Vaulkyrie wallet first.");
+    const client = await createUmbraWalletClient(owner, network);
+    const result = await client.scanIncomingUtxos();
+    setIncomingUtxos(result);
+    const total = result.received.length + result.publicReceived.length + result.selfBurnable.length + result.publicSelfBurnable.length;
+    recordActivity({
+      kind: "query",
+      status: "confirmed",
+      utxoCount: total,
+    });
+  });
+
+  const handleClaimIncoming = () => runAction("Claiming incoming private notes...", async () => {
+    ensureToken(selectedToken);
+    if (!owner || !umbraNetwork) throw new Error("Create or unlock a Vaulkyrie wallet first.");
+    if (receivedUtxos.length === 0) throw new Error("Scan first, then claim when incoming private notes are available.");
+    const client = await createUmbraWalletClient(owner, network);
+    const result = await client.claimIncomingToEncryptedBalance(receivedUtxos);
+    const batches = Array.from(result.batches.values());
+    const failed = batches.find((batch) => batch.status === "failed" || batch.status === "timed_out");
+    recordActivity({
+      kind: "private-claim",
+      status: failed ? "failed" : "confirmed",
+      mint: selectedToken.mint,
+      symbol: selectedToken.symbol,
+      batchCount: batches.length,
+      utxoCount: receivedUtxos.length,
+      queueSignature: batches.find((batch) => batch.txSignature)?.txSignature,
+      callbackSignature: batches.find((batch) => batch.callbackSignature)?.callbackSignature,
+      error: failed?.failureReason ?? undefined,
+    });
+    if (failed) {
+      throw new Error(failed.failureReason ?? "Umbra relayer failed to claim one or more incoming notes.");
+    }
+    setIncomingUtxos(null);
+    const balances = await client.queryBalances(tokenOptions);
+    persistAccount({
+      balances: balances.reduce<Record<string, typeof balances[number]>>((next, item) => {
+        next[item.mint] = item;
+        return next;
+      }, {}),
+    });
   });
 
   const handleWrapSol = () => runAction("Wrapping SOL into wSOL...", async () => {
@@ -300,14 +400,16 @@ export function PrivacyView({ onNavigate }: PrivacyViewProps) {
               <p className="text-sm font-semibold">Encrypted account</p>
               <p className="mt-1 text-xs text-muted-foreground">
                 {record?.registeredConfidential
-                  ? "Confidential mode is registered for this vault."
+                  ? record.registeredAnonymous
+                    ? "Confidential and anonymous receive keys are registered for this vault."
+                    : "Register again to enable anonymous private receives."
                   : "Register once before shielding supported tokens."}
               </p>
             </div>
             <span className={`rounded-md px-2 py-1 text-[10px] font-semibold ${
-              record?.registeredConfidential ? "bg-success/15 text-success" : "bg-muted text-muted-foreground"
+              record?.registeredConfidential && record.registeredAnonymous ? "bg-success/15 text-success" : "bg-muted text-muted-foreground"
             }`}>
-              {record?.registeredConfidential ? "Ready" : "Setup"}
+              {record?.registeredConfidential && record.registeredAnonymous ? "Ready" : "Setup"}
             </span>
           </div>
           <Button className="mt-4 w-full" onClick={handleRegister} disabled={isBusy || isUnsupportedNetwork || !owner}>
@@ -391,6 +493,61 @@ export function PrivacyView({ onNavigate }: PrivacyViewProps) {
 
         <Card className="p-4">
           <div className="mb-3 flex items-center gap-2">
+            <Send className="h-4 w-4 text-primary" />
+            <p className="text-sm font-semibold">Private transfer</p>
+          </div>
+          <div className="space-y-3">
+            <Input
+              placeholder="Registered Umbra recipient address"
+              value={privateDestination}
+              onChange={(event) => setPrivateDestination(event.target.value)}
+            />
+            <div className="grid grid-cols-2 gap-2">
+              <Button variant="secondary" onClick={() => handlePrivateSend("encrypted")} disabled={isBusy || isUnsupportedNetwork || !selectedToken}>
+                From shielded
+              </Button>
+              <Button variant="outline" onClick={() => handlePrivateSend("public")} disabled={isBusy || isUnsupportedNetwork || !selectedToken}>
+                From public
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Receiver must be registered with Umbra before they can receive a private note.
+            </p>
+          </div>
+        </Card>
+
+        <Card className="p-4">
+          <div className="mb-3 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <Inbox className="h-4 w-4 text-primary" />
+              <p className="text-sm font-semibold">Incoming private notes</p>
+            </div>
+            <span className="rounded-md bg-muted px-2 py-1 text-[10px] font-semibold text-muted-foreground">
+              {receivedUtxos.length} found
+            </span>
+          </div>
+          <div className="rounded-lg border border-border/70 bg-background/70 px-3 py-3">
+            <p className="text-xs text-muted-foreground">
+              {receivedUtxos.length > 0
+                ? "Claiming moves all received notes from the scan into your encrypted balance."
+                : "Scan the mixer tree to find receiver-claimable notes for this vault."}
+            </p>
+            {incomingUtxos?.nextScanStartIndex !== undefined && (
+              <p className="mt-1 text-[10px] text-muted-foreground">Next scan cursor: {incomingUtxos.nextScanStartIndex}</p>
+            )}
+          </div>
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <Button variant="outline" onClick={handleScanIncoming} disabled={isBusy || isUnsupportedNetwork || !owner}>
+              Scan notes
+            </Button>
+            <Button onClick={handleClaimIncoming} disabled={isBusy || isUnsupportedNetwork || receivedUtxos.length === 0}>
+              Claim private
+            </Button>
+          </div>
+        </Card>
+
+        <Card className="p-4">
+          <div className="mb-3 flex items-center gap-2">
             <QrCode className="h-4 w-4 text-primary" />
             <p className="text-sm font-semibold">Private receive card</p>
           </div>
@@ -426,6 +583,16 @@ export function PrivacyView({ onNavigate }: PrivacyViewProps) {
                   {activity.amountUi && (
                     <p className="mt-1 text-xs text-muted-foreground">
                       {activity.amountUi} {activity.symbol}
+                    </p>
+                  )}
+                  {activity.recipient && (
+                    <p className="mt-1 truncate text-[10px] font-mono text-muted-foreground">
+                      To {activity.recipient}
+                    </p>
+                  )}
+                  {activity.utxoCount !== undefined && (
+                    <p className="mt-1 text-[10px] text-muted-foreground">
+                      {activity.utxoCount} private note{activity.utxoCount === 1 ? "" : "s"}
                     </p>
                   )}
                   {activity.queueSignature && (

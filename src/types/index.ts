@@ -124,12 +124,15 @@ export interface UmbraActivityRecord {
   id: string;
   ownerPublicKey: string;
   network: UmbraNetworkId;
-  kind: "register" | "query" | "deposit" | "withdraw";
+  kind: "register" | "query" | "deposit" | "withdraw" | "private-send" | "private-claim" | "wrap" | "unwrap";
   status: "pending" | "confirmed" | "failed";
   mint?: string;
   symbol?: string;
   amountAtomic?: string;
   amountUi?: string;
+  recipient?: string;
+  batchCount?: number;
+  utxoCount?: number;
   queueSignature?: string;
   callbackSignature?: string;
   callbackStatus?: "finalized" | "pruned" | "timed-out";

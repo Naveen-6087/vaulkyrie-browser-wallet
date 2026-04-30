@@ -1,14 +1,26 @@
 import {
+  getClaimableUtxoScannerFunction,
   getEncryptedBalanceQuerierFunction,
   getEncryptedBalanceToPublicBalanceDirectWithdrawerFunction,
+  getEncryptedBalanceToReceiverClaimableUtxoCreatorFunction,
   getPublicBalanceToEncryptedBalanceDirectDepositorFunction,
+  getPublicBalanceToReceiverClaimableUtxoCreatorFunction,
+  getReceiverClaimableUtxoToEncryptedBalanceClaimerFunction,
   getUmbraClient,
+  getUmbraRelayer,
   getUserRegistrationFunction,
   type DepositResult,
   type GetUmbraClientDeps,
   type WithdrawResult,
 } from "@umbra-privacy/sdk";
-import type { QueryEncryptedBalanceResult } from "@umbra-privacy/sdk/interfaces";
+import type {
+  ClaimUtxoIntoEncryptedBalanceResult,
+  CreateUtxoFromEncryptedBalanceResult,
+  CreateUtxoFromPublicBalanceResult,
+  ScannedUtxoData,
+  ScannedUtxoResult,
+  QueryEncryptedBalanceResult,
+} from "@umbra-privacy/sdk/interfaces";
 import type { U64 } from "@umbra-privacy/sdk/types";
 import type { NetworkId } from "@/lib/constants";
 import type { UmbraTokenBalanceRecord } from "@/types";
@@ -25,17 +37,38 @@ const ARCIUM_FINALIZATION = {
   safetyTimeoutMs: 120_000,
 } as const;
 
+const CLAIM_SCAN_TREE = 0 as never;
+const CLAIM_SCAN_START = 0 as never;
+
 export interface UmbraWalletClient {
   registerConfidential: () => Promise<string[]>;
   queryBalances: (tokens?: UmbraTokenConfig[]) => Promise<UmbraTokenBalanceRecord[]>;
   deposit: (params: UmbraTransferParams) => Promise<DepositResult>;
   withdraw: (params: UmbraTransferParams) => Promise<WithdrawResult>;
+  privateSendFromEncryptedBalance: (params: UmbraPrivateSendParams) => Promise<CreateUtxoFromEncryptedBalanceResult>;
+  privateSendFromPublicBalance: (params: UmbraPrivateSendParams) => Promise<CreateUtxoFromPublicBalanceResult>;
+  scanIncomingUtxos: () => Promise<UmbraIncomingUtxos>;
+  claimIncomingToEncryptedBalance: (utxos: readonly ScannedUtxoData[]) => Promise<ClaimUtxoIntoEncryptedBalanceResult>;
 }
 
 export interface UmbraTransferParams {
   destinationAddress?: string;
   mint: string;
   amountAtomic: bigint;
+}
+
+export interface UmbraPrivateSendParams {
+  destinationAddress: string;
+  mint: string;
+  amountAtomic: bigint;
+}
+
+export interface UmbraIncomingUtxos {
+  received: ScannedUtxoData[];
+  publicReceived: ScannedUtxoData[];
+  selfBurnable: ScannedUtxoData[];
+  publicSelfBurnable: ScannedUtxoData[];
+  nextScanStartIndex?: number;
 }
 
 export async function createUmbraWalletClient(
@@ -53,6 +86,7 @@ export async function createUmbraWalletClient(
       network: config.network,
       rpcUrl: config.rpcUrl,
       rpcSubscriptionsUrl: config.rpcSubscriptionsUrl,
+      indexerApiEndpoint: config.indexerApiEndpoint,
       deferMasterSeedSignature: true,
     },
     deps,
@@ -61,7 +95,7 @@ export async function createUmbraWalletClient(
   return {
     async registerConfidential() {
       const registerUser = getUserRegistrationFunction({ client });
-      return registerUser({ confidential: true, anonymous: false });
+      return registerUser({ confidential: true, anonymous: true });
     },
     async queryBalances(tokens = getUmbraTokens(network)) {
       const query = getEncryptedBalanceQuerierFunction({ client });
@@ -82,6 +116,80 @@ export async function createUmbraWalletClient(
       );
       return withdraw(destinationAddress as never, mint as never, amountAtomic as U64);
     },
+    async privateSendFromEncryptedBalance({ destinationAddress, mint, amountAtomic }) {
+      const { getCreateReceiverClaimableUtxoFromEncryptedBalanceProver } = await import(
+        "@umbra-privacy/web-zk-prover"
+      );
+      const createUtxo = getEncryptedBalanceToReceiverClaimableUtxoCreatorFunction(
+        { client },
+        {
+          zkProver: getCreateReceiverClaimableUtxoFromEncryptedBalanceProver(),
+          arcium: { awaitComputationFinalization: ARCIUM_FINALIZATION },
+        },
+      );
+      return createUtxo({
+        destinationAddress: destinationAddress as never,
+        mint: mint as never,
+        amount: amountAtomic as U64,
+      });
+    },
+    async privateSendFromPublicBalance({ destinationAddress, mint, amountAtomic }) {
+      const { getCreateReceiverClaimableUtxoFromPublicBalanceProver } = await import(
+        "@umbra-privacy/web-zk-prover"
+      );
+      const createUtxo = getPublicBalanceToReceiverClaimableUtxoCreatorFunction(
+        { client },
+        { zkProver: getCreateReceiverClaimableUtxoFromPublicBalanceProver() },
+      );
+      return createUtxo({
+        destinationAddress: destinationAddress as never,
+        mint: mint as never,
+        amount: amountAtomic as U64,
+      });
+    },
+    async scanIncomingUtxos() {
+      if (!config.indexerApiEndpoint) {
+        throw new Error("Umbra mixer scanning requires an indexer endpoint.");
+      }
+      const scan = getClaimableUtxoScannerFunction({ client });
+      return normalizeScannedUtxos(await scan(CLAIM_SCAN_TREE, CLAIM_SCAN_START));
+    },
+    async claimIncomingToEncryptedBalance(utxos) {
+      if (!config.indexerApiEndpoint) {
+        throw new Error("Umbra mixer claims require an indexer endpoint.");
+      }
+      if (!config.relayerApiEndpoint) {
+        throw new Error("Umbra mixer claims require a relayer endpoint.");
+      }
+      if (!client.fetchBatchMerkleProof) {
+        throw new Error("Umbra mixer claims require a batch Merkle proof fetcher.");
+      }
+      const { getClaimReceiverClaimableUtxoIntoEncryptedBalanceProver } = await import(
+        "@umbra-privacy/web-zk-prover"
+      );
+      const relayer = getUmbraRelayer({ apiEndpoint: config.relayerApiEndpoint });
+      const claim = getReceiverClaimableUtxoToEncryptedBalanceClaimerFunction(
+        { client },
+        {
+          fetchBatchMerkleProof: client.fetchBatchMerkleProof,
+          zkProver: getClaimReceiverClaimableUtxoIntoEncryptedBalanceProver(),
+          relayer,
+          awaitCompletion: true,
+          timeoutMs: 180_000,
+        },
+      );
+      return claim(utxos);
+    },
+  };
+}
+
+function normalizeScannedUtxos(result: ScannedUtxoResult): UmbraIncomingUtxos {
+  return {
+    received: result.received ?? [],
+    publicReceived: result.publicReceived ?? [],
+    selfBurnable: result.selfBurnable ?? [],
+    publicSelfBurnable: result.publicSelfBurnable ?? [],
+    nextScanStartIndex: typeof result.nextScanStartIndex === "number" ? result.nextScanStartIndex : undefined,
   };
 }
 
