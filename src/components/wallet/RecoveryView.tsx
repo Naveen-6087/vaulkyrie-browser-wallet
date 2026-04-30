@@ -926,7 +926,7 @@ export function RecoveryView({ onNavigate }: RecoveryViewProps) {
           </div>
           <div className="space-y-3 p-4">
             <p className="text-xs text-muted-foreground">
-              This backup includes local DKG material, policy profiles, orchestration history, recovery sessions, contacts, and security preferences for this browser wallet.
+              This backup includes local DKG material, privacy settings, orchestration history, recovery sessions, contacts, and security preferences for this browser wallet.
             </p>
             <Input
               type="password"

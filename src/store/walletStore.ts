@@ -10,6 +10,9 @@ import type {
   WalletView,
   SpendOrchestrationActivity,
   RecoverySessionRecord,
+  UmbraAccountRecord,
+  UmbraActivityRecord,
+  UmbraNetworkId,
 } from "../types";
 import { DEFAULT_NETWORK, type NetworkId } from "../lib/constants";
 import {
@@ -80,6 +83,9 @@ export interface PersistedWalletState {
   quantumVaultKeys: Record<string, string>;
   orchestrationHistory: Record<string, SpendOrchestrationActivity[]>;
   recoverySessions: Record<string, RecoverySessionRecord[]>;
+  umbraAccounts: Record<string, Partial<Record<UmbraNetworkId, UmbraAccountRecord>>>;
+  umbraActivities: Record<string, UmbraActivityRecord[]>;
+  umbraMasterSeeds: Record<string, string>;
 }
 
 interface WalletState extends PersistedWalletState {
@@ -159,6 +165,13 @@ interface WalletState extends PersistedWalletState {
   getOrchestrationHistory: (publicKey: string) => SpendOrchestrationActivity[];
   upsertRecoverySession: (publicKey: string, session: RecoverySessionRecord) => void;
   getRecoverySessions: (publicKey: string) => RecoverySessionRecord[];
+  upsertUmbraAccount: (publicKey: string, network: UmbraNetworkId, account: UmbraAccountRecord) => void;
+  getUmbraAccount: (publicKey: string, network: UmbraNetworkId) => UmbraAccountRecord | null;
+  recordUmbraActivity: (publicKey: string, activity: UmbraActivityRecord) => void;
+  getUmbraActivities: (publicKey: string) => UmbraActivityRecord[];
+  storeUmbraMasterSeed: (publicKey: string, network: UmbraNetworkId, seedBase64: string) => void;
+  getUmbraMasterSeed: (publicKey: string, network: UmbraNetworkId) => string | null;
+  clearUmbraMasterSeed: (publicKey: string, network: UmbraNetworkId) => void;
 
   // Async actions — real Solana RPC calls
   refreshBalances: () => Promise<void>;
@@ -190,6 +203,9 @@ export function pickPersistedWalletState(state: WalletState): PersistedWalletSta
     quantumVaultKeys: state.quantumVaultKeys,
     orchestrationHistory: state.orchestrationHistory,
     recoverySessions: state.recoverySessions,
+    umbraAccounts: state.umbraAccounts,
+    umbraActivities: state.umbraActivities,
+    umbraMasterSeeds: state.umbraMasterSeeds,
   };
 }
 
@@ -218,6 +234,9 @@ export const useWalletStore = create<WalletState>()(
       quantumVaultKeys: {},
       orchestrationHistory: {},
       recoverySessions: {},
+      umbraAccounts: {},
+      umbraActivities: {},
+      umbraMasterSeeds: {},
       tokens: [],
       transactions: [],
       collectibles: [],
@@ -260,6 +279,13 @@ export const useWalletStore = create<WalletState>()(
           delete orchestrationHistory[publicKey];
           const recoverySessions = { ...state.recoverySessions };
           delete recoverySessions[publicKey];
+          const umbraAccounts = { ...state.umbraAccounts };
+          delete umbraAccounts[publicKey];
+          const umbraActivities = { ...state.umbraActivities };
+          delete umbraActivities[publicKey];
+          const umbraMasterSeeds = Object.fromEntries(
+            Object.entries(state.umbraMasterSeeds).filter(([key]) => !key.startsWith(`${publicKey}:`)),
+          );
           const activeAccount =
             state.activeAccount?.publicKey === publicKey
               ? accounts[0] ?? null
@@ -273,6 +299,9 @@ export const useWalletStore = create<WalletState>()(
             quantumVaultKeys,
             orchestrationHistory,
             recoverySessions,
+            umbraAccounts,
+            umbraActivities,
+            umbraMasterSeeds,
             activeAccount,
           };
         }),
@@ -438,6 +467,44 @@ export const useWalletStore = create<WalletState>()(
           },
         })),
       getRecoverySessions: (publicKey) => get().recoverySessions[publicKey] ?? [],
+      upsertUmbraAccount: (publicKey, network, account) =>
+        set((state) => ({
+          umbraAccounts: {
+            ...state.umbraAccounts,
+            [publicKey]: {
+              ...(state.umbraAccounts[publicKey] ?? {}),
+              [network]: account,
+            },
+          },
+        })),
+      getUmbraAccount: (publicKey, network) => get().umbraAccounts[publicKey]?.[network] ?? null,
+      recordUmbraActivity: (publicKey, activity) =>
+        set((state) => ({
+          umbraActivities: {
+            ...state.umbraActivities,
+            [publicKey]: [
+              activity,
+              ...(state.umbraActivities[publicKey] ?? []).filter((existing) => existing.id !== activity.id),
+            ]
+            .sort((left, right) => right.updatedAt - left.updatedAt)
+            .slice(0, 100),
+          },
+        })),
+      getUmbraActivities: (publicKey) => get().umbraActivities[publicKey] ?? [],
+      storeUmbraMasterSeed: (publicKey, network, seedBase64) =>
+        set((state) => ({
+          umbraMasterSeeds: {
+            ...state.umbraMasterSeeds,
+            [`${publicKey}:${network}`]: seedBase64,
+          },
+        })),
+      getUmbraMasterSeed: (publicKey, network) => get().umbraMasterSeeds[`${publicKey}:${network}`] ?? null,
+      clearUmbraMasterSeed: (publicKey, network) =>
+        set((state) => {
+          const next = { ...state.umbraMasterSeeds };
+          delete next[`${publicKey}:${network}`];
+          return { umbraMasterSeeds: next };
+        }),
 
       refreshBalances: async () => {
         const { activeAccount, network } = get();

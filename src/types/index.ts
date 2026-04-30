@@ -89,10 +89,61 @@ export interface VaultState {
   pendingSessions: number;
 }
 
+export type UmbraNetworkId = "mainnet" | "devnet" | "localnet";
+
+export type UmbraBalanceState =
+  | "unknown"
+  | "non_existent"
+  | "uninitialized"
+  | "mxe"
+  | "shared"
+  | "error";
+
+export interface UmbraTokenBalanceRecord {
+  mint: string;
+  symbol: string;
+  decimals: number;
+  state: UmbraBalanceState;
+  balanceAtomic?: string;
+  balanceUi?: string;
+  error?: string;
+  updatedAt: number;
+}
+
+export interface UmbraAccountRecord {
+  ownerPublicKey: string;
+  network: UmbraNetworkId;
+  registeredConfidential: boolean;
+  registeredAnonymous: boolean;
+  masterSeedCreatedAt?: number;
+  lastUpdatedAt: number;
+  balances: Record<string, UmbraTokenBalanceRecord>;
+}
+
+export interface UmbraActivityRecord {
+  id: string;
+  ownerPublicKey: string;
+  network: UmbraNetworkId;
+  kind: "register" | "query" | "deposit" | "withdraw";
+  status: "pending" | "confirmed" | "failed";
+  mint?: string;
+  symbol?: string;
+  amountAtomic?: string;
+  amountUi?: string;
+  queueSignature?: string;
+  callbackSignature?: string;
+  callbackStatus?: "finalized" | "pruned" | "timed-out";
+  rentClaimSignature?: string;
+  error?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export type WalletView =
   | "dashboard"
   | "send"
   | "receive"
+  | "privacy"
   | "swap"
   | "activity"
   | "settings"

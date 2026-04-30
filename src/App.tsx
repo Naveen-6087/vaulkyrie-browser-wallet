@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { lazy, Suspense, useState, useEffect } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { PublicKey } from "@solana/web3.js";
 import { Header } from "@/components/layout/Header";
@@ -24,6 +24,10 @@ import { useWalletStore } from "@/store/walletStore";
 import type { VaultConfig } from "@/components/onboarding/VaultConfigStep";
 import type { WalletView } from "@/types";
 import "./index.css";
+
+const PrivacyView = lazy(() =>
+  import("@/components/wallet/PrivacyView").then((module) => ({ default: module.PrivacyView })),
+);
 
 function App() {
   const {
@@ -280,6 +284,13 @@ function App() {
             address={activeAccount?.publicKey ?? ""}
             onNavigate={setView}
           />
+        );
+
+      case "privacy":
+        return (
+          <Suspense fallback={<div className="p-4 text-sm text-muted-foreground">Loading privacy mode...</div>}>
+            <PrivacyView onNavigate={setView} />
+          </Suspense>
         );
 
       case "swap":

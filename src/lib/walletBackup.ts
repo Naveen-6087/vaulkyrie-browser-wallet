@@ -95,6 +95,9 @@ function validatePersistedWalletState(value: unknown): PersistedWalletState {
     quantumVaultKeys: candidate.quantumVaultKeys ?? {},
     orchestrationHistory: candidate.orchestrationHistory ?? {},
     recoverySessions: candidate.recoverySessions ?? {},
+    umbraAccounts: candidate.umbraAccounts ?? {},
+    umbraActivities: candidate.umbraActivities ?? {},
+    umbraMasterSeeds: candidate.umbraMasterSeeds ?? {},
   });
 }
 
