@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Check, Copy, EyeOff, LockKeyhole, QrCode, RefreshCw, Shield, WalletCards } from "lucide-react";
+import { Check, Copy, EyeOff, LockKeyhole, QrCode, RefreshCw, Repeat2, Shield, WalletCards } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -15,6 +15,8 @@ import {
   parseUiAmount,
 } from "@/services/umbra/umbraClient";
 import { getUmbraTokens, toUmbraNetwork, type UmbraTokenConfig } from "@/services/umbra/umbraConfig";
+import { createConnection } from "@/services/solanaRpc";
+import { unwrapAllSolForVault, wrapSolForVault } from "@/services/umbra/wrappedSol";
 
 interface PrivacyViewProps {
   onNavigate: (view: WalletView) => void;
@@ -29,6 +31,7 @@ export function PrivacyView({ onNavigate }: PrivacyViewProps) {
     upsertUmbraAccount,
     recordUmbraActivity,
     refreshAll,
+    tokens,
   } = useWalletStore();
   const { copy, isCopied } = useCopyToClipboard({ resetAfterMs: 2000 });
   const [amount, setAmount] = useState("");
@@ -58,6 +61,11 @@ export function PrivacyView({ onNavigate }: PrivacyViewProps) {
   const activities = owner ? getUmbraActivities(owner).filter((activity) => activity.network === umbraNetwork) : [];
   const balance = selectedToken ? record?.balances[selectedToken.mint] : null;
   const isUnsupportedNetwork = umbraNetwork === null;
+  const isWrappedSol = selectedToken?.mint === "So11111111111111111111111111111111111111112";
+  const publicSolBalance = tokens.find((token) => token.symbol === "SOL")?.balance ?? activeAccount?.balance ?? 0;
+  const publicTokenBalance = isWrappedSol
+    ? tokens.find((token) => token.mint === selectedToken?.mint)?.balance ?? 0
+    : tokens.find((token) => token.mint === selectedToken?.mint || token.symbol === selectedToken?.symbol)?.balance ?? 0;
 
   useEffect(() => {
     if (tokenOptions.length === 0) {
@@ -195,6 +203,47 @@ export function PrivacyView({ onNavigate }: PrivacyViewProps) {
     void refreshAll();
   });
 
+  const handleWrapSol = () => runAction("Wrapping SOL into wSOL...", async () => {
+    ensureToken(selectedToken);
+    if (!owner) throw new Error("Create or unlock a Vaulkyrie wallet first.");
+    if (!isWrappedSol) throw new Error("Select wSOL before wrapping native SOL.");
+    const lamports = parseUiAmount(amount, selectedToken.decimals);
+    const signature = await wrapSolForVault(
+      createConnection(network),
+      owner,
+      lamports,
+      (message) => setStatus(message),
+    );
+    recordActivity({
+      kind: "deposit",
+      status: "confirmed",
+      mint: selectedToken.mint,
+      symbol: selectedToken.symbol,
+      amountAtomic: lamports.toString(),
+      amountUi: formatAtomicAmount(lamports, selectedToken.decimals),
+      queueSignature: signature,
+    });
+    setAmount("");
+    await refreshAll();
+  });
+
+  const handleUnwrapSol = () => runAction("Unwrapping all wSOL into SOL...", async () => {
+    if (!owner) throw new Error("Create or unlock a Vaulkyrie wallet first.");
+    const signature = await unwrapAllSolForVault(
+      createConnection(network),
+      owner,
+      (message) => setStatus(message),
+    );
+    recordActivity({
+      kind: "withdraw",
+      status: "confirmed",
+      mint: selectedToken?.mint,
+      symbol: selectedToken?.symbol ?? "wSOL",
+      queueSignature: signature,
+    });
+    await refreshAll();
+  });
+
   const handlePostMutationRefresh = async (
     client: Awaited<ReturnType<typeof createUmbraWalletClient>>,
     token: UmbraTokenConfig,
@@ -294,6 +343,10 @@ export function PrivacyView({ onNavigate }: PrivacyViewProps) {
             <p className="mt-1 text-xs text-muted-foreground">
               State: {balance?.state ?? "unknown"}
             </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Public balance: {publicTokenBalance.toFixed(selectedToken?.decimals === 9 ? 4 : 2)} {selectedToken?.symbol ?? ""}
+              {isWrappedSol ? `, ${publicSolBalance.toFixed(4)} SOL available to wrap` : ""}
+            </p>
           </div>
         </Card>
 
@@ -322,6 +375,17 @@ export function PrivacyView({ onNavigate }: PrivacyViewProps) {
                 Unshield
               </Button>
             </div>
+            {isWrappedSol && (
+              <div className="grid grid-cols-2 gap-2">
+                <Button variant="outline" onClick={handleWrapSol} disabled={isBusy || !selectedToken}>
+                  <Repeat2 className="h-4 w-4" />
+                  Wrap SOL
+                </Button>
+                <Button variant="outline" onClick={handleUnwrapSol} disabled={isBusy || !selectedToken}>
+                  Unwrap all
+                </Button>
+              </div>
+            )}
           </div>
         </Card>
 

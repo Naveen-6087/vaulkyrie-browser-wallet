@@ -44,12 +44,6 @@ export const UMBRA_SUPPORTED_TOKENS: Record<UmbraNetworkId, UmbraTokenConfig[]> 
   ],
   devnet: [
     {
-      symbol: "USDC",
-      name: "USD Coin Devnet",
-      mint: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
-      decimals: 6,
-    },
-    {
       symbol: "wSOL",
       name: "Wrapped SOL",
       mint: "So11111111111111111111111111111111111111112",

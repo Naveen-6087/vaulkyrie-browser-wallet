@@ -27,6 +27,8 @@ import { walletPersistStorage } from "../lib/walletPersistStorage";
 import { DEFAULT_RELAY_URL } from "../services/relay/relayAdapter";
 import type { VaultCosignerMetadata } from "../services/cosigner/cosignerClient";
 
+let balanceRefreshSequence = 0;
+
 // Per-vault DKG key material stored in localStorage
 interface StoredDkgResult {
   groupPublicKeyHex: string;
@@ -510,6 +512,7 @@ export const useWalletStore = create<WalletState>()(
         const { activeAccount, network } = get();
         if (!activeAccount) return;
 
+        const requestId = ++balanceRefreshSequence;
         set({ isLoading: true, error: null });
         try {
           const pubkey = new PublicKey(activeAccount.publicKey);
@@ -538,13 +541,23 @@ export const useWalletStore = create<WalletState>()(
             balance: solToken ? solToken.balance : activeAccount.balance,
           };
 
+          if (requestId !== balanceRefreshSequence) {
+            return;
+          }
+
           set({
             tokens: enriched,
             activeAccount: updatedAccount,
+            accounts: get().accounts.map((account) =>
+              account.publicKey === updatedAccount.publicKey ? updatedAccount : account,
+            ),
             isLoading: false,
             lastFetchedAt: Date.now(),
           });
         } catch (err) {
+          if (requestId !== balanceRefreshSequence) {
+            return;
+          }
           set({
             isLoading: false,
             error: err instanceof Error ? err.message : "Failed to fetch balances",

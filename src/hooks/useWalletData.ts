@@ -24,6 +24,7 @@ export function useWalletData() {
     refreshBalances,
     refreshTransactions,
     refreshCollectibles,
+    refreshVaultState,
   } = useWalletStore();
 
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -50,7 +51,7 @@ export function useWalletData() {
     refreshAll();
   }, [activePublicKey, network, refreshAll]);
 
-  // Poll every 30s for balance updates
+  // Poll every 30s for balance and activity updates.
   useEffect(() => {
     if (!activePublicKey) {
       if (intervalRef.current) {
@@ -61,7 +62,11 @@ export function useWalletData() {
     }
 
     intervalRef.current = setInterval(() => {
-      refreshBalances();
+      void Promise.all([
+        refreshBalances(),
+        refreshTransactions(),
+        refreshVaultState(),
+      ]);
     }, REFRESH_INTERVAL_MS);
 
     return () => {
@@ -70,7 +75,7 @@ export function useWalletData() {
         intervalRef.current = null;
       }
     };
-  }, [activePublicKey, network, refreshBalances]);
+  }, [activePublicKey, network, refreshBalances, refreshTransactions, refreshVaultState]);
 
   return {
     tokens,
