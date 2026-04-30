@@ -1,4 +1,6 @@
 import type { NetworkId } from "@/lib/constants";
+import type { WalletAccountKind } from "@/types";
+import { isWalletSessionUnlocked } from "@/background/sessionState";
 import { DEFAULT_NETWORK } from "@/lib/constants";
 import {
   WALLET_STORAGE_KEY,
@@ -8,6 +10,7 @@ import {
 interface PersistedAccount {
   publicKey: string;
   name?: string;
+  kind?: WalletAccountKind;
 }
 
 interface PersistedWalletState {
@@ -22,6 +25,7 @@ export interface ExtensionProviderState {
   connected: boolean;
   publicKey: string | null;
   accountLabel: string | null;
+  accountKind: WalletAccountKind | null;
   accounts: string[];
   network: NetworkId;
   isOnboarded: boolean;
@@ -32,14 +36,17 @@ export async function readExtensionProviderState(): Promise<ExtensionProviderSta
   const envelope = await readWalletPersistedEnvelope<PersistedWalletState>(WALLET_STORAGE_KEY);
   const state = envelope?.state;
   const activeAccount = state?.activeAccount ?? null;
+  const sessionUnlocked = isWalletSessionUnlocked();
+  const walletLocked = Boolean(state?.isOnboarded) && (Boolean(state?.isLocked) || !sessionUnlocked);
 
   return {
     connected: Boolean(activeAccount?.publicKey),
     publicKey: activeAccount?.publicKey ?? null,
     accountLabel: activeAccount?.name ?? null,
+    accountKind: activeAccount?.kind ?? null,
     accounts: (state?.accounts ?? []).map((account) => account.publicKey),
     network: state?.network ?? DEFAULT_NETWORK,
     isOnboarded: Boolean(state?.isOnboarded),
-    isLocked: Boolean(state?.isLocked),
+    isLocked: walletLocked,
   };
 }

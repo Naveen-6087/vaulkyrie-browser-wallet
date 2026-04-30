@@ -4,6 +4,7 @@ import { PublicKey } from "@solana/web3.js";
 import { Header } from "@/components/layout/Header";
 import { BottomNav } from "@/components/layout/BottomNav";
 import { ScreenShell } from "@/components/layout/ScreenShell";
+import { Card } from "@/components/ui/card";
 import { Dashboard } from "@/pages/Dashboard";
 import { QuantumVault } from "@/pages/QuantumVault";
 import { SendView } from "@/components/wallet/SendView";
@@ -15,11 +16,14 @@ import { AddressBook } from "@/components/wallet/AddressBook";
 import { SettingsView } from "@/components/settings/SettingsView";
 import { ApprovalCenter } from "@/components/extension/ApprovalCenter";
 import { OnboardingWelcome } from "@/components/onboarding/OnboardingWelcome";
+import { PrivacyVaultSetup } from "@/components/onboarding/PrivacyVaultSetup";
 import { RestoreVaultStep } from "@/components/onboarding/RestoreVaultStep";
 import { VaultConfigStep } from "@/components/onboarding/VaultConfigStep";
 import { LockScreen } from "@/components/onboarding/LockScreen";
 import { DKGCeremony } from "@/components/ceremony/DKGCeremony";
 import { JoinCeremony } from "@/components/ceremony/JoinCeremony";
+import { getWalletAccountKind } from "@/lib/walletAccounts";
+import { hasWalletSessionPassword } from "@/lib/walletSession";
 import { useWalletStore } from "@/store/walletStore";
 import type { VaultConfig } from "@/components/onboarding/VaultConfigStep";
 import type { WalletView } from "@/types";
@@ -51,7 +55,9 @@ function App() {
 
   const [view, setView] = useState<WalletView>("onboarding");
   const [isLocked, setIsLocked] = useState(false);
+  const [hasResolvedSession, setHasResolvedSession] = useState(false);
   const [vaultConfig, setVaultConfig] = useState<VaultConfig | null>(null);
+  const activeAccountKind = getWalletAccountKind(activeAccount);
 
   const requestedView =
     typeof window !== "undefined" && new URLSearchParams(window.location.search).get("view") === "approval"
@@ -61,20 +67,37 @@ function App() {
   // Sync view after zustand persist hydration completes
   useEffect(() => {
     if (!hasHydrated) return;
+    let cancelled = false;
 
-    const timer = window.setTimeout(() => {
-      if (isOnboarded && passwordHash && storeLocked) {
-        setIsLocked(true);
-        setView("lock");
-      } else if (isOnboarded && !passwordHash) {
-        setIsLocked(true);
-        setView("lock");
-      } else {
-        setView(isOnboarded ? (requestedView ?? "dashboard") : "onboarding");
+    void (async () => {
+      try {
+        const hasSessionPassword = await hasWalletSessionPassword();
+        if (cancelled) {
+          return;
+        }
+
+        const shouldLock = isOnboarded && (!passwordHash || storeLocked || !hasSessionPassword);
+        if (shouldLock) {
+          setIsLocked(true);
+          setView("lock");
+        } else {
+          setIsLocked(false);
+          setView(isOnboarded ? (requestedView ?? "dashboard") : "onboarding");
+        }
+      } catch (error) {
+        console.error("Failed to resolve Vaulkyrie session state.", error);
+        if (cancelled) {
+          return;
+        }
+        setIsLocked(Boolean(isOnboarded));
+        setView(isOnboarded ? "lock" : "onboarding");
       }
-    }, 0);
+      setHasResolvedSession(true);
+    })();
 
-    return () => window.clearTimeout(timer);
+    return () => {
+      cancelled = true;
+    };
   }, [hasHydrated, isOnboarded, passwordHash, requestedView, storeLocked]);
 
   // Sync local lock state when store's isLocked changes (e.g. from Settings → Lock Wallet)
@@ -130,7 +153,7 @@ function App() {
   }, [isOnboarded, passwordHash, isLocked, securityPreferences.lockOnHide, setStoreLocked]);
 
   // Show splash screen until store has hydrated
-  if (!hasHydrated) {
+  if (!hasHydrated || !hasResolvedSession) {
     return (
       <div className="flex flex-col h-screen bg-background text-foreground items-center justify-center gap-4">
         <div className="w-12 h-12 border-4 border-primary/30 border-t-primary rounded-full animate-spin" />
@@ -143,6 +166,7 @@ function App() {
     view === "onboarding" ||
     view === "import-vault" ||
     view === "vault-config" ||
+    view === "privacy-vault-setup" ||
     view === "dkg-ceremony" ||
     view === "join-ceremony" ||
     view === "lock";
@@ -161,6 +185,7 @@ function App() {
       publicKey: solanaAddress,
       balance: 0,
       isActive: true,
+      kind: "threshold-vault" as const,
     };
 
     // Migrate DKG result from sessionStorage to persistent zustand store
@@ -203,6 +228,30 @@ function App() {
     void refreshAll();
   };
 
+  const handlePrivacyVaultCreated = () => {
+    setIsLocked(false);
+    setStoreLocked(false);
+    setView("dashboard");
+    void refreshAll();
+  };
+
+  const renderThresholdOnlyView = (title: string, description: string) => (
+    <ScreenShell
+      title={title}
+      description={description}
+      onBack={() => setView("dashboard")}
+      backLabel="Back to dashboard"
+    >
+      <Card className="space-y-3 p-4">
+        <p className="text-sm font-medium">Threshold Vault required</p>
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          This flow depends on Vaulkyrie threshold custody and coordination state. Switch to a
+          Threshold Vault from the account menu to use it.
+        </p>
+      </Card>
+    </ScreenShell>
+  );
+
   const renderView = () => {
     if (isLocked) {
       return (
@@ -221,6 +270,7 @@ function App() {
         return (
           <OnboardingWelcome
             onCreateVault={() => setView("vault-config")}
+            onCreatePrivacyVault={() => setView("privacy-vault-setup")}
             onImportVault={() => setView("import-vault")}
             onJoinCeremony={() => setView("join-ceremony")}
           />
@@ -250,6 +300,14 @@ function App() {
           />
         );
 
+      case "privacy-vault-setup":
+        return (
+          <PrivacyVaultSetup
+            onBack={() => setView(isOnboarded ? "dashboard" : "onboarding")}
+            onComplete={handlePrivacyVaultCreated}
+          />
+        );
+
       case "dkg-ceremony":
         return (
           <DKGCeremony
@@ -271,6 +329,12 @@ function App() {
         return <Dashboard onNavigate={setView} />;
 
       case "send":
+        if (activeAccountKind === "privacy-vault") {
+          return renderThresholdOnlyView(
+            "Threshold sending only",
+            "Public send orchestration still uses Vaulkyrie threshold custody. Use Privacy for Umbra transfers or switch to a Threshold Vault.",
+          );
+        }
         return (
           <SendView
             balance={activeAccount?.balance ?? 0}
@@ -302,6 +366,12 @@ function App() {
         );
 
       case "quantum-vault":
+        if (activeAccountKind === "privacy-vault") {
+          return renderThresholdOnlyView(
+            "PQC admin only",
+            "Post-quantum authority management belongs to Threshold Vaults. Privacy Vaults keep a normal local signer for private wallet flows.",
+          );
+        }
         return (
           <QuantumVault
             walletAddress={activeAccount?.publicKey ?? ""}
@@ -330,6 +400,12 @@ function App() {
         );
 
       case "recovery":
+        if (activeAccountKind === "privacy-vault") {
+          return renderThresholdOnlyView(
+            "Recovery coordination only",
+            "Onchain recovery sessions apply to Threshold Vaults. Privacy Vaults use encrypted backup export from Settings instead.",
+          );
+        }
         return <RecoveryView onNavigate={setView} />;
 
       case "contacts":
@@ -352,6 +428,7 @@ function App() {
           network={network}
           onNetworkChange={setNetwork}
           onCreateVault={() => setView("vault-config")}
+          onCreatePrivacyVault={() => setView("privacy-vault-setup")}
         />
       )}
 

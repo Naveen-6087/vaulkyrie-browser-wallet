@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { ScreenShell } from "@/components/layout/ScreenShell";
+import { getWalletAccountKind, getWalletAccountLabel } from "@/lib/walletAccounts";
 import { NETWORKS } from "@/lib/constants";
 import { exportEncryptedWalletBackup } from "@/lib/walletBackup";
 import { cn, shortenAddress } from "@/lib/utils";
@@ -132,7 +133,6 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
     switchVault,
     removeAccount,
     setLocked,
-    passwordHash,
     securityPreferences,
     relayUrl,
     unlockBlockedUntil,
@@ -144,6 +144,9 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
   const activeCooldown = unlockBlockedUntil !== null && unlockBlockedUntil > currentTime;
   const usingManagedRelay = isManagedRelayUrl(relayUrl);
   const relayDisplayLabel = getRelayDisplayLabel(relayUrl);
+  const activeAccountKind = getWalletAccountKind(activeAccount);
+  const privacyVaultCount = accounts.filter((account) => getWalletAccountKind(account) === "privacy-vault").length;
+  const thresholdVaultCount = accounts.length - privacyVaultCount;
 
   useEffect(() => {
     if (!activeCooldown) return;
@@ -306,7 +309,7 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
   return (
     <ScreenShell
       title="Settings"
-      description="Manage vault security, site connections, recovery, and relay behavior."
+      description="Manage account security, site connections, recovery, and relay behavior."
       onBack={() => onNavigate("dashboard")}
       backLabel="Back to dashboard"
     >
@@ -331,16 +334,16 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
             <div className="grid grid-cols-2 gap-3">
               <SummaryTile label="Network" value={NETWORKS[network].name} tone="primary" />
               <SummaryTile
-                label="Vaults"
-                value={`${accounts.length} configured`}
+                label="Accounts"
+                value={`${accounts.length} total`}
               />
               <SummaryTile
                 label="Relay"
                 value={usingManagedRelay ? "Managed relay" : "Self-hosted"}
               />
               <SummaryTile
-                label="Session"
-                value={passwordHash ? "Password locked" : "Password setup pending"}
+                label="Categories"
+                value={`${thresholdVaultCount} threshold · ${privacyVaultCount} privacy`}
               />
             </div>
 
@@ -354,8 +357,18 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
                 <SettingRow
                   icon={LifeBuoy}
                   label="Recovery & Restore"
-                  value="Open recovery coordination and import/export tools"
-                  onClick={() => onNavigate("recovery")}
+                  value={
+                    activeAccountKind === "privacy-vault"
+                      ? "Open backup export and restore tools"
+                      : "Open recovery coordination and import/export tools"
+                  }
+                  onClick={() => {
+                    if (activeAccountKind === "privacy-vault") {
+                      setActiveSection("recovery");
+                      return;
+                    }
+                    onNavigate("recovery");
+                  }}
                 />
                 <SettingRow
                   icon={Users}
@@ -372,7 +385,7 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
                 <SettingRow
                   icon={Info}
                   label="About Vaulkyrie"
-                  value="v0.1.0 · Solana threshold wallet"
+                  value="v0.1.0 · Solana threshold and privacy wallet"
                 />
               </div>
             </Card>
@@ -380,10 +393,10 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
             <Card className="overflow-hidden">
               <div className="border-b border-border/70 px-4 py-3">
                 <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                  Your vaults
-                </p>
-              </div>
-              <div className="space-y-2 p-4">
+                    Your accounts
+                  </p>
+                </div>
+                <div className="space-y-2 p-4">
                 {accounts.map((acc) => (
                   <div
                     key={acc.publicKey}
@@ -396,12 +409,22 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
                       <p className="truncate text-sm font-medium">
                         {vaultConfigs[acc.publicKey]?.vaultName ?? acc.name}
                       </p>
+                      <div className="mt-1">
+                        <Badge variant="outline" className="text-[10px]">
+                          {getWalletAccountLabel(acc)}
+                        </Badge>
+                      </div>
                       <p className="mt-1 text-xs font-mono text-muted-foreground">
                         {shortenAddress(acc.publicKey, 6)}
                       </p>
-                      {vaultConfigs[acc.publicKey] && (
+                      {getWalletAccountKind(acc) === "threshold-vault" && vaultConfigs[acc.publicKey] && (
                         <p className="mt-1 text-[11px] text-muted-foreground">
                           {vaultConfigs[acc.publicKey].threshold}-of-{vaultConfigs[acc.publicKey].totalParticipants} threshold
+                        </p>
+                      )}
+                      {getWalletAccountKind(acc) === "privacy-vault" && (
+                        <p className="mt-1 text-[11px] text-muted-foreground">
+                          Local Ed25519 signer for Umbra privacy flows.
                         </p>
                       )}
                     </div>
@@ -426,9 +449,14 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
                     )}
                   </div>
                 ))}
-                <Button variant="outline" className="w-full" onClick={() => onNavigate("vault-config")}>
-                  Create new vault
-                </Button>
+                <div className="grid grid-cols-2 gap-2">
+                  <Button variant="outline" className="w-full" onClick={() => onNavigate("vault-config")}>
+                    Create threshold vault
+                  </Button>
+                  <Button variant="outline" className="w-full" onClick={() => onNavigate("privacy-vault-setup")}>
+                    Create privacy vault
+                  </Button>
+                </div>
               </div>
             </Card>
           </>
@@ -545,7 +573,7 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
                   </div>
                 ) : approvedOrigins.length === 0 ? (
                   <div className="rounded-2xl border border-border/80 bg-card/55 px-3 py-4 text-xs text-muted-foreground">
-                    No connected sites have been approved for {activeAccount ? shortenAddress(activeAccount.publicKey) : "this wallet"} yet.
+                  No connected sites have been approved for {activeAccount ? shortenAddress(activeAccount.publicKey) : "this account"} yet.
                   </div>
                 ) : (
                   <div className="space-y-2">
@@ -571,7 +599,7 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
                                 Last used: {formatSiteTimestamp(site.lastUsedAt)}
                               </p>
                               <p className="mt-1 text-[11px] font-mono text-muted-foreground">
-                                Account: {site.accountPublicKey ? shortenAddress(site.accountPublicKey) : "Any active vault"}
+                                Account: {site.accountPublicKey ? shortenAddress(site.accountPublicKey) : "Any active account"}
                               </p>
                             </div>
                             <Button
@@ -720,10 +748,21 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
               <div className="space-y-3 p-4">
                 <p className="text-sm font-medium">Recovery & restore workspace</p>
                 <p className="text-xs leading-relaxed text-muted-foreground">
-                  Open the full recovery view for encrypted backup imports, staged restore previews, and onchain recovery coordination.
+                  {activeAccountKind === "privacy-vault"
+                    ? "Privacy Vaults use the backup export flow here. Threshold recovery coordination stays available when you switch back to a Threshold Vault."
+                    : "Open the full recovery view for encrypted backup imports, staged restore previews, and onchain recovery coordination."}
                 </p>
-                <Button className="w-full" onClick={() => onNavigate("recovery")}>
-                  Open Recovery & Restore
+                <Button
+                  className="w-full"
+                  onClick={() => {
+                    if (activeAccountKind === "privacy-vault") {
+                      setActiveSection("overview");
+                      return;
+                    }
+                    onNavigate("recovery");
+                  }}
+                >
+                  {activeAccountKind === "privacy-vault" ? "Switch to Threshold Vault for recovery" : "Open Recovery & Restore"}
                 </Button>
               </div>
             </Card>
@@ -731,7 +770,7 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
         )}
 
         <p className="pt-1 text-center text-[10px] text-muted-foreground">
-          Vaulkyrie — Threshold security for Solana
+          Vaulkyrie — Threshold and privacy wallets for Solana
         </p>
       </div>
     </ScreenShell>

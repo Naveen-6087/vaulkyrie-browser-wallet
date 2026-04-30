@@ -6,6 +6,7 @@ import banner from "@/assets/xbannerv.jpeg";
 
 interface OnboardingWelcomeProps {
   onCreateVault: () => void;
+  onCreatePrivacyVault?: () => void;
   onImportVault: () => void;
   onJoinCeremony?: () => void;
 }
@@ -30,6 +31,7 @@ const FEATURES = [
 
 export function OnboardingWelcome({
   onCreateVault,
+  onCreatePrivacyVault,
   onImportVault,
   onJoinCeremony,
 }: OnboardingWelcomeProps) {
@@ -82,7 +84,7 @@ export function OnboardingWelcome({
             <span className="text-primary">KYRIE</span>
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Threshold wallet for the post-quantum era
+            Threshold and privacy wallets for the post-quantum era
           </p>
         </motion.div>
 
@@ -141,10 +143,21 @@ export function OnboardingWelcome({
                        shadow-lg shadow-primary/25 hover:shadow-primary/40 transition-shadow"
           >
             <span className="relative flex items-center justify-center gap-2">
-              Create New Vault
+              Create Threshold Vault
               <ChevronRight className="h-4 w-4" />
             </span>
           </motion.button>
+
+          {onCreatePrivacyVault && (
+            <button
+              onClick={onCreatePrivacyVault}
+              className="w-full py-3 rounded-xl font-medium text-sm cursor-pointer
+                         border border-primary/25 text-foreground
+                         bg-primary/8 hover:bg-primary/12 hover:border-primary/35 transition-all"
+            >
+              Create Privacy Vault
+            </button>
+          )}
 
           <button
             onClick={onImportVault}

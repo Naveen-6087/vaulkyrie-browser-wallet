@@ -54,8 +54,8 @@ export function TokenList({ tokens }: TokenListProps) {
         const change = Number.isFinite(token.change24h) ? token.change24h ?? 0 : 0;
         const isPositive = change >= 0;
         return (
-          <button
-            key={token.symbol}
+            <button
+              key={token.mint ?? token.symbol}
             className="flex items-center gap-3 w-full p-3 rounded-xl hover:bg-accent/50 transition-colors cursor-pointer"
           >
             <TokenIcon symbol={token.symbol} icon={token.icon} />

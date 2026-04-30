@@ -11,12 +11,7 @@ import {
   Transaction,
   type Connection,
 } from "@solana/web3.js";
-import { Buffer } from "buffer";
-import {
-  prepareLegacyVaultTransaction,
-  sendSignedLegacyVaultTransaction,
-} from "@/services/frost/signTransaction";
-import { signThresholdMessageWithCosigner } from "@/services/frost/cosignerThresholdSigner";
+import { signAndSendTransaction } from "@/services/frost/signTransaction";
 
 export async function wrapSolForVault(
   connection: Connection,
@@ -41,14 +36,7 @@ export async function wrapSolForVault(
   );
 
   onProgress?.("Preparing wrapped SOL account...");
-  await prepareLegacyVaultTransaction(connection, transaction, walletPublicKey);
-  const signatureBytes = await signThresholdMessageWithCosigner(
-    walletPublicKey,
-    transaction.serializeMessage(),
-    onProgress,
-  );
-
-  return sendSignedLegacyVaultTransaction(connection, transaction, walletPublicKey, signatureBytes);
+  return signAndSendTransaction(connection, transaction, walletPublicKey, onProgress);
 }
 
 export async function unwrapAllSolForVault(
@@ -68,17 +56,5 @@ export async function unwrapAllSolForVault(
   );
 
   onProgress?.("Preparing wrapped SOL close transaction...");
-  await prepareLegacyVaultTransaction(connection, transaction, walletPublicKey);
-  const signatureBytes = await signThresholdMessageWithCosigner(
-    walletPublicKey,
-    transaction.serializeMessage(),
-    onProgress,
-  );
-
-  transaction.addSignature(owner, Buffer.from(signatureBytes));
-  const rawTx = transaction.serialize();
-  return connection.sendRawTransaction(rawTx, {
-    skipPreflight: false,
-    preflightCommitment: "confirmed",
-  });
+  return signAndSendTransaction(connection, transaction, walletPublicKey, onProgress);
 }

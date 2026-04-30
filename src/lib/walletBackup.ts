@@ -32,7 +32,10 @@ function isWalletAccountArray(value: unknown): value is PersistedWalletState["ac
       typeof candidate.name === "string" &&
       typeof candidate.publicKey === "string" &&
       typeof candidate.balance === "number" &&
-      typeof candidate.isActive === "boolean"
+      typeof candidate.isActive === "boolean" &&
+      (typeof candidate.kind === "undefined" ||
+        candidate.kind === "threshold-vault" ||
+        candidate.kind === "privacy-vault")
     );
   });
 }
@@ -98,6 +101,7 @@ function validatePersistedWalletState(value: unknown): PersistedWalletState {
     umbraAccounts: candidate.umbraAccounts ?? {},
     umbraActivities: candidate.umbraActivities ?? {},
     umbraMasterSeeds: candidate.umbraMasterSeeds ?? {},
+    privacyVaultKeys: candidate.privacyVaultKeys ?? {},
   });
 }
 

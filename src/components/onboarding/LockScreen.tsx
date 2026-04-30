@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { Lock, Eye, EyeOff, Loader2 } from "lucide-react";
 import { hashPassword, verifyPassword } from "@/lib/crypto";
+import { setWalletSessionPassword } from "@/lib/walletSession";
 import { useWalletStore } from "@/store/walletStore";
 import logo from "@/assets/xlogo.jpeg";
 
@@ -56,6 +57,7 @@ export function LockScreen({ onUnlock }: LockScreenProps) {
       try {
         const { hash, salt } = await hashPassword(password);
         setPasswordHash(hash, salt);
+        await setWalletSessionPassword(password);
         onUnlock();
       } catch {
         setError("Failed to set password");
@@ -72,6 +74,7 @@ export function LockScreen({ onUnlock }: LockScreenProps) {
         const valid = await verifyPassword(password, passwordHash!, passwordSalt!);
         if (valid) {
           resetUnlockFailures();
+          await setWalletSessionPassword(password);
           onUnlock();
         } else {
           const { blockedUntil } = registerUnlockFailure();
@@ -82,8 +85,8 @@ export function LockScreen({ onUnlock }: LockScreenProps) {
             setError("Incorrect password");
           }
         }
-      } catch {
-        setError("Verification failed");
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : "Verification failed");
       } finally {
         setLoading(false);
       }

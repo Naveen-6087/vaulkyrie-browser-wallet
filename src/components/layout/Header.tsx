@@ -1,5 +1,6 @@
-import { ChevronDown, Copy, Check, Plus, Wallet } from "lucide-react";
+import { ChevronDown, Copy, Check, Plus, Shield, Wallet } from "lucide-react";
 import { useState } from "react";
+import { getWalletAccountLabel } from "@/lib/walletAccounts";
 import { cn, shortenAddress } from "@/lib/utils";
 import { NETWORKS } from "@/lib/constants";
 import { useWalletStore } from "@/store/walletStore";
@@ -13,6 +14,7 @@ interface HeaderProps {
   network: NetworkId;
   onNetworkChange: (network: NetworkId) => void;
   onCreateVault?: () => void;
+  onCreatePrivacyVault?: () => void;
 }
 
 export function Header({
@@ -21,11 +23,14 @@ export function Header({
   network,
   onNetworkChange,
   onCreateVault,
+  onCreatePrivacyVault,
 }: HeaderProps) {
   const [showNetworks, setShowNetworks] = useState(false);
   const [showVaults, setShowVaults] = useState(false);
   const { accounts, switchVault, vaultConfigs } = useWalletStore();
   const { copy, isCopied } = useCopyToClipboard({ resetAfterMs: 1500 });
+  const selectedAccount = accounts.find((candidate) => candidate.publicKey === address);
+  const selectedAccountLabel = getWalletAccountLabel(selectedAccount);
 
   const handleCopy = async () => {
     await copy(address, "header-address");
@@ -46,6 +51,9 @@ export function Header({
             className="flex items-center gap-1 text-sm font-semibold truncate hover:text-primary transition-colors cursor-pointer"
           >
             {accountName}
+            <span className="rounded-full border border-border/80 bg-background/70 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+              {selectedAccountLabel}
+            </span>
             {accounts.length > 1 && <ChevronDown className="h-3 w-3 text-muted-foreground" />}
           </button>
           <button
@@ -70,44 +78,65 @@ export function Header({
               onClick={() => setShowVaults(false)}
             />
             <div className="absolute left-0 top-full mt-2 z-50 min-w-[220px] rounded-2xl border border-border/80 bg-popover/95 p-1.5 shadow-2xl backdrop-blur">
-              {accounts.map((acc) => (
-                <button
-                  key={acc.publicKey}
-                  onClick={() => {
-                    switchVault(acc.publicKey);
-                    setShowVaults(false);
-                  }}
-                  className={cn(
-                    "flex items-center gap-2 w-full px-2.5 py-2.5 rounded-xl text-xs transition-colors cursor-pointer",
-                    acc.publicKey === address
-                      ? "bg-accent text-accent-foreground"
-                      : "text-popover-foreground hover:bg-accent/60",
-                  )}
-                >
-                  <Wallet className="h-3.5 w-3.5 shrink-0" />
-                  <div className="min-w-0 text-left">
-                    <p className="font-medium truncate">
-                      {vaultConfigs[acc.publicKey]?.vaultName ?? acc.name}
-                    </p>
-                    <p className="font-mono text-muted-foreground">
-                      {shortenAddress(acc.publicKey)}
-                    </p>
-                  </div>
-                </button>
-              ))}
-              {onCreateVault && (
+              {accounts.map((acc) => {
+                return (
+                  <button
+                    key={acc.publicKey}
+                    onClick={() => {
+                      switchVault(acc.publicKey);
+                      setShowVaults(false);
+                    }}
+                    className={cn(
+                      "flex items-center gap-2 w-full px-2.5 py-2.5 rounded-xl text-xs transition-colors cursor-pointer",
+                      acc.publicKey === address
+                        ? "bg-accent text-accent-foreground"
+                        : "text-popover-foreground hover:bg-accent/60",
+                    )}
+                  >
+                    <Wallet className="h-3.5 w-3.5 shrink-0" />
+                    <div className="min-w-0 text-left">
+                      <div className="flex items-center gap-2">
+                        <p className="font-medium truncate">
+                          {vaultConfigs[acc.publicKey]?.vaultName ?? acc.name}
+                        </p>
+                        <span className="rounded-full border border-border/80 bg-background/70 px-2 py-0.5 text-[10px] text-muted-foreground">
+                          {getWalletAccountLabel(acc)}
+                        </span>
+                      </div>
+                      <p className="font-mono text-muted-foreground">
+                        {shortenAddress(acc.publicKey)}
+                      </p>
+                    </div>
+                  </button>
+                );
+              })}
+              {(onCreateVault || onCreatePrivacyVault) && (
                 <>
                   <div className="border-t border-border my-1" />
-                  <button
-                    onClick={() => {
-                      setShowVaults(false);
-                      onCreateVault();
-                    }}
-                    className="flex items-center gap-2 w-full px-2.5 py-2 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors cursor-pointer"
-                  >
-                    <Plus className="h-3.5 w-3.5" />
-                    Create new vault
-                  </button>
+                  {onCreateVault && (
+                    <button
+                      onClick={() => {
+                        setShowVaults(false);
+                        onCreateVault();
+                      }}
+                      className="flex items-center gap-2 w-full px-2.5 py-2 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors cursor-pointer"
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                      Create threshold vault
+                    </button>
+                  )}
+                  {onCreatePrivacyVault && (
+                    <button
+                      onClick={() => {
+                        setShowVaults(false);
+                        onCreatePrivacyVault();
+                      }}
+                      className="flex items-center gap-2 w-full px-2.5 py-2 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors cursor-pointer"
+                    >
+                      <Shield className="h-3.5 w-3.5" />
+                      Create privacy vault
+                    </button>
+                  )}
                 </>
               )}
             </div>

@@ -100,13 +100,13 @@ async function runCosignerSigningSession({
     let signingStarted = false;
     let orchestrator: SigningOrchestrator | null = null;
     let relay: RelayAdapter | null = null;
-    let timeout: number | null = null;
+    let timeout: ReturnType<typeof globalThis.setTimeout> | null = null;
 
     const settle = (callback: () => void) => {
       if (settled) return;
       settled = true;
       if (timeout !== null) {
-        window.clearTimeout(timeout);
+        globalThis.clearTimeout(timeout);
       }
       relay?.disconnect();
       callback();
@@ -206,7 +206,7 @@ async function runCosignerSigningSession({
       },
     });
 
-    timeout = window.setTimeout(() => {
+    timeout = globalThis.setTimeout(() => {
       settle(() => reject(new Error("Cosigner signing timed out after 2 minutes.")));
     }, 120_000);
 

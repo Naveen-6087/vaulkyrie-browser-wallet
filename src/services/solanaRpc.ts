@@ -30,7 +30,7 @@ export const KNOWN_MINTS: Record<string, { symbol: string; name: string; decimal
   "jtojtomepa8beP8AuQc6eXt5FriJwfFMwQx2v2f9mCL": { symbol: "JTO", name: "Jito", decimals: 9, icon: "https://assets.coingecko.com/coins/images/33228/small/jto.png" },
   "mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So": { symbol: "mSOL", name: "Marinade Staked SOL", decimals: 9, icon: "https://raw.githubusercontent.com/solana-labs/token-list/main/assets/mainnet/mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So/logo.png" },
   "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263": { symbol: "BONK", name: "Bonk", decimals: 5, icon: "https://arweave.net/hQiPZOsRZXGXBJd_82PhVdlM_hACsT_q6wqwf5cSY7I" },
-  "So11111111111111111111111111111111111111112": { symbol: "SOL", name: "Solana", decimals: 9, icon: "https://raw.githubusercontent.com/solana-labs/token-list/main/assets/mainnet/So11111111111111111111111111111111111111112/logo.png" },
+  "So11111111111111111111111111111111111111112": { symbol: "wSOL", name: "Wrapped SOL", decimals: 9, icon: "https://raw.githubusercontent.com/solana-labs/token-list/main/assets/mainnet/So11111111111111111111111111111111111111112/logo.png" },
   "7dHbWXmci3dT8UFYWYZweBLXgycu7Y3iL6trKn1Y7ARj": { symbol: "stSOL", name: "Lido Staked SOL", decimals: 9, icon: "https://raw.githubusercontent.com/solana-labs/token-list/main/assets/mainnet/7dHbWXmci3dT8UFYWYZweBLXgycu7Y3iL6trKn1Y7ARj/logo.png" },
   "RLBxxFkseAZ4RgJH3Sqn8jXxhmGoz9jWxDNJMh8pL7a": { symbol: "RLBB", name: "Rollbit", decimals: 2, icon: "https://raw.githubusercontent.com/solana-labs/token-list/main/assets/mainnet/RLBxxFkseAZ4RgJH3Sqn8jXxhmGoz9jWxDNJMh8pL7a/logo.png" },
   "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN": { symbol: "JUP", name: "Jupiter", decimals: 6, icon: "https://static.jup.ag/jup/icon.png" },
@@ -100,6 +100,32 @@ export async function fetchSolBalance(
   publicKey: PublicKey
 ): Promise<number> {
   return connection.getBalance(publicKey);
+}
+
+export async function requestSolAirdrop(
+  network: NetworkId,
+  publicKey: PublicKey | string,
+  solAmount = 1,
+): Promise<string> {
+  if (network !== "devnet") {
+    throw new Error("Airdrops are only available on devnet.");
+  }
+
+  const owner = typeof publicKey === "string" ? new PublicKey(publicKey) : publicKey;
+  const lamports = Math.max(1, Math.floor(solAmount * LAMPORTS_PER_SOL));
+
+  return withRpcFallback(network, async (connection) => {
+    const signature = await connection.requestAirdrop(owner, lamports);
+    const latestBlockhash = await connection.getLatestBlockhash("confirmed");
+    await connection.confirmTransaction(
+      {
+        signature,
+        ...latestBlockhash,
+      },
+      "confirmed",
+    );
+    return signature;
+  });
 }
 
 export async function fetchTokenBalances(
@@ -518,6 +544,7 @@ export async function fetchTokenPrices(
 
   const cgIds: Record<string, string> = {
     SOL: "solana",
+    wSOL: "solana",
     USDC: "usd-coin",
     USDT: "tether",
     JTO: "jito-governance-token",

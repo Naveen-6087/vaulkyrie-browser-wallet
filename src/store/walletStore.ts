@@ -1,6 +1,9 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { PublicKey } from "@solana/web3.js";
+import type { EncryptedPayload } from "@/lib/crypto";
+import { getWalletAccountKind } from "@/lib/walletAccounts";
+import { clearWalletSessionPassword } from "@/lib/walletSession";
 import type {
   WalletAccount,
   Token,
@@ -64,6 +67,50 @@ interface SecurityPreferences {
   lockOnHide: boolean;
 }
 
+export interface UmbraEncryptedMasterSeedRecord extends EncryptedPayload {
+  kind: "umbra-master-seed";
+  version: 1;
+}
+
+export type UmbraStoredMasterSeed = string | UmbraEncryptedMasterSeedRecord;
+
+export function isUmbraEncryptedMasterSeedRecord(value: unknown): value is UmbraEncryptedMasterSeedRecord {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const candidate = value as Partial<UmbraEncryptedMasterSeedRecord>;
+  return (
+    candidate.kind === "umbra-master-seed" &&
+    candidate.version === 1 &&
+    typeof candidate.ciphertext === "string" &&
+    typeof candidate.iv === "string" &&
+    typeof candidate.salt === "string" &&
+    typeof candidate.iterations === "number"
+  );
+}
+
+export interface PrivacyVaultEncryptedKeyRecord extends EncryptedPayload {
+  kind: "privacy-vault-key";
+  version: 1;
+}
+
+export function isPrivacyVaultEncryptedKeyRecord(value: unknown): value is PrivacyVaultEncryptedKeyRecord {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const candidate = value as Partial<PrivacyVaultEncryptedKeyRecord>;
+  return (
+    candidate.kind === "privacy-vault-key" &&
+    candidate.version === 1 &&
+    typeof candidate.ciphertext === "string" &&
+    typeof candidate.iv === "string" &&
+    typeof candidate.salt === "string" &&
+    typeof candidate.iterations === "number"
+  );
+}
+
 export interface PersistedWalletState {
   isOnboarded: boolean;
   isLocked: boolean;
@@ -87,7 +134,8 @@ export interface PersistedWalletState {
   recoverySessions: Record<string, RecoverySessionRecord[]>;
   umbraAccounts: Record<string, Partial<Record<UmbraNetworkId, UmbraAccountRecord>>>;
   umbraActivities: Record<string, UmbraActivityRecord[]>;
-  umbraMasterSeeds: Record<string, string>;
+  umbraMasterSeeds: Record<string, UmbraStoredMasterSeed>;
+  privacyVaultKeys: Record<string, PrivacyVaultEncryptedKeyRecord>;
 }
 
 interface WalletState extends PersistedWalletState {
@@ -171,9 +219,12 @@ interface WalletState extends PersistedWalletState {
   getUmbraAccount: (publicKey: string, network: UmbraNetworkId) => UmbraAccountRecord | null;
   recordUmbraActivity: (publicKey: string, activity: UmbraActivityRecord) => void;
   getUmbraActivities: (publicKey: string) => UmbraActivityRecord[];
-  storeUmbraMasterSeed: (publicKey: string, network: UmbraNetworkId, seedBase64: string) => void;
-  getUmbraMasterSeed: (publicKey: string, network: UmbraNetworkId) => string | null;
+  storeUmbraMasterSeed: (publicKey: string, network: UmbraNetworkId, seedRecord: UmbraStoredMasterSeed) => void;
+  getUmbraMasterSeed: (publicKey: string, network: UmbraNetworkId) => UmbraStoredMasterSeed | null;
   clearUmbraMasterSeed: (publicKey: string, network: UmbraNetworkId) => void;
+  storePrivacyVaultKey: (publicKey: string, keyRecord: PrivacyVaultEncryptedKeyRecord) => void;
+  getPrivacyVaultKey: (publicKey: string) => PrivacyVaultEncryptedKeyRecord | null;
+  clearPrivacyVaultKey: (publicKey: string) => void;
 
   // Async actions — real Solana RPC calls
   refreshBalances: () => Promise<void>;
@@ -208,6 +259,7 @@ export function pickPersistedWalletState(state: WalletState): PersistedWalletSta
     umbraAccounts: state.umbraAccounts,
     umbraActivities: state.umbraActivities,
     umbraMasterSeeds: state.umbraMasterSeeds,
+    privacyVaultKeys: state.privacyVaultKeys,
   };
 }
 
@@ -239,6 +291,7 @@ export const useWalletStore = create<WalletState>()(
       umbraAccounts: {},
       umbraActivities: {},
       umbraMasterSeeds: {},
+      privacyVaultKeys: {},
       tokens: [],
       transactions: [],
       collectibles: [],
@@ -250,7 +303,12 @@ export const useWalletStore = create<WalletState>()(
       error: null,
       lastFetchedAt: null,
 
-      setLocked: (locked) => set({ isLocked: locked }),
+      setLocked: (locked) => {
+        if (locked) {
+          void clearWalletSessionPassword();
+        }
+        set({ isLocked: locked });
+      },
       setOnboarded: (onboarded) => set({ isOnboarded: onboarded }),
       setActiveAccount: (account) => set({ activeAccount: account }),
       addAccount: (account) =>
@@ -288,6 +346,8 @@ export const useWalletStore = create<WalletState>()(
           const umbraMasterSeeds = Object.fromEntries(
             Object.entries(state.umbraMasterSeeds).filter(([key]) => !key.startsWith(`${publicKey}:`)),
           );
+          const privacyVaultKeys = { ...state.privacyVaultKeys };
+          delete privacyVaultKeys[publicKey];
           const activeAccount =
             state.activeAccount?.publicKey === publicKey
               ? accounts[0] ?? null
@@ -304,6 +364,7 @@ export const useWalletStore = create<WalletState>()(
             umbraAccounts,
             umbraActivities,
             umbraMasterSeeds,
+            privacyVaultKeys,
             activeAccount,
           };
         }),
@@ -493,11 +554,11 @@ export const useWalletStore = create<WalletState>()(
           },
         })),
       getUmbraActivities: (publicKey) => get().umbraActivities[publicKey] ?? [],
-      storeUmbraMasterSeed: (publicKey, network, seedBase64) =>
+      storeUmbraMasterSeed: (publicKey, network, seedRecord) =>
         set((state) => ({
           umbraMasterSeeds: {
             ...state.umbraMasterSeeds,
-            [`${publicKey}:${network}`]: seedBase64,
+            [`${publicKey}:${network}`]: seedRecord,
           },
         })),
       getUmbraMasterSeed: (publicKey, network) => get().umbraMasterSeeds[`${publicKey}:${network}`] ?? null,
@@ -506,6 +567,20 @@ export const useWalletStore = create<WalletState>()(
           const next = { ...state.umbraMasterSeeds };
           delete next[`${publicKey}:${network}`];
           return { umbraMasterSeeds: next };
+        }),
+      storePrivacyVaultKey: (publicKey, keyRecord) =>
+        set((state) => ({
+          privacyVaultKeys: {
+            ...state.privacyVaultKeys,
+            [publicKey]: keyRecord,
+          },
+        })),
+      getPrivacyVaultKey: (publicKey) => get().privacyVaultKeys[publicKey] ?? null,
+      clearPrivacyVaultKey: (publicKey) =>
+        set((state) => {
+          const next = { ...state.privacyVaultKeys };
+          delete next[publicKey];
+          return { privacyVaultKeys: next };
         }),
 
       refreshBalances: async () => {
@@ -598,6 +673,10 @@ export const useWalletStore = create<WalletState>()(
       refreshVaultState: async () => {
         const { activeAccount, network, vaultConfigs, dkgResults } = get();
         if (!activeAccount) return;
+        if (getWalletAccountKind(activeAccount) === "privacy-vault") {
+          set({ vaultState: null });
+          return;
+        }
 
         try {
           const pubkey = new PublicKey(activeAccount.publicKey);

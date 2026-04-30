@@ -1,7 +1,9 @@
 import { ArrowUpRight, ArrowDownLeft, ArrowLeftRight, RadioTower, Shield } from "lucide-react";
+import { getWalletAccountKind } from "@/lib/walletAccounts";
 import { formatUsd } from "@/lib/utils";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { useWalletStore } from "@/store/walletStore";
 import type { WalletView } from "@/types";
 
 interface BalanceCardProps {
@@ -17,6 +19,8 @@ export function BalanceCard({
   change24h,
   onNavigate,
 }: BalanceCardProps) {
+  const activeAccount = useWalletStore((state) => state.activeAccount);
+  const isPrivacyVault = getWalletAccountKind(activeAccount) === "privacy-vault";
   const isPositive = change24h >= 0;
 
   return (
@@ -42,16 +46,7 @@ export function BalanceCard({
 
         <div className="grid grid-cols-2 gap-2 mt-5">
           <Button
-            variant="default"
-            size="sm"
-            className="gap-1.5"
-            onClick={() => onNavigate("send")}
-          >
-            <ArrowUpRight className="h-3.5 w-3.5" />
-            Send
-          </Button>
-          <Button
-            variant="secondary"
+            variant={isPrivacyVault ? "default" : "secondary"}
             size="sm"
             className="gap-1.5"
             onClick={() => onNavigate("receive")}
@@ -59,6 +54,17 @@ export function BalanceCard({
             <ArrowDownLeft className="h-3.5 w-3.5" />
             Receive
           </Button>
+          {!isPrivacyVault && (
+            <Button
+              variant="default"
+              size="sm"
+              className="gap-1.5"
+              onClick={() => onNavigate("send")}
+            >
+              <ArrowUpRight className="h-3.5 w-3.5" />
+              Send
+            </Button>
+          )}
           <Button
             variant="secondary"
             size="sm"

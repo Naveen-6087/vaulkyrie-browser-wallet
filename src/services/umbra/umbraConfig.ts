@@ -7,6 +7,7 @@ export interface UmbraTokenConfig {
   name: string;
   mint: string;
   decimals: number;
+  icon?: string;
 }
 
 export interface UmbraClientNetworkConfig {
@@ -24,24 +25,28 @@ export const UMBRA_SUPPORTED_TOKENS: Record<UmbraNetworkId, UmbraTokenConfig[]> 
       name: "USD Coin",
       mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
       decimals: 6,
+      icon: "https://raw.githubusercontent.com/solana-labs/token-list/main/assets/mainnet/EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v/logo.png",
     },
     {
       symbol: "USDT",
       name: "Tether USD",
       mint: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
       decimals: 6,
+      icon: "https://assets.coingecko.com/coins/images/325/small/Tether.png",
     },
     {
       symbol: "wSOL",
       name: "Wrapped SOL",
       mint: "So11111111111111111111111111111111111111112",
       decimals: 9,
+      icon: "https://raw.githubusercontent.com/solana-labs/token-list/main/assets/mainnet/So11111111111111111111111111111111111111112/logo.png",
     },
     {
       symbol: "UMBRA",
       name: "Umbra",
       mint: "PRVT6TB7uss3FrUd2D9xs2zqDBsa3GbMJMwCQsgmeta",
       decimals: 6,
+      icon: "https://sdk.umbraprivacy.com/favicon.svg",
     },
   ],
   devnet: [
@@ -50,6 +55,7 @@ export const UMBRA_SUPPORTED_TOKENS: Record<UmbraNetworkId, UmbraTokenConfig[]> 
       name: "Wrapped SOL",
       mint: "So11111111111111111111111111111111111111112",
       decimals: 9,
+      icon: "https://raw.githubusercontent.com/solana-labs/token-list/main/assets/mainnet/So11111111111111111111111111111111111111112/logo.png",
     },
   ],
   localnet: [],

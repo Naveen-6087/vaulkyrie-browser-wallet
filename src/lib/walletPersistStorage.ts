@@ -134,3 +134,10 @@ export async function readWalletPersistedEnvelope<TState = Record<string, unknow
     return null;
   }
 }
+
+export async function writeWalletPersistedEnvelope<TState = Record<string, unknown>>(
+  envelope: PersistedWalletEnvelope<TState>,
+  key: string = WALLET_STORAGE_KEY,
+): Promise<void> {
+  await walletStateStorage.setItem(key, JSON.stringify(envelope));
+}

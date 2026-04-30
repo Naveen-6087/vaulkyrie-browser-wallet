@@ -1,19 +1,25 @@
-import { PublicKey } from "@solana/web3.js";
 import {
   VAULKYRIE_EXTENSION_RPC,
+  VAULKYRIE_INTERNAL_RPC,
   type ExtensionRpcRequest,
   type ExtensionRpcResponse,
+  type InternalRpcRequest,
+  type InternalRpcResponse,
   type ApprovalPendingResult,
   type ApprovalStatusParams,
   type ApprovalStatusResult,
+  type CreatePrivacyVaultAccountParams,
+  type InternalSignMessageParams,
+  type InternalSignTransactionParams,
+  type UmbraOperationParams,
 } from "@/extension/messages";
 import { readExtensionProviderState } from "@/extension/providerState";
 import {
-  fetchSolBalance,
-  fetchTransactionHistory,
-  withRpcFallback,
-} from "@/services/solanaRpc";
-import { signMessageBytes, signSerializedTransaction } from "@/services/frost/signTransaction";
+  isWalletSessionUnlocked,
+  lockWalletSessionInBackground,
+  setWalletSessionPasswordInBackground,
+  unlockWalletSessionInBackground,
+} from "@/background/sessionState";
 import type {
   SignMessageParams,
   SignMessageResult,
@@ -37,7 +43,7 @@ import {
   buildMessageApprovalPreview,
   buildTransactionApprovalPreview,
 } from "@/extension/approvalPreview";
-import { analyzeSerializedTransaction } from "@/services/transactionAnalysis";
+import { formatUmbraErrorMessage } from "@/services/umbra/umbraError";
 
 chrome.runtime.onInstalled.addListener(() => {
   console.log("[Vaulkyrie] Extension installed");
@@ -218,13 +224,26 @@ async function executeApprovedRequest(
         ) {
           throw new Error("Stored transaction approval payload is incomplete.");
         }
-        const signed = await signSerializedTransaction(
-          params.serializedTransaction,
-          providerState.publicKey,
-          params.kind,
-        );
+        const walletPublicKey = providerState.publicKey;
+        const serializedTransaction = params.serializedTransaction;
+        const transactionKind = params.kind;
+        const signed = providerState.accountKind === "privacy-vault"
+          ? await import("@/background/vaultSession").then(({ signPrivacyVaultTransactionInBackground }) =>
+              signPrivacyVaultTransactionInBackground(
+                walletPublicKey,
+                serializedTransaction,
+                transactionKind,
+              ),
+            )
+          : await import("@/services/frost/signTransaction").then(({ signSerializedTransaction }) =>
+              signSerializedTransaction(
+                serializedTransaction,
+                walletPublicKey,
+                transactionKind,
+              ),
+            );
         result = {
-          signedTransaction: signed.signedTransactionBase64,
+          signedTransaction: "signedTransactionBase64" in signed ? signed.signedTransactionBase64 : signed.signedTransaction,
           kind: signed.kind,
         } satisfies SignTransactionResult;
         break;
@@ -234,13 +253,24 @@ async function executeApprovedRequest(
         if (!providerState.publicKey || !params?.message) {
           throw new Error("Stored message approval payload is incomplete.");
         }
-        const signature = await signMessageBytes(
-          providerState.publicKey,
-          Buffer.from(params.message, "base64"),
-        );
+        const walletPublicKey = providerState.publicKey;
+        const messageBytes = Buffer.from(params.message, "base64");
+        const signature = providerState.accountKind === "privacy-vault"
+          ? await import("@/background/vaultSession").then(({ signPrivacyVaultMessageInBackground }) =>
+              signPrivacyVaultMessageInBackground(
+                walletPublicKey,
+                messageBytes,
+              ),
+            )
+          : await import("@/services/frost/signTransaction").then(({ signMessageBytes }) =>
+              signMessageBytes(
+                walletPublicKey,
+                messageBytes,
+              ),
+            );
         result = {
           signature: Buffer.from(signature).toString("base64"),
-          publicKey: providerState.publicKey,
+          publicKey: walletPublicKey,
         } satisfies SignMessageResult;
         break;
       }
@@ -320,6 +350,10 @@ async function handleRpcRequest(
       }
       await ensureApprovedOrigin(sender, providerState.publicKey, "getBalance");
 
+      const [{ PublicKey }, { fetchSolBalance, withRpcFallback }] = await Promise.all([
+        import("@solana/web3.js"),
+        import("@/services/solanaRpc"),
+      ]);
       const lamports = await withRpcFallback(providerState.network, (connection) =>
         fetchSolBalance(connection, new PublicKey(providerState.publicKey!)),
       );
@@ -334,6 +368,10 @@ async function handleRpcRequest(
       }
       await ensureApprovedOrigin(sender, providerState.publicKey, "getTransactions");
 
+      const [{ PublicKey }, { fetchTransactionHistory, withRpcFallback }] = await Promise.all([
+        import("@solana/web3.js"),
+        import("@/services/solanaRpc"),
+      ]);
       const transactions = await withRpcFallback(providerState.network, (connection) =>
         fetchTransactionHistory(connection, new PublicKey(providerState.publicKey!), 20),
       );
@@ -357,11 +395,8 @@ async function handleRpcRequest(
         if (!params.serializedTransaction || !params.kind) {
           throw new Error("Transaction payload is incomplete.");
         }
-        const analysis = await analyzeSerializedTransaction(
-          providerState.network,
-          params,
-          providerState.publicKey,
-        );
+        const { analyzeSerializedTransaction } = await import("@/services/transactionAnalysis");
+        const analysis = await analyzeSerializedTransaction(providerState.network, params, providerState.publicKey);
         const preview = buildTransactionApprovalPreview(
           params,
           providerState.publicKey,
@@ -413,7 +448,155 @@ async function handleRpcRequest(
   }
 }
 
-chrome.runtime.onMessage.addListener((message: ExtensionRpcRequest, sender, sendResponse) => {
+async function handleInternalRequest(message: InternalRpcRequest) {
+  switch (message.method) {
+    case "getWalletSessionStatus":
+      return { unlocked: isWalletSessionUnlocked() };
+    case "setWalletSession": {
+      const params = message.params as Partial<{ password: string }> | undefined;
+      if (!params?.password) {
+        throw new Error("Missing wallet password.");
+      }
+      setWalletSessionPasswordInBackground(params.password);
+      return { unlocked: true };
+    }
+    case "unlockWalletSession": {
+      const params = message.params as Partial<{ password: string }> | undefined;
+      if (!params?.password) {
+        throw new Error("Missing wallet password.");
+      }
+      await unlockWalletSessionInBackground(params.password);
+      return { unlocked: true };
+    }
+    case "lockWalletSession":
+      lockWalletSessionInBackground();
+      return { unlocked: false };
+    case "createPrivacyVaultAccount": {
+      const params = message.params as CreatePrivacyVaultAccountParams | undefined;
+      if (!params?.name?.trim()) {
+        throw new Error("Privacy Vault name is required.");
+      }
+      return import("@/background/vaultSession").then(({ createPrivacyVaultAccountInBackground }) =>
+        createPrivacyVaultAccountInBackground(params.name.trim()),
+      );
+    }
+    case "signPrivacyVaultMessage": {
+      const params = message.params as InternalSignMessageParams | undefined;
+      if (!params?.walletPublicKey || !params.message) {
+        throw new Error("Privacy Vault message payload is incomplete.");
+      }
+      const signature = await import("@/background/vaultSession").then(({ signPrivacyVaultMessageInBackground }) =>
+        signPrivacyVaultMessageInBackground(
+          params.walletPublicKey,
+          Buffer.from(params.message, "base64"),
+        ),
+      );
+      return {
+        signature: Buffer.from(signature).toString("base64"),
+      };
+    }
+    case "signPrivacyVaultTransaction": {
+      const params = message.params as InternalSignTransactionParams | undefined;
+      if (
+        !params?.walletPublicKey ||
+        !params.serializedTransaction ||
+        (params.kind !== "legacy" && params.kind !== "versioned")
+      ) {
+        throw new Error("Privacy Vault transaction payload is incomplete.");
+      }
+      return import("@/background/vaultSession").then(({ signPrivacyVaultTransactionInBackground }) =>
+        signPrivacyVaultTransactionInBackground(
+          params.walletPublicKey,
+          params.serializedTransaction,
+          params.kind,
+        ),
+      );
+    }
+    case "umbraOperation": {
+      const params = message.params as UmbraOperationParams | undefined;
+      if (!params?.walletPublicKey || !params.network) {
+        throw new Error("Umbra operation payload is incomplete.");
+      }
+      const client = await import("@/services/umbra/umbraClient").then(({ createDirectUmbraWalletClient }) =>
+        createDirectUmbraWalletClient(params.walletPublicKey, params.network),
+      );
+      switch (params.operation) {
+        case "registerConfidential":
+          return client.registerConfidential();
+        case "queryAccountState":
+          return client.queryAccountState(params.params?.address);
+        case "queryBalances":
+          return client.queryBalances(params.params?.tokens);
+        case "deposit":
+          if (!params.params?.transfer) {
+            throw new Error("Umbra deposit payload is incomplete.");
+          }
+          return client.deposit({
+            destinationAddress: params.params.transfer.destinationAddress,
+            mint: params.params.transfer.mint,
+            amountAtomic: BigInt(params.params.transfer.amountAtomic),
+          });
+        case "withdraw":
+          if (!params.params?.transfer) {
+            throw new Error("Umbra withdrawal payload is incomplete.");
+          }
+          return client.withdraw({
+            destinationAddress: params.params.transfer.destinationAddress,
+            mint: params.params.transfer.mint,
+            amountAtomic: BigInt(params.params.transfer.amountAtomic),
+          });
+        case "privateSendFromEncryptedBalance":
+          if (!params.params?.privateTransfer) {
+            throw new Error("Umbra private send payload is incomplete.");
+          }
+          return client.privateSendFromEncryptedBalance({
+            destinationAddress: params.params.privateTransfer.destinationAddress,
+            mint: params.params.privateTransfer.mint,
+            amountAtomic: BigInt(params.params.privateTransfer.amountAtomic),
+          });
+        case "privateSendFromPublicBalance":
+          if (!params.params?.privateTransfer) {
+            throw new Error("Umbra private send payload is incomplete.");
+          }
+          return client.privateSendFromPublicBalance({
+            destinationAddress: params.params.privateTransfer.destinationAddress,
+            mint: params.params.privateTransfer.mint,
+            amountAtomic: BigInt(params.params.privateTransfer.amountAtomic),
+          });
+        case "scanIncomingUtxos":
+          return client.scanIncomingUtxos(params.params?.scanStartIndex);
+        case "claimIncomingToEncryptedBalance":
+          return client.claimIncomingToEncryptedBalance(params.params?.utxos ?? []);
+        default:
+          throw new Error(`Unsupported Umbra operation: ${String(params.operation)}`);
+      }
+    }
+    default:
+      throw new Error(`Unsupported internal wallet RPC method: ${message.method}`);
+  }
+}
+
+chrome.runtime.onMessage.addListener((message: ExtensionRpcRequest | InternalRpcRequest, sender, sendResponse) => {
+  if (message?.type === VAULKYRIE_INTERNAL_RPC) {
+    void handleInternalRequest(message as InternalRpcRequest)
+      .then((result) => {
+        const response: InternalRpcResponse = {
+          id: message.id,
+          result,
+        };
+        sendResponse(response);
+      })
+      .catch((error) => {
+        const response: InternalRpcResponse = {
+          id: message.id,
+          error: formatUmbraErrorMessage(error),
+        };
+        sendResponse(response);
+      });
+
+    return true;
+  }
+
   if (message?.type !== VAULKYRIE_EXTENSION_RPC) {
     return false;
   }
@@ -429,7 +612,7 @@ chrome.runtime.onMessage.addListener((message: ExtensionRpcRequest, sender, send
     .catch((error) => {
       const response: ExtensionRpcResponse = {
         id: message.id,
-        error: error instanceof Error ? error.message : String(error),
+        error: formatUmbraErrorMessage(error),
       };
       sendResponse(response);
     });

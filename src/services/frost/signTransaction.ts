@@ -1,13 +1,17 @@
 /**
- * Shared utility for FROST-signing a Solana Transaction.
+ * Shared transaction and message signing helpers for Vaulkyrie accounts.
  *
- * Encapsulates the single-device (local) signing path used across
- * SendView, PrivacyView, and any future view that submits transactions
- * from the vault's threshold key.
+ * Threshold Vaults keep the existing FROST path, while Privacy Vaults use a
+ * locally decrypted Ed25519 signer.
  */
 
 import { PublicKey, Transaction, VersionedTransaction, type Connection } from "@solana/web3.js";
 import { Buffer } from "buffer";
+import { getWalletAccountKind } from "@/lib/walletAccounts";
+import {
+  signPrivacyVaultMessageInBackground,
+  signPrivacyVaultTransactionInBackground,
+} from "@/lib/internalWalletRpc";
 import { signLocal, hexToBytes } from "./frostService";
 import { useWalletStore } from "@/store/walletStore";
 import type { VaultCosignerMetadata } from "@/services/cosigner/cosignerClient";
@@ -79,6 +83,22 @@ function assertVersionedWalletSigner(transaction: VersionedTransaction, walletPu
   }
 }
 
+function isPrivacyVaultPublicKey(walletPubkey: string): boolean {
+  const account = useWalletStore.getState().accounts.find((candidate) => candidate.publicKey === walletPubkey);
+  return getWalletAccountKind(account) === "privacy-vault";
+}
+
+async function signPrivacyVaultMessage(
+  walletPubkey: string,
+  messageBytes: Uint8Array,
+): Promise<Uint8Array> {
+  const result = await signPrivacyVaultMessageInBackground({
+    walletPublicKey: walletPubkey,
+    message: Buffer.from(messageBytes).toString("base64"),
+  });
+  return Uint8Array.from(Buffer.from(result.signature, "base64"));
+}
+
 export async function signThresholdMessage(
   walletPubkey: string,
   messageBytes: Uint8Array,
@@ -145,15 +165,28 @@ export async function signSerializedTransaction(
 ): Promise<{ signedTransactionBase64: string; kind: SerializedTransactionKind }> {
   const fromPubkey = new PublicKey(walletPubkey);
   const rawBytes = Buffer.from(serializedTransactionBase64, "base64");
+  const usePrivacyVaultSigner = isPrivacyVaultPublicKey(walletPubkey);
 
   if (kind === "versioned") {
     const transaction = VersionedTransaction.deserialize(rawBytes);
     assertVersionedWalletSigner(transaction, fromPubkey);
-    const signatureBytes = await signThresholdMessage(
-      walletPubkey,
-      transaction.message.serialize(),
-    );
-    transaction.addSignature(fromPubkey, signatureBytes);
+    if (usePrivacyVaultSigner) {
+      const signed = await signPrivacyVaultTransactionInBackground({
+        walletPublicKey: walletPubkey,
+        serializedTransaction: serializedTransactionBase64,
+        kind,
+      });
+      return {
+        signedTransactionBase64: signed.signedTransaction,
+        kind: signed.kind,
+      };
+    } else {
+      const signatureBytes = await signThresholdMessage(
+        walletPubkey,
+        transaction.message.serialize(),
+      );
+      transaction.addSignature(fromPubkey, signatureBytes);
+    }
     return {
       signedTransactionBase64: Buffer.from(transaction.serialize()).toString("base64"),
       kind,
@@ -162,11 +195,23 @@ export async function signSerializedTransaction(
 
   const transaction = Transaction.from(rawBytes);
   assertLegacyWalletSigner(transaction, fromPubkey);
-  const signatureBytes = await signThresholdMessage(
-    walletPubkey,
-    transaction.serializeMessage(),
-  );
-  transaction.addSignature(fromPubkey, Buffer.from(signatureBytes));
+  if (usePrivacyVaultSigner) {
+    const signed = await signPrivacyVaultTransactionInBackground({
+      walletPublicKey: walletPubkey,
+      serializedTransaction: serializedTransactionBase64,
+      kind,
+    });
+    return {
+      signedTransactionBase64: signed.signedTransaction,
+      kind: signed.kind,
+    };
+  } else {
+    const signatureBytes = await signThresholdMessage(
+      walletPubkey,
+      transaction.serializeMessage(),
+    );
+    transaction.addSignature(fromPubkey, Buffer.from(signatureBytes));
+  }
   return {
     signedTransactionBase64: Buffer.from(
       transaction.serialize({
@@ -182,15 +227,17 @@ export async function signMessageBytes(
   walletPubkey: string,
   messageBytes: Uint8Array,
 ): Promise<Uint8Array> {
+  if (isPrivacyVaultPublicKey(walletPubkey)) {
+    return signPrivacyVaultMessage(walletPubkey, messageBytes);
+  }
   return signThresholdMessage(walletPubkey, messageBytes);
 }
 
 /**
- * Sign a pre-built Transaction with the vault's FROST threshold key,
- * then submit it to the network.
+ * Sign a pre-built transaction with the active Vaulkyrie account and submit it.
  *
- * Only supports the local (single-device) signing path for now.
- * Multi-device signing must go through the SigningOrchestrator in SendView.
+ * Threshold Vaults use the local-or-cosigner threshold flow. Privacy Vaults use
+ * the locally stored signer that is decrypted with the live wallet password.
  */
 export async function signAndSendTransaction(
   connection: Connection,
@@ -198,11 +245,34 @@ export async function signAndSendTransaction(
   walletPubkey: string,
   onProgress?: (msg: string) => void,
 ): Promise<string> {
-  onProgress?.("Signing with FROST threshold key...");
-
   const fromPubkey = await prepareLegacyVaultTransaction(connection, tx, walletPubkey);
-  const messageBytes = tx.serializeMessage();
-  const signatureBytes = await signThresholdMessage(walletPubkey, messageBytes);
+  if (isPrivacyVaultPublicKey(walletPubkey)) {
+    onProgress?.("Signing with Privacy Vault key...");
+    const signed = await signPrivacyVaultTransactionInBackground({
+      walletPublicKey: walletPubkey,
+      serializedTransaction: Buffer.from(
+        tx.serialize({
+          requireAllSignatures: false,
+          verifySignatures: false,
+        }),
+      ).toString("base64"),
+      kind: "legacy",
+    });
+    onProgress?.("Submitting to Solana...");
+    const rawTx = Buffer.from(signed.signedTransaction, "base64");
+    return connection.sendRawTransaction(rawTx, {
+      skipPreflight: false,
+      preflightCommitment: "confirmed",
+    });
+  }
+
+  onProgress?.("Signing with threshold key...");
+  const { signThresholdMessageWithCosigner } = await import("./cosignerThresholdSigner");
+  const signatureBytes = await signThresholdMessageWithCosigner(
+    walletPubkey,
+    tx.serializeMessage(),
+    onProgress,
+  );
 
   onProgress?.("Submitting to Solana...");
   return sendSignedLegacyVaultTransaction(connection, tx, fromPubkey.toBase58(), signatureBytes);
@@ -221,12 +291,24 @@ export async function signAndSendVersionedTransaction(
   assertVersionedWalletSigner(transaction, fromPubkey);
 
   onProgress?.("Signing swap transaction...");
-  const signatureBytes = await signThresholdMessage(
-    walletPubkey,
-    transaction.message.serialize(),
-  );
-
-  transaction.addSignature(fromPubkey, signatureBytes);
+  if (isPrivacyVaultPublicKey(walletPubkey)) {
+    const signed = await signPrivacyVaultTransactionInBackground({
+      walletPublicKey: walletPubkey,
+      serializedTransaction: serializedTransactionBase64,
+      kind: "versioned",
+    });
+    onProgress?.("Submitting to Solana...");
+    return connection.sendRawTransaction(Buffer.from(signed.signedTransaction, "base64"), {
+      skipPreflight: false,
+      preflightCommitment: "confirmed",
+    });
+  } else {
+    const signatureBytes = await signThresholdMessage(
+      walletPubkey,
+      transaction.message.serialize(),
+    );
+    transaction.addSignature(fromPubkey, signatureBytes);
+  }
 
   onProgress?.("Submitting to Solana...");
   const signature = await connection.sendRawTransaction(transaction.serialize(), {

@@ -2,11 +2,14 @@ import type { NetworkId } from "@/lib/constants";
 
 export type { NetworkId } from "@/lib/constants";
 
+export type WalletAccountKind = "threshold-vault" | "privacy-vault";
+
 export interface WalletAccount {
   name: string;
   publicKey: string;
   balance: number;
   isActive: boolean;
+  kind?: WalletAccountKind;
 }
 
 export interface Token {
@@ -116,6 +119,8 @@ export interface UmbraAccountRecord {
   registeredConfidential: boolean;
   registeredAnonymous: boolean;
   masterSeedCreatedAt?: number;
+  nextInboxScanStartIndex?: number;
+  claimedInboxNoteKeys?: string[];
   lastUpdatedAt: number;
   balances: Record<string, UmbraTokenBalanceRecord>;
 }
@@ -155,6 +160,7 @@ export type WalletView =
   | "quantum-vault"
   | "onboarding"
   | "vault-config"
+  | "privacy-vault-setup"
   | "import-vault"
   | "dkg-ceremony"
   | "join-ceremony"
