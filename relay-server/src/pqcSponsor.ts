@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -10,12 +10,14 @@ import {
   TransactionInstruction,
   clusterApiUrl,
 } from "@solana/web3.js";
+import { readSecureJsonFile, secureRelayStatePath, writeSecureJsonFile } from "./secureStorage.js";
 
 const DEFAULT_PROGRAM_ID = "HUf5TWL4H18qJigd9m7h6MihX1xnzr2BVbbyGYFLEGPx";
 const INIT_PQC_WALLET_INSTRUCTION = 27;
 const PQC_WALLET_SPACE = 88;
 const FREE_SPONSOR_LIMIT = Number.parseInt(process.env.PQC_SPONSOR_FREE_LIMIT ?? "25", 10);
 const serverRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const workspaceRoot = path.resolve(serverRoot, "..");
 
 interface SponsoredWalletRecord {
   walletIdHex: string;
@@ -35,28 +37,37 @@ export interface SponsorPqcInitInput {
   network?: string;
 }
 
-const sponsorStorePath = path.resolve(
-  process.env.PQC_SPONSOR_STORE_PATH ?? path.join(serverRoot, ".vaulkyrie-sponsored-pqc.json"),
-);
+const configuredSponsorStorePath = process.env.PQC_SPONSOR_STORE_PATH?.trim();
+const sponsorStorePath = configuredSponsorStorePath
+  ? path.resolve(configuredSponsorStorePath)
+  : secureRelayStatePath("sponsored-pqc.enc.json");
+const legacySponsorStorePaths = configuredSponsorStorePath
+  ? []
+  : [
+      path.join(serverRoot, ".vaulkyrie-sponsored-pqc.json"),
+      path.join(workspaceRoot, ".vaulkyrie-sponsored-pqc.json"),
+    ];
 
-const sponsorKeypairPath = path.resolve(
-  process.env.PQC_SPONSOR_KEYPAIR_PATH ?? path.join(serverRoot, ".vaulkyrie-pqc-sponsor.json"),
-);
+const configuredSponsorKeypairPath = process.env.PQC_SPONSOR_KEYPAIR_PATH?.trim();
+const sponsorKeypairPath = configuredSponsorKeypairPath
+  ? path.resolve(configuredSponsorKeypairPath)
+  : secureRelayStatePath("pqc-sponsor-keypair.enc.json");
+const legacySponsorKeypairPaths = configuredSponsorKeypairPath
+  ? []
+  : [
+      path.join(serverRoot, ".vaulkyrie-pqc-sponsor.json"),
+      path.join(workspaceRoot, ".vaulkyrie-pqc-sponsor.json"),
+    ];
 
 function readStore(): SponsorStore {
-  if (!existsSync(sponsorStorePath)) {
-    return { records: {} };
-  }
-
-  try {
-    return JSON.parse(readFileSync(sponsorStorePath, "utf8")) as SponsorStore;
-  } catch {
-    return { records: {} };
-  }
+  return readSecureJsonFile<SponsorStore>(sponsorStorePath, {
+    fallback: { records: {} },
+    legacyPaths: legacySponsorStorePaths,
+  });
 }
 
 function writeStore(store: SponsorStore): void {
-  writeFileSync(sponsorStorePath, JSON.stringify(store, null, 2));
+  writeSecureJsonFile(sponsorStorePath, store);
 }
 
 function parseHex32(value: unknown, field: string): Uint8Array {
@@ -138,13 +149,18 @@ function readSponsorKeypair(): Keypair {
     return Keypair.fromSecretKey(Uint8Array.from(parsed));
   }
 
-  if (existsSync(sponsorKeypairPath)) {
-    const parsed = JSON.parse(readFileSync(sponsorKeypairPath, "utf8")) as number[];
+  if (
+    existsSync(sponsorKeypairPath)
+    || legacySponsorKeypairPaths.some((candidate) => candidate && existsSync(candidate))
+  ) {
+    const parsed = readSecureJsonFile<number[]>(sponsorKeypairPath, {
+      legacyPaths: legacySponsorKeypairPaths,
+    });
     return Keypair.fromSecretKey(Uint8Array.from(parsed));
   }
 
   const keypair = Keypair.generate();
-  writeFileSync(sponsorKeypairPath, JSON.stringify(Array.from(keypair.secretKey)));
+  writeSecureJsonFile(sponsorKeypairPath, Array.from(keypair.secretKey));
   return keypair;
 }
 

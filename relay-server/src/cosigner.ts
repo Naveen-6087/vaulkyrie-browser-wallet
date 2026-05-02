@@ -1,7 +1,8 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { WebSocket } from "ws";
 import { loadFrostWasm } from "./frost.js";
+import { readSecureJsonFile, secureRelayStatePath, writeSecureJsonFile } from "./secureStorage.js";
 
 type DeviceType = "browser" | "mobile" | "desktop";
 
@@ -51,26 +52,29 @@ export interface RequestCosignerInput {
   sessionInvite: string;
 }
 
-const storePath = path.resolve(
-  process.env.COSIGNER_STORE_PATH ?? path.join(process.cwd(), ".vaulkyrie-cosigners.json"),
-);
+const relayRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const configuredStorePath = process.env.COSIGNER_STORE_PATH?.trim();
+const storePath = configuredStorePath
+  ? path.resolve(configuredStorePath)
+  : secureRelayStatePath("cosigners.enc.json");
+const legacyStorePaths = configuredStorePath
+  ? []
+  : [
+      path.join(process.cwd(), ".vaulkyrie-cosigners.json"),
+      path.join(relayRoot, ".vaulkyrie-cosigners.json"),
+    ];
 
 const activeSessions = new Map<string, Promise<void>>();
 
 function readStore(): StoredCosigners {
-  if (!existsSync(storePath)) {
-    return { records: {} };
-  }
-
-  try {
-    return JSON.parse(readFileSync(storePath, "utf8")) as StoredCosigners;
-  } catch {
-    return { records: {} };
-  }
+  return readSecureJsonFile<StoredCosigners>(storePath, {
+    fallback: { records: {} },
+    legacyPaths: legacyStorePaths,
+  });
 }
 
 function writeStore(store: StoredCosigners): void {
-  writeFileSync(storePath, JSON.stringify(store, null, 2));
+  writeSecureJsonFile(storePath, store);
 }
 
 function assertString(value: unknown, field: string): string {
