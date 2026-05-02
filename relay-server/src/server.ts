@@ -163,10 +163,17 @@ function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
 }
 
 function assertCosignerToken(req: http.IncomingMessage): void {
-  const expected = process.env.COSIGNER_ADMIN_TOKEN;
-  if (!expected) return;
+  const expected = process.env.COSIGNER_ADMIN_TOKEN?.trim();
+  if (!expected && isLoopbackRequest(req)) {
+    return;
+  }
 
-  const actual = req.headers["x-cosigner-token"];
+  if (!expected) {
+    throw new Error("Cosigner admin token is required for non-local requests.");
+  }
+
+  const actualHeader = req.headers["x-cosigner-token"];
+  const actual = Array.isArray(actualHeader) ? actualHeader[0] : actualHeader;
   if (actual !== expected) {
     throw new Error("Invalid cosigner token.");
   }
