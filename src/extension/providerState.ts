@@ -32,6 +32,19 @@ export interface ExtensionProviderState {
   isLocked: boolean;
 }
 
+export function redactExtensionProviderState(): ExtensionProviderState {
+  return {
+    connected: false,
+    publicKey: null,
+    accountLabel: null,
+    accountKind: null,
+    accounts: [],
+    network: DEFAULT_NETWORK,
+    isOnboarded: false,
+    isLocked: false,
+  };
+}
+
 export async function readExtensionProviderState(): Promise<ExtensionProviderState> {
   const envelope = await readWalletPersistedEnvelope<PersistedWalletState>(WALLET_STORAGE_KEY);
   const state = envelope?.state;

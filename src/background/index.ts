@@ -17,7 +17,10 @@ import {
   type RevealQuantumVaultRecoveryParams,
   type UmbraOperationParams,
 } from "@/extension/messages";
-import { readExtensionProviderState } from "@/extension/providerState";
+import {
+  readExtensionProviderState,
+  redactExtensionProviderState,
+} from "@/extension/providerState";
 import {
   isWalletSessionUnlocked,
   lockWalletSessionInBackground,
@@ -320,6 +323,19 @@ async function ensureApprovedOrigin(
   return origin;
 }
 
+async function readProviderStateForSender(
+  sender: chrome.runtime.MessageSender,
+  providerState: Awaited<ReturnType<typeof readExtensionProviderState>>,
+): Promise<Awaited<ReturnType<typeof readExtensionProviderState>>> {
+  if (!providerState.publicKey) {
+    return redactExtensionProviderState();
+  }
+
+  const origin = senderOrigin(sender);
+  const approved = await isOriginApproved(origin, providerState.publicKey);
+  return approved ? providerState : redactExtensionProviderState();
+}
+
 async function handleRpcRequest(
   message: ExtensionRpcRequest,
   sender: chrome.runtime.MessageSender,
@@ -329,7 +345,7 @@ async function handleRpcRequest(
 
   switch (message.method) {
     case "getState":
-      return providerState;
+      return readProviderStateForSender(sender, providerState);
     case "connect":
       if (providerState.isLocked) {
         throw new Error("Vaulkyrie is locked. Unlock the wallet before connecting.");
