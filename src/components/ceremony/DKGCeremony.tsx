@@ -492,6 +492,9 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
       const availableKeyIds = Object.keys(dkg.keyPackages ?? {}).map(Number);
       relay = relayRef.current;
       isMultiDevice = dkg.isMultiDevice === true;
+      const useServerCosigner = !isMultiDevice
+        && Boolean(dkg.cosigner?.enabled)
+        && availableKeyIds.length < dkg.threshold;
 
       const result = await withRpcFallback(network, async (connection) => {
         const prepared = await prepareVaultBootstrapTransaction({
@@ -523,6 +526,23 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
         setBootstrapMessage("Simulating on-chain bootstrap...");
         await assertVaultBootstrapSimulation(connection, prepared.transaction);
         setBootstrapMessage(`Bootstrapping ${prepared.actions.join(", ")}...`);
+
+        if (useServerCosigner) {
+          relay?.disconnect();
+          relayRef.current = null;
+          const signature = await signAndSendTransaction(
+            connection,
+            prepared.transaction,
+            walletAddress,
+            setBootstrapMessage,
+          );
+          await connection.confirmTransaction(signature, "confirmed");
+          return {
+            signature,
+            generatedXmssTree: prepared.generatedXmssTree,
+            generatedWinterAuthorityState: prepared.generatedWinterAuthorityState,
+          };
+        }
 
         if (
           isMultiDevice ||

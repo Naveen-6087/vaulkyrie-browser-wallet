@@ -247,8 +247,12 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
     const availableKeyIds = Object.keys(dkg.keyPackages).map(Number);
     const hasLocalThreshold = availableKeyIds.length >= dkg.threshold;
     const isMultiDevice = dkg.isMultiDevice === true;
+    const useServerCosigner = !isMultiDevice
+      && Boolean(dkg.cosigner?.enabled)
+      && availableKeyIds.length < dkg.threshold;
 
-    if (hasLocalThreshold && !isMultiDevice) {
+    if ((hasLocalThreshold && !isMultiDevice) || useServerCosigner) {
+      cleanupRelayState();
       return signAndSendTransaction(connection, tx, activeAccount.publicKey, setStatusMessage);
     }
 
