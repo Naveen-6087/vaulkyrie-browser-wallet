@@ -72,6 +72,7 @@ export class WebSocketRelay {
   private sessionCode: string | null = null;
   private sessionAuthToken: string | null = null;
   private sessionExpiresAt: number | null = null;
+  private sessionReady = false;
 
   readonly relayUrl: string;
   readonly senderId: string;
@@ -116,6 +117,7 @@ export class WebSocketRelay {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
 
     this.intentionallyClosed = false;
+    this.sessionReady = false;
     this.setConnectionState("connecting");
 
     try {
@@ -159,6 +161,7 @@ export class WebSocketRelay {
   /** Disconnect and clean up */
   disconnect(): void {
     this.intentionallyClosed = true;
+    this.sessionReady = false;
     this.stopHeartbeat();
 
     if (this.reconnectTimer) {
@@ -182,6 +185,7 @@ export class WebSocketRelay {
     if (requestedCode) {
       this.sessionCode = requestedCode;
     }
+    this.sessionReady = false;
     this.sendOrQueue({
       type: "create-session",
       payload: {
@@ -205,6 +209,7 @@ export class WebSocketRelay {
     this.sessionCode = parsedInvite.code;
     this.sessionAuthToken = parsedInvite.authToken;
     this.sessionExpiresAt = parsedInvite.expiresAt;
+    this.sessionReady = false;
     this.sendOrQueue({
       type: "join",
       payload: {
@@ -283,7 +288,7 @@ export class WebSocketRelay {
 
   /** Queue a message to send when connected, or send immediately */
   private sendOrQueue(partial: { type: string; payload: unknown }): void {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+    if (this.canSendImmediately(partial.type)) {
       this.send(partial);
     } else {
       this.pendingMessages.push(partial);
@@ -294,11 +299,20 @@ export class WebSocketRelay {
   private flushPendingMessages(): void {
     const queued = this.pendingMessages.splice(0);
     for (const msg of queued) {
-      this.send(msg);
+      if (this.canSendImmediately(msg.type)) {
+        this.send(msg);
+      } else {
+        this.pendingMessages.push(msg);
+      }
     }
   }
 
   private send(partial: { type: string; payload: unknown }): void {
+    if (!this.canSendImmediately(partial.type)) {
+      this.pendingMessages.push(partial);
+      return;
+    }
+
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       console.warn("[ws-relay] Cannot send — not connected");
       return;
@@ -316,6 +330,18 @@ export class WebSocketRelay {
     this.ws.send(JSON.stringify(msg));
   }
 
+  private canSendImmediately(type: string): boolean {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      return false;
+    }
+
+    if (type === "create-session" || type === "join" || type === "leave") {
+      return true;
+    }
+
+    return this.sessionReady;
+  }
+
   private handleMessage(msg: WsRelayMessage): void {
     // Server-originated messages
     switch (msg.type) {
@@ -330,6 +356,8 @@ export class WebSocketRelay {
         this.sessionCode = sp.code;
         this.sessionAuthToken = sp.authToken ?? null;
         this.sessionExpiresAt = sp.expiresAt ?? null;
+        this.sessionReady = true;
+        this.flushPendingMessages();
         this.startHeartbeat();
         this.onSessionCreated?.(
           createRelaySessionMetadata(sp.code, sp.authToken ?? null, sp.expiresAt ?? null, this.relayUrl),
@@ -359,6 +387,8 @@ export class WebSocketRelay {
           this.onParticipantIdAssigned?.(jp.participantId);
         }
         this.sessionExpiresAt = jp.expiresAt ?? this.sessionExpiresAt;
+        this.sessionReady = true;
+        this.flushPendingMessages();
         this.startHeartbeat();
         // Populate participant list from server state
         for (const p of jp.participants) {
@@ -409,6 +439,7 @@ export class WebSocketRelay {
 
       case "session-expired": {
         this.sessionExpiresAt = Date.now();
+        this.sessionReady = false;
         this.events.onError?.(0, "Session expired");
         this.disconnect();
         return;
@@ -522,10 +553,11 @@ export class WebSocketRelay {
       RECONNECT_MAX_DELAY,
     );
 
-    this.reconnectTimer = setTimeout(() => {
-      this.reconnectAttempts++;
-      console.log(`[ws-relay] Reconnecting (attempt ${this.reconnectAttempts})...`);
-      this.connect();
+      this.reconnectTimer = setTimeout(() => {
+        this.reconnectAttempts++;
+        console.log(`[ws-relay] Reconnecting (attempt ${this.reconnectAttempts})...`);
+        this.sessionReady = false;
+        this.connect();
 
       // Re-join session after reconnect
       if (this.sessionCode) {

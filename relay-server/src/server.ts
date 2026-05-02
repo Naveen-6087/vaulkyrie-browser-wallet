@@ -472,7 +472,8 @@ wss.on("connection", (ws) => {
       }
 
       // Heartbeat — always respond, even without a session
-      case "Ping": {
+      case "Ping":
+      case "ping": {
         if (currentSessionCode && currentSenderId) {
           const session = sessions.get(currentSessionCode);
           const member = session?.members.get(currentSenderId);
