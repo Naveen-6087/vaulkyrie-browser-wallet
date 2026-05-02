@@ -35,6 +35,7 @@ const MAX_PARTICIPANTS_PER_SESSION = 10;
 const MEMBER_STALE_MS = 45 * 1000;
 const SESSION_AUTH_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const SESSION_AUTH_LENGTH = 8;
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -92,12 +93,50 @@ function generateAuthToken(): string {
 
 // ── HTTP server (health check + upgrade) ─────────────────────────────
 
-function writeJson(res: http.ServerResponse, status: number, body: unknown): void {
+function isLoopbackRequest(req: http.IncomingMessage): boolean {
+  const remoteAddress = req.socket.remoteAddress;
+  if (!remoteAddress) {
+    return false;
+  }
+
+  return remoteAddress === "::1"
+    || remoteAddress === "127.0.0.1"
+    || remoteAddress === "::ffff:127.0.0.1";
+}
+
+function isAllowedCorsOrigin(origin: string): boolean {
+  try {
+    const parsed = new URL(origin);
+    return parsed.protocol === "chrome-extension:"
+      || parsed.protocol === "moz-extension:"
+      || (parsed.protocol === "http:" && LOOPBACK_HOSTS.has(parsed.hostname));
+  } catch {
+    return false;
+  }
+}
+
+function applyCors(req: http.IncomingMessage, res: http.ServerResponse): void {
+  const originHeader = req.headers.origin;
+  const origin = typeof originHeader === "string" ? originHeader : null;
+  if (!origin || !isAllowedCorsOrigin(origin)) {
+    return;
+  }
+
+  res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Vary", "Origin");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Cosigner-Token, X-Sponsor-Token");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+}
+
+function writeJson(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  status: number,
+  body: unknown,
+): void {
+  applyCors(req, res);
   res.writeHead(status, {
     "Content-Type": "application/json",
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "Content-Type, X-Cosigner-Token",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
   });
   res.end(JSON.stringify(body));
 }
@@ -133,10 +172,25 @@ function assertCosignerToken(req: http.IncomingMessage): void {
   }
 }
 
+function assertSponsorToken(req: http.IncomingMessage): void {
+  const expected = process.env.PQC_SPONSOR_ADMIN_TOKEN?.trim();
+  if (!expected && isLoopbackRequest(req)) {
+    return;
+  }
+
+  if (!expected) {
+    throw new Error("PQC sponsor admin token is required for non-local requests.");
+  }
+
+  const actualHeader = req.headers["x-sponsor-token"];
+  const actual = Array.isArray(actualHeader) ? actualHeader[0] : actualHeader;
+  if (actual !== expected) {
+    throw new Error("Invalid sponsor token.");
+  }
+}
+
 const httpServer = http.createServer(async (req, res) => {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Cosigner-Token");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  applyCors(req, res);
 
   if (req.method === "OPTIONS") {
     res.writeHead(204);
@@ -149,7 +203,7 @@ const httpServer = http.createServer(async (req, res) => {
   try {
     if (req.method === "GET" && url.pathname === "/cosigner/status") {
       const vaultId = url.searchParams.get("vaultId");
-      writeJson(res, 200, {
+      writeJson(req, res, 200, {
         status: "ok",
         cosigner: vaultId ? getCosignerStatus(vaultId) : null,
         cosigners: getCosignerCount(),
@@ -163,7 +217,7 @@ const httpServer = http.createServer(async (req, res) => {
       const record = registerCosignerShare(body as Parameters<typeof registerCosignerShare>[0]);
       const safeRecord = { ...record };
       delete (safeRecord as Partial<typeof record>).keyPackage;
-      writeJson(res, 200, { status: "registered", cosigner: safeRecord });
+      writeJson(req, res, 200, { status: "registered", cosigner: safeRecord });
       return;
     }
 
@@ -171,12 +225,12 @@ const httpServer = http.createServer(async (req, res) => {
       assertCosignerToken(req);
       const body = await readJsonBody(req);
       const result = requestCosignerSignature(body as Parameters<typeof requestCosignerSignature>[0]);
-      writeJson(res, 202, { status: "accepted", ...result });
+      writeJson(req, res, 202, { status: "accepted", ...result });
       return;
     }
 
     if (req.method === "GET" && url.pathname === "/pqc/sponsor/status") {
-      writeJson(res, 200, {
+      writeJson(req, res, 200, {
         status: "ok",
         sponsor: await getPqcSponsorStatus(url.searchParams.get("network") ?? undefined),
       });
@@ -184,13 +238,14 @@ const httpServer = http.createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && url.pathname === "/pqc/sponsor/init") {
+      assertSponsorToken(req);
       const body = await readJsonBody(req);
       const result = await sponsorPqcWalletInit(body as Parameters<typeof sponsorPqcWalletInit>[0]);
-      writeJson(res, 202, { status: "accepted", ...result });
+      writeJson(req, res, 202, { status: "accepted", ...result });
       return;
     }
 
-    writeJson(res, 200, {
+    writeJson(req, res, 200, {
       status: "ok",
       sessions: sessions.size,
       cosigners: getCosignerCount(),
@@ -198,7 +253,7 @@ const httpServer = http.createServer(async (req, res) => {
       uptime: process.uptime(),
     });
   } catch (error) {
-    writeJson(res, 400, {
+    writeJson(req, res, 400, {
       status: "error",
       error: error instanceof Error ? error.message : String(error),
     });

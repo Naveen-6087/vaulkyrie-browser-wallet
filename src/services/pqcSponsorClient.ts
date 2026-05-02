@@ -31,6 +31,14 @@ function deriveSponsorBaseUrl(relayUrl: string): string {
   return parsed.toString().replace(/\/$/, "");
 }
 
+function sponsorHeaders(): HeadersInit {
+  const token = import.meta.env.VITE_PQC_SPONSOR_ADMIN_TOKEN?.trim();
+  return {
+    "Content-Type": "application/json",
+    ...(token ? { "X-Sponsor-Token": token } : {}),
+  };
+}
+
 async function readJsonResponse<T>(response: Response): Promise<T> {
   const text = await response.text();
   const json = (text ? JSON.parse(text) : {}) as { status?: string; error?: string } & T;
@@ -59,7 +67,7 @@ export async function requestSponsoredPqcInit(params: {
 }): Promise<SponsoredPqcInitResult> {
   const response = await fetch(`${deriveSponsorBaseUrl(params.relayUrl)}/pqc/sponsor/init`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: sponsorHeaders(),
     body: JSON.stringify({
       network: params.network,
       walletIdHex: params.walletIdHex,
