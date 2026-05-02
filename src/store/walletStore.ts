@@ -5,6 +5,7 @@ import type { EncryptedPayload } from "@/lib/crypto";
 import { getWalletAccountKind } from "@/lib/walletAccounts";
 import { clearWalletSessionPassword } from "@/lib/walletSession";
 import type {
+  PqcDerivationPosition,
   WalletAccount,
   Token,
   Transaction,
@@ -92,7 +93,10 @@ export function isUmbraEncryptedMasterSeedRecord(value: unknown): value is Umbra
 
 export interface PrivacyVaultEncryptedKeyRecord extends EncryptedPayload {
   kind: "privacy-vault-key";
-  version: 1;
+  version: 1 | 2;
+  recoveryModel?: "legacy-private-key" | "mnemonic";
+  derivationPath?: string | null;
+  createdAt?: number;
 }
 
 export function isPrivacyVaultEncryptedKeyRecord(value: unknown): value is PrivacyVaultEncryptedKeyRecord {
@@ -103,7 +107,41 @@ export function isPrivacyVaultEncryptedKeyRecord(value: unknown): value is Priva
   const candidate = value as Partial<PrivacyVaultEncryptedKeyRecord>;
   return (
     candidate.kind === "privacy-vault-key" &&
+    (candidate.version === 1 || candidate.version === 2) &&
+    typeof candidate.ciphertext === "string" &&
+    typeof candidate.iv === "string" &&
+    typeof candidate.salt === "string" &&
+    typeof candidate.iterations === "number"
+  );
+}
+
+export interface QuantumVaultEncryptedKeyRecord extends EncryptedPayload {
+  kind: "quantum-vault-key";
+  version: 1;
+  source: "random" | "bip39" | "legacy-seed";
+  walletIdHex: string;
+  currentPublicKeyHashHex: string;
+  position?: PqcDerivationPosition;
+  recoverableWithMnemonic: boolean;
+  createdAt: number;
+}
+
+export type QuantumVaultStoredKey = string | QuantumVaultEncryptedKeyRecord;
+
+export function isQuantumVaultEncryptedKeyRecord(value: unknown): value is QuantumVaultEncryptedKeyRecord {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const candidate = value as Partial<QuantumVaultEncryptedKeyRecord>;
+  return (
+    candidate.kind === "quantum-vault-key" &&
     candidate.version === 1 &&
+    (candidate.source === "random" || candidate.source === "bip39" || candidate.source === "legacy-seed") &&
+    typeof candidate.walletIdHex === "string" &&
+    typeof candidate.currentPublicKeyHashHex === "string" &&
+    typeof candidate.recoverableWithMnemonic === "boolean" &&
+    typeof candidate.createdAt === "number" &&
     typeof candidate.ciphertext === "string" &&
     typeof candidate.iv === "string" &&
     typeof candidate.salt === "string" &&
@@ -129,7 +167,7 @@ export interface PersistedWalletState {
   contacts: Contact[];
   xmssTrees: Record<string, string>;
   winterAuthorityStates: Record<string, string>;
-  quantumVaultKeys: Record<string, string>;
+  quantumVaultKeys: Record<string, QuantumVaultStoredKey>;
   orchestrationHistory: Record<string, SpendOrchestrationActivity[]>;
   recoverySessions: Record<string, RecoverySessionRecord[]>;
   umbraAccounts: Record<string, Partial<Record<UmbraNetworkId, UmbraAccountRecord>>>;
@@ -207,8 +245,8 @@ interface WalletState extends PersistedWalletState {
   storeWinterAuthorityState: (publicKey: string, serialized: string) => void;
   getWinterAuthorityState: (publicKey: string) => string | null;
   clearWinterAuthorityState: (publicKey: string) => void;
-  storeQuantumVaultKey: (publicKey: string, serialized: string) => void;
-  getQuantumVaultKey: (publicKey: string) => string | null;
+  storeQuantumVaultKey: (publicKey: string, serialized: QuantumVaultStoredKey) => void;
+  getQuantumVaultKey: (publicKey: string) => QuantumVaultStoredKey | null;
   clearQuantumVaultKey: (publicKey: string) => void;
 
   recordOrchestrationActivity: (publicKey: string, activity: SpendOrchestrationActivity) => void;

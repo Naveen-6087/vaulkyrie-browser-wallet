@@ -9,6 +9,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { Buffer } from "buffer";
 import {
   Shield,
   Unlock,
@@ -31,23 +32,10 @@ import { Input } from "@/components/ui/input";
 import { ScreenHeader } from "@/components/layout/ScreenHeader";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import {
-  generateWotsKeyPair,
-  generatePqcMnemonic,
-  mnemonicToPqcSeed,
-  validatePqcMnemonic,
-  deriveWotsKeyPairFromSeed,
-  deriveWotsKeyPairFromMnemonic,
-  nextPqcSigningPosition,
-  wotsSignMessage,
-  wotsVerifyMessage,
-  pqcWalletAdvanceMessage,
   bytesToHex,
   hexToBytes as hexToQuantumBytes,
-  deserializeWotsKeyPair,
-  serializeWotsKeyPair,
-  serializeWotsSignature,
+  validatePqcMnemonic,
 } from "@/services/quantum/wots";
-import type { PqcSigningPosition, WotsKeyPair } from "@/services/quantum/wots";
 import type { WalletView } from "@/types";
 import { useWalletStore } from "@/store/walletStore";
 import { withRpcFallback } from "@/services/solanaRpc";
@@ -81,6 +69,11 @@ import {
   requestSponsoredPqcInit,
   type PqcSponsorStatus,
 } from "@/services/pqcSponsorClient";
+import {
+  createQuantumVaultKeyInBackground,
+  prepareQuantumVaultAdvanceInBackground,
+} from "@/lib/internalWalletRpc";
+import { getQuantumVaultRecordSummary } from "@/services/quantum/quantumVaultStorage";
 
 type BufferedSigningMessage =
   | { type: "round1"; fromId: number; commitments: number[] }
@@ -122,80 +115,6 @@ interface QuantumVaultState {
   hasWinterAuthorityState: boolean;
 }
 
-interface StoredPqcWalletKey {
-  walletId: Uint8Array;
-  currentKeyPair: WotsKeyPair;
-  source: "random" | "bip39";
-  seedHex?: string;
-  position?: PqcSigningPosition;
-}
-
-function serializeStoredPqcWalletKey(
-  walletId: Uint8Array,
-  currentKeyPair: WotsKeyPair,
-  metadata: Partial<Pick<StoredPqcWalletKey, "source" | "seedHex" | "position">> = {},
-): string {
-  return JSON.stringify({
-    version: 3,
-    walletIdHex: bytesToHex(walletId),
-    currentKeyPair: JSON.parse(serializeWotsKeyPair(currentKeyPair)),
-    source: metadata.source ?? "random",
-    seedHex: metadata.seedHex,
-    position: metadata.position,
-  });
-}
-
-function deserializeStoredPqcWalletKey(serialized: string): StoredPqcWalletKey {
-  const parsed = JSON.parse(serialized) as {
-    version?: number;
-    walletIdHex?: string;
-    currentKeyPair?: unknown;
-    source?: "random" | "bip39";
-    seedHex?: string;
-    position?: PqcSigningPosition;
-  };
-
-  if ((parsed.version === 2 || parsed.version === 3) && parsed.walletIdHex && parsed.currentKeyPair) {
-    return {
-      walletId: hexToQuantumBytes(parsed.walletIdHex),
-      currentKeyPair: deserializeWotsKeyPair(JSON.stringify(parsed.currentKeyPair)),
-      source: parsed.version === 3 ? parsed.source ?? "random" : "random",
-      seedHex: parsed.seedHex,
-      position: parsed.position,
-    };
-  }
-
-  const legacyKeyPair = deserializeWotsKeyPair(serialized);
-  return {
-    walletId: legacyKeyPair.publicKeyHash,
-    currentKeyPair: legacyKeyPair,
-    source: "random",
-  };
-}
-
-async function buildNextPqcStoredKey(storedKey: StoredPqcWalletKey): Promise<StoredPqcWalletKey> {
-  if (storedKey.source === "bip39" && storedKey.seedHex && storedKey.position) {
-    const nextPosition = nextPqcSigningPosition(storedKey.position);
-    const nextKeyPair = await deriveWotsKeyPairFromSeed(
-      hexToQuantumBytes(storedKey.seedHex),
-      nextPosition,
-    );
-    return {
-      ...storedKey,
-      currentKeyPair: nextKeyPair,
-      position: nextPosition,
-    };
-  }
-
-  return {
-    ...storedKey,
-    currentKeyPair: await generateWotsKeyPair(),
-    source: "random",
-    seedHex: undefined,
-    position: undefined,
-  };
-}
-
 interface QuantumVaultProps {
   walletAddress: string;
   onNavigate: (view: WalletView) => void;
@@ -228,7 +147,7 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
   });
 
   const [activePanel, setActivePanel] = useState<
-    "overview" | "open" | "split" | null
+    "overview" | "split" | null
   >("overview");
   const [isProcessing, setIsProcessing] = useState(false);
   const [statusMessage, setStatusMessage] = useState("");
@@ -515,20 +434,19 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
     let balanceLamports = 0;
     let status: VaultStatusType = VaultStatus.None;
 
-    const serializedKey = getQuantumVaultKey(walletAddress);
-    if (serializedKey) {
+    const storedKey = getQuantumVaultKey(walletAddress);
+    const summary = getQuantumVaultRecordSummary(storedKey);
+    if (summary.exists && summary.walletIdHex) {
       try {
-        const storedKey = deserializeStoredPqcWalletKey(serializedKey);
-        const keyPair = storedKey.currentKeyPair;
         hasLocalKey = true;
-        walletIdHex = bytesToHex(storedKey.walletId);
-        publicKeyHashHex = bytesToHex(keyPair.publicKeyHash);
-        const [vaultPda] = findPqcWalletPda(storedKey.walletId);
+        walletIdHex = summary.walletIdHex;
+        publicKeyHashHex = summary.currentPublicKeyHashHex ?? "";
+        const [vaultPda] = findPqcWalletPda(hexToQuantumBytes(summary.walletIdHex));
         vaultAddress = vaultPda.toBase58();
 
         await withRpcFallback(network, async (connection) => {
           const client = new VaulkyrieClient(connection);
-          const pqcWallet = await client.getPqcWallet(storedKey.walletId);
+          const pqcWallet = await client.getPqcWallet(hexToQuantumBytes(summary.walletIdHex!));
           if (pqcWallet) {
             currentRootHex = bytesToHex(pqcWallet.account.currentRoot);
             sequence = pqcWallet.account.sequence;
@@ -661,38 +579,17 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
 
     try {
       const payer = new PublicKey(activeAccount.publicKey);
-      const position: PqcSigningPosition = { wallet: 0, parent: 0, child: 0 };
-      let keyPair: WotsKeyPair;
-      let seedHex: string | undefined;
-      let mnemonicToShow = "";
-      let source: StoredPqcWalletKey["source"] = "random";
-
-      if (mode === "imported") {
-        if (!validatePqcMnemonic(mnemonicInput)) {
-          throw new Error("Enter a valid BIP39 recovery phrase before importing.");
-        }
-        setStatusMessage("Deriving the first Winternitz root from the BIP39 phrase...");
-        const seed = await mnemonicToPqcSeed(mnemonicInput);
-        seedHex = bytesToHex(seed);
-        keyPair = await deriveWotsKeyPairFromSeed(seed, position);
-        source = "bip39";
-      } else if (mode === "generated") {
-        setStatusMessage("Generating a BIP39 recovery phrase for the PQC wallet...");
-        const mnemonic = generatePqcMnemonic();
-        const seed = await mnemonicToPqcSeed(mnemonic);
-        seedHex = bytesToHex(seed);
-        keyPair = await deriveWotsKeyPairFromMnemonic(mnemonic, position);
-        mnemonicToShow = mnemonic;
-        source = "bip39";
-      } else {
-        setStatusMessage("Generating the first Winternitz wallet root...");
-        keyPair = await generateWotsKeyPair();
+      if (mode === "imported" && !validatePqcMnemonic(mnemonicInput)) {
+        throw new Error("Enter a valid BIP39 recovery phrase before importing.");
       }
-
-      const walletId = keyPair.publicKeyHash;
+      const preparedLocalKey = await createQuantumVaultKeyInBackground({
+        mode,
+        mnemonic: mode === "imported" ? mnemonicInput : undefined,
+      });
+      const walletId = hexToQuantumBytes(preparedLocalKey.walletIdHex);
       const [vaultPda, bump] = findPqcWalletPda(walletId);
-      const walletIdHex = bytesToHex(walletId);
-      const currentRootHex = bytesToHex(keyPair.publicKeyHash);
+      const walletIdHex = preparedLocalKey.walletIdHex;
+      const currentRootHex = preparedLocalKey.currentRootHex;
 
       setStatusMessage("Opening the onchain PQC wallet PDA...");
       await withRpcFallback(network, async (connection) => {
@@ -735,7 +632,7 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
 
           const ix = createInitPqcWalletInstruction(payer, vaultPda, {
             walletId,
-            currentRoot: keyPair.publicKeyHash,
+            currentRoot: hexToQuantumBytes(currentRootHex),
             bump,
           });
           const tx = new Transaction().add(ix);
@@ -752,12 +649,9 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
         });
       }
 
-      storeQuantumVaultKey(
-        walletAddress,
-        serializeStoredPqcWalletKey(walletId, keyPair, { source, seedHex, position: source === "bip39" ? position : undefined }),
-      );
-      if (mnemonicToShow) {
-        setGeneratedMnemonic(mnemonicToShow);
+      storeQuantumVaultKey(walletAddress, preparedLocalKey.keyRecord);
+      if (preparedLocalKey.recoveryPhrase) {
+        setGeneratedMnemonic(preparedLocalKey.recoveryPhrase);
       }
       setMnemonicInput("");
       setLastProofHex("");
@@ -841,52 +735,35 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
     setStatusMessage("Building rolling Winternitz send authorization...");
 
     try {
-      const serializedKey = getQuantumVaultKey(walletAddress);
-      if (!serializedKey) {
+      const storedKey = getQuantumVaultKey(walletAddress);
+      const summary = getQuantumVaultRecordSummary(storedKey);
+      if (!summary.exists || !summary.walletIdHex || !summary.currentPublicKeyHashHex) {
         throw new Error("No local Winternitz key found for this PQC wallet.");
       }
-
-      const storedKey = deserializeStoredPqcWalletKey(serializedKey);
-      const keyPair = storedKey.currentKeyPair;
       const amountLamports = BigInt(Math.floor(amount * 1e9));
       const destination = new PublicKey(splitDestination.trim());
-      const [pqcWalletPda] = findPqcWalletPda(storedKey.walletId);
+      const [pqcWalletPda] = findPqcWalletPda(hexToQuantumBytes(summary.walletIdHex));
 
       const pqcWallet = await withRpcFallback(network, async (connection) => {
         const client = new VaulkyrieClient(connection);
-        return client.getPqcWallet(storedKey.walletId);
+        return client.getPqcWallet(hexToQuantumBytes(summary.walletIdHex!));
       });
       if (!pqcWallet) {
         throw new Error("PQC wallet state was not found onchain.");
       }
-      if (bytesToHex(pqcWallet.account.currentRoot) !== bytesToHex(keyPair.publicKeyHash)) {
+      if (bytesToHex(pqcWallet.account.currentRoot) !== summary.currentPublicKeyHashHex) {
         throw new Error("Stored Winternitz key does not match the current onchain wallet root.");
       }
-
-      const nextStoredKey = await buildNextPqcStoredKey(storedKey);
-      const nextKeyPair = nextStoredKey.currentKeyPair;
-      const message = await pqcWalletAdvanceMessage(
-        storedKey.walletId,
-        pqcWallet.account.currentRoot,
-        nextKeyPair.publicKeyHash,
-        destination.toBytes(),
-        amountLamports,
-        pqcWallet.account.sequence,
-      );
-
-      setStatusMessage("Signing send message with the current Winternitz key...");
-      const signature = await wotsSignMessage(message, keyPair.secretKey);
-
-      setStatusMessage("Verifying local Winternitz signature...");
-      const valid = await wotsVerifyMessage(message, signature, keyPair.publicKey);
-
-      if (!valid) {
-        setStatusMessage("Signature verification failed!");
-        return;
-      }
-
-      const signatureBytes = serializeWotsSignature(signature);
-      setLastProofHex(bytesToHex(signatureBytes).substring(0, 64) + "...");
+      setStatusMessage("Preparing the next Winternitz signature in background memory...");
+      const preparedAdvance = await prepareQuantumVaultAdvanceInBackground({
+        walletPublicKey: walletAddress,
+        currentRootHex: summary.currentPublicKeyHashHex,
+        destinationAddress: destination.toBase58(),
+        amountLamports: amountLamports.toString(),
+        sequence: pqcWallet.account.sequence.toString(),
+      });
+      const signatureBytes = Uint8Array.from(Buffer.from(preparedAdvance.signature, "base64"));
+      setLastProofHex(preparedAdvance.proofPreviewHex);
 
       await withRpcFallback(network, async (connection) => {
         const ix = createAdvancePqcWalletInstruction(
@@ -894,7 +771,7 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
           destination,
           {
             signature: signatureBytes,
-            nextRoot: nextKeyPair.publicKeyHash,
+            nextRoot: hexToQuantumBytes(preparedAdvance.nextRootHex),
             amount: amountLamports,
           },
         );
@@ -912,14 +789,7 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
         );
       });
 
-      storeQuantumVaultKey(
-        walletAddress,
-        serializeStoredPqcWalletKey(nextStoredKey.walletId, nextKeyPair, {
-          source: nextStoredKey.source,
-          seedHex: nextStoredKey.seedHex,
-          position: nextStoredKey.position,
-        }),
-      );
+      storeQuantumVaultKey(walletAddress, preparedAdvance.nextKeyRecord);
       setStatusMessage("PQC wallet send completed. The Winternitz root rolled forward.");
       setSplitAmount("");
       setSplitDestination("");
@@ -1216,12 +1086,15 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
             {generatedMnemonic && (
               <Card className="border-primary/30">
                 <CardHeader>
-                  <CardTitle className="text-sm">PQC Recovery Phrase</CardTitle>
+                  <CardTitle className="text-sm">Back up your PQC recovery phrase</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-2">
                   <code className="block rounded-md bg-muted px-3 py-2 text-xs font-mono leading-relaxed">
                     {generatedMnemonic}
                   </code>
+                  <p className="text-[11px] text-muted-foreground">
+                    This phrase restores the local PQC derivation tree for this device. Store it offline before you continue.
+                  </p>
                   <Button
                     variant="secondary"
                     className="w-full gap-2"
@@ -1233,6 +1106,9 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
                       <Copy className="h-4 w-4" />
                     )}
                     Copy Recovery Phrase
+                  </Button>
+                  <Button className="w-full gap-2" onClick={() => setGeneratedMnemonic("")}>
+                    I backed it up
                   </Button>
                 </CardContent>
               </Card>

@@ -16,10 +16,20 @@ import {
 } from "@/store/walletStore";
 import type { UmbraNetworkId } from "@/types";
 import {
+  assertWalletPasswordInBackground,
   backgroundWalletSessionState,
   readPersistedWalletState,
   requireUnlockedPassword,
 } from "@/background/sessionState";
+import {
+  createEncryptedPrivacyVaultMnemonicRecord,
+  loadPrivacyVaultWorkingKey,
+  revealPrivacyVaultRecoveryMaterial,
+} from "@/services/privacyVault/privacyVaultKeyStorage";
+import {
+  generatePrivacyVaultMnemonic,
+  normalizePrivacyVaultMnemonic,
+} from "@/services/privacyVault/mnemonic";
 
 function bytesToBase64(bytes: Uint8Array): string {
   let binary = "";
@@ -49,20 +59,18 @@ async function writePersistedWalletState(state: PersistedWalletState): Promise<v
   );
 }
 
-export async function createEncryptedPrivacyVaultKeyRecordInBackground(
-  secretKey: Uint8Array,
-): Promise<PrivacyVaultEncryptedKeyRecord> {
-  const payload = await encryptString(bytesToBase64(secretKey), requireUnlockedPassword());
-  return {
-    kind: "privacy-vault-key",
-    version: 1,
-    ...payload,
-  };
-}
-
-export async function createPrivacyVaultAccountInBackground(name: string) {
-  const keypair = Keypair.generate();
-  const keyRecord = await createEncryptedPrivacyVaultKeyRecordInBackground(keypair.secretKey);
+export async function createPrivacyVaultAccountInBackground(
+  name: string,
+  options?: { mnemonic?: string },
+): Promise<{ account: { name: string; publicKey: string; balance: number; isActive: boolean; kind: "privacy-vault" }; keyRecord: PrivacyVaultEncryptedKeyRecord; recoveryPhrase?: string }> {
+  const password = requireUnlockedPassword();
+  const recoveryPhrase = options?.mnemonic
+    ? normalizePrivacyVaultMnemonic(options.mnemonic)
+    : generatePrivacyVaultMnemonic();
+  const { keyRecord, keypair, mnemonic } = await createEncryptedPrivacyVaultMnemonicRecord(
+    recoveryPhrase,
+    password,
+  );
   return {
     account: {
       name,
@@ -72,6 +80,7 @@ export async function createPrivacyVaultAccountInBackground(name: string) {
       kind: "privacy-vault" as const,
     },
     keyRecord,
+    recoveryPhrase: options?.mnemonic ? undefined : mnemonic,
   };
 }
 
@@ -87,10 +96,14 @@ export async function loadPrivacyVaultSecretKeyInBackground(publicKey: string): 
     throw new Error("No encrypted Privacy Vault key is stored for this account.");
   }
 
-  const plaintext = await decryptString(record, requireUnlockedPassword());
-  const secretKey = Uint8Array.from(Buffer.from(plaintext, "base64"));
+  const { workingKey, normalizedKeyRecord } = await loadPrivacyVaultWorkingKey(record, requireUnlockedPassword());
+  const secretKey = workingKey.keypair.secretKey;
   if (secretKey.length !== 64) {
     throw new Error("Stored Privacy Vault key is invalid.");
+  }
+  if (normalizedKeyRecord) {
+    state.privacyVaultKeys[publicKey] = normalizedKeyRecord;
+    await writePersistedWalletState(state);
   }
 
   backgroundWalletSessionState.privacyVaultSecrets.set(publicKey, secretKey);
@@ -217,4 +230,41 @@ export async function storeUmbraMasterSeedInBackground(
   state.umbraMasterSeeds[cacheKey] = await encryptUmbraMasterSeed(seed);
   await writePersistedWalletState(state);
   backgroundWalletSessionState.umbraMasterSeeds.set(cacheKey, seed);
+}
+
+export async function revealPrivacyVaultRecoveryMaterialInBackground(
+  walletPublicKey: string,
+  password: string,
+): Promise<
+  | { model: "mnemonic"; mnemonic: string; derivationPath: string; privateKeyBase58: string }
+  | { model: "private-key"; privateKeyBase58: string }
+> {
+  await assertWalletPasswordInBackground(password);
+  const state = await readPersistedWalletState();
+  const record = state.privacyVaultKeys[walletPublicKey];
+  if (!record || !isPrivacyVaultEncryptedKeyRecord(record)) {
+    throw new Error("No encrypted Privacy Vault key is stored for this account.");
+  }
+  return revealPrivacyVaultRecoveryMaterial(record, password);
+}
+
+export async function migratePrivacyVaultRecordsInBackground(): Promise<void> {
+  const state = await readPersistedWalletState();
+  const password = requireUnlockedPassword();
+  let changed = false;
+
+  for (const [walletPublicKey, record] of Object.entries(state.privacyVaultKeys)) {
+    if (!isPrivacyVaultEncryptedKeyRecord(record) || record.version !== 1) {
+      continue;
+    }
+    const { normalizedKeyRecord } = await loadPrivacyVaultWorkingKey(record, password);
+    if (normalizedKeyRecord) {
+      state.privacyVaultKeys[walletPublicKey] = normalizedKeyRecord;
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    await writePersistedWalletState(state);
+  }
 }

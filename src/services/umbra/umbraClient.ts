@@ -44,11 +44,6 @@ import {
 } from "@/lib/internalWalletRpc";
 import type { UmbraTokenBalanceRecord } from "@/types";
 import type { PersistedWalletState } from "@/store/walletStore";
-import {
-  loadPrivacyVaultSecretKeyInBackground,
-  loadUmbraMasterSeedInBackground,
-  storeUmbraMasterSeedInBackground,
-} from "@/background/vaultSession";
 import { createBackgroundUmbraMasterSeedStorage } from "./umbraMasterSeedStorage";
 import {
   getUmbraClientNetworkConfig,
@@ -68,6 +63,25 @@ const CLAIM_SCAN_START = 0n as never;
 
 function isBackgroundContext(): boolean {
   return typeof window === "undefined";
+}
+
+async function loadPrivacyVaultSecretKeyForDirectUmbraClient(walletPublicKey: string): Promise<Uint8Array> {
+  const { loadPrivacyVaultSecretKeyInBackground } = await import("@/background/vaultSession");
+  return loadPrivacyVaultSecretKeyInBackground(walletPublicKey);
+}
+
+async function loadUmbraMasterSeedForDirectUmbraClient(walletPublicKey: string, network: string) {
+  const { loadUmbraMasterSeedInBackground } = await import("@/background/vaultSession");
+  return loadUmbraMasterSeedInBackground(walletPublicKey, network as never);
+}
+
+async function storeUmbraMasterSeedForDirectUmbraClient(
+  walletPublicKey: string,
+  network: string,
+  seed: Uint8Array,
+): Promise<void> {
+  const { storeUmbraMasterSeedInBackground } = await import("@/background/vaultSession");
+  return storeUmbraMasterSeedInBackground(walletPublicKey, network as never, seed);
 }
 
 interface ResolvedSeedState {
@@ -152,7 +166,7 @@ export async function createDirectUmbraWalletClient(
   const isPrivacyVaultAccount = getWalletAccountKind(account) === "privacy-vault";
   const signer =
     isPrivacyVaultAccount
-      ? await createSignerFromPrivateKeyBytes(await loadPrivacyVaultSecretKeyInBackground(walletPublicKey))
+      ? await createSignerFromPrivateKeyBytes(await loadPrivacyVaultSecretKeyForDirectUmbraClient(walletPublicKey))
       : createVaulkyrieUmbraSigner(walletPublicKey);
   const resolvedSeedState = isPrivacyVaultAccount
     ? await resolvePrivacyVaultSeedState(walletPublicKey, signer, config)
@@ -314,12 +328,12 @@ async function resolvePrivacyVaultSeedState(
 ): Promise<ResolvedSeedState> {
   const deterministicGenerator = getDefaultMasterSeedGenerator(signer);
   const deterministicSeed = await deterministicGenerator();
-  const storedSeed = await loadUmbraMasterSeedInBackground(walletPublicKey, config.network);
+  const storedSeed = await loadUmbraMasterSeedForDirectUmbraClient(walletPublicKey, config.network);
   const storedMasterSeed = storedSeed.exists ? toMasterSeed(storedSeed.seed) : null;
   const onChainIdentity = await loadUmbraOnChainIdentityState(walletPublicKey, signer, config);
 
   if (!onChainIdentity.exists || !onChainIdentity.isUserAccountX25519KeyRegistered) {
-    await storeUmbraMasterSeedInBackground(walletPublicKey, config.network, deterministicSeed);
+    await storeUmbraMasterSeedForDirectUmbraClient(walletPublicKey, config.network, deterministicSeed);
     return {
       storage: createFixedMasterSeedStorage(deterministicSeed, deterministicGenerator),
     };
@@ -332,7 +346,7 @@ async function resolvePrivacyVaultSeedState(
 
   if (deterministicMatch.score >= storedMatch.score && deterministicMatch.score > 0) {
     if (!storedSeed.exists || !bytesEqual(storedSeed.seed, deterministicSeed)) {
-      await storeUmbraMasterSeedInBackground(walletPublicKey, config.network, deterministicSeed);
+      await storeUmbraMasterSeedForDirectUmbraClient(walletPublicKey, config.network, deterministicSeed);
     }
     return {
       storage: createFixedMasterSeedStorage(deterministicSeed, deterministicGenerator),
@@ -358,7 +372,7 @@ async function resolveThresholdSeedState(
   config: ReturnType<typeof getUmbraClientNetworkConfig>,
 ): Promise<ResolvedSeedState> {
   const storage = createBackgroundUmbraMasterSeedStorage(walletPublicKey, config.network);
-  const storedSeed = await loadUmbraMasterSeedInBackground(walletPublicKey, config.network);
+  const storedSeed = await loadUmbraMasterSeedForDirectUmbraClient(walletPublicKey, config.network);
   if (storedSeed.exists) {
     return { storage };
   }

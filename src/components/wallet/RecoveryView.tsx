@@ -26,7 +26,12 @@ import {
   type WalletBackupPreview,
 } from "@/lib/walletBackup";
 import { NETWORKS } from "@/lib/constants";
+import { getWalletAccountKind } from "@/lib/walletAccounts";
 import { shortenAddress } from "@/lib/utils";
+import {
+  revealPrivacyVaultRecoveryInBackground,
+  revealQuantumVaultRecoveryInBackground,
+} from "@/lib/internalWalletRpc";
 import { createConnection, withRpcFallback } from "@/services/solanaRpc";
 import { VaulkyrieClient } from "@/sdk/client";
 import { ACCOUNT_SIZE, RecoveryStatus, VaultStatus, VAULKYRIE_CORE_PROGRAM_ID } from "@/sdk/constants";
@@ -59,6 +64,11 @@ import {
   getInitialXmssAuthorityHash,
   serializeXmssTree,
 } from "@/services/quantum/wots";
+import { getQuantumVaultRecordSummary } from "@/services/quantum/quantumVaultStorage";
+import type {
+  RevealPrivacyVaultRecoveryResult,
+  RevealQuantumVaultRecoveryResult,
+} from "@/extension/messages";
 
 interface RecoveryViewProps {
   onNavigate: (view: WalletView) => void;
@@ -143,6 +153,8 @@ export function RecoveryView({ onNavigate }: RecoveryViewProps) {
     network,
     relayUrl,
     accounts,
+    quantumVaultKeys,
+    privacyVaultKeys,
     contacts,
     orchestrationHistory,
     securityPreferences,
@@ -172,6 +184,11 @@ export function RecoveryView({ onNavigate }: RecoveryViewProps) {
   const [importStatus, setImportStatus] = useState("");
   const [previewingImport, setPreviewingImport] = useState(false);
   const [importingBackup, setImportingBackup] = useState(false);
+  const [secretPassword, setSecretPassword] = useState("");
+  const [secretError, setSecretError] = useState("");
+  const [revealingSecretKey, setRevealingSecretKey] = useState<string | null>(null);
+  const [revealedPrivacyVaults, setRevealedPrivacyVaults] = useState<Record<string, RevealPrivacyVaultRecoveryResult>>({});
+  const [revealedQuantumVaults, setRevealedQuantumVaults] = useState<Record<string, RevealQuantumVaultRecoveryResult>>({});
 
   const [expirySlotsInput, setExpirySlotsInput] = useState("500");
   const [newThresholdInput, setNewThresholdInput] = useState("2");
@@ -193,6 +210,21 @@ export function RecoveryView({ onNavigate }: RecoveryViewProps) {
   const selectedSession = useMemo(
     () => sessions.find((session) => session.id === selectedRecoveryId) ?? null,
     [selectedRecoveryId, sessions],
+  );
+  const privacyVaultAccounts = useMemo(
+    () => accounts.filter((account) => getWalletAccountKind(account) === "privacy-vault"),
+    [accounts],
+  );
+  const pqcWalletEntries = useMemo(
+    () =>
+      Object.entries(quantumVaultKeys)
+        .map(([walletPublicKey, record]) => ({
+          walletPublicKey,
+          account: accounts.find((account) => account.publicKey === walletPublicKey) ?? null,
+          summary: getQuantumVaultRecordSummary(record),
+        }))
+        .filter((entry) => entry.summary.exists && entry.summary.walletIdHex),
+    [accounts, quantumVaultKeys],
   );
 
   const clearSigningTimeout = useCallback(() => {
@@ -686,6 +718,46 @@ export function RecoveryView({ onNavigate }: RecoveryViewProps) {
     }
   };
 
+  const handleRevealPrivacySecret = async (walletPublicKey: string) => {
+    if (!secretPassword) {
+      setSecretError("Re-enter your wallet password before revealing recovery material.");
+      return;
+    }
+    setRevealingSecretKey(`privacy:${walletPublicKey}`);
+    setSecretError("");
+    try {
+      const revealed = await revealPrivacyVaultRecoveryInBackground({
+        walletPublicKey,
+        password: secretPassword,
+      });
+      setRevealedPrivacyVaults((current) => ({ ...current, [walletPublicKey]: revealed }));
+    } catch (error) {
+      setSecretError(error instanceof Error ? error.message : "Failed to reveal Privacy Vault recovery material.");
+    } finally {
+      setRevealingSecretKey(null);
+    }
+  };
+
+  const handleRevealQuantumSecret = async (walletPublicKey: string) => {
+    if (!secretPassword) {
+      setSecretError("Re-enter your wallet password before revealing recovery material.");
+      return;
+    }
+    setRevealingSecretKey(`pqc:${walletPublicKey}`);
+    setSecretError("");
+    try {
+      const revealed = await revealQuantumVaultRecoveryInBackground({
+        walletPublicKey,
+        password: secretPassword,
+      });
+      setRevealedQuantumVaults((current) => ({ ...current, [walletPublicKey]: revealed }));
+    } catch (error) {
+      setSecretError(error instanceof Error ? error.message : "Failed to reveal PQC recovery material.");
+    } finally {
+      setRevealingSecretKey(null);
+    }
+  };
+
   const handleStageRecovery = async () => {
     if (!activeAccount?.publicKey) {
       setScreenError("Unlock a vault before starting recovery.");
@@ -916,6 +988,149 @@ export function RecoveryView({ onNavigate }: RecoveryViewProps) {
           </div>
           {screenError && <p className="text-xs text-red-400">{screenError}</p>}
           {actionMsg && <p className="text-xs text-muted-foreground">{actionMsg}</p>}
+        </Card>
+
+        <Card className="overflow-hidden">
+          <div className="border-b border-border px-4 py-3">
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              Secrets & account recovery
+            </p>
+          </div>
+          <div className="space-y-4 p-4">
+            <p className="text-xs text-muted-foreground">
+              Vaulkyrie keeps sensitive material hidden by default. Re-enter your wallet password to reveal recovery phrases or private keys for local wallets on this device.
+            </p>
+            <Input
+              type="password"
+              value={secretPassword}
+              onChange={(event) => {
+                setSecretPassword(event.target.value);
+                setSecretError("");
+              }}
+              placeholder="Re-enter wallet password to reveal secrets"
+            />
+            {secretError && <p className="text-xs text-red-400">{secretError}</p>}
+
+            <div className="rounded-xl border border-border bg-muted/20 px-3 py-3 text-xs text-muted-foreground space-y-1">
+              <p className="text-sm font-medium text-foreground">Threshold Vaults</p>
+              <p>
+                Threshold Vaults do not have a single spend seed phrase or private key to reveal. Recover them with encrypted wallet backups plus onchain threshold recovery coordination.
+              </p>
+            </div>
+
+            <div className="space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-sm font-medium">Privacy Vaults</p>
+                <Badge variant="outline">{privacyVaultAccounts.length}</Badge>
+              </div>
+              {privacyVaultAccounts.length === 0 ? (
+                <div className="rounded-xl border border-border bg-card/60 px-3 py-4 text-xs text-muted-foreground">
+                  No Privacy Vaults exist on this device yet.
+                </div>
+              ) : (
+                privacyVaultAccounts.map((account) => {
+                  const record = privacyVaultKeys[account.publicKey];
+                  const reveal = revealedPrivacyVaults[account.publicKey];
+                  const model = record?.recoveryModel === "mnemonic" ? "Mnemonic-backed" : "Legacy private-key backup";
+                  return (
+                    <div key={account.publicKey} className="rounded-xl border border-border bg-card/60 p-3 space-y-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="space-y-1">
+                          <p className="text-sm font-medium">{account.name}</p>
+                          <p className="text-[11px] text-muted-foreground">{shortenAddress(account.publicKey)} · {model}</p>
+                        </div>
+                        <Badge variant="outline">{record?.recoveryModel === "mnemonic" ? "phrase + key" : "key only"}</Badge>
+                      </div>
+                      <Button
+                        variant="outline"
+                        className="w-full gap-2"
+                        onClick={() => void handleRevealPrivacySecret(account.publicKey)}
+                        disabled={revealingSecretKey === `privacy:${account.publicKey}`}
+                      >
+                        {revealingSecretKey === `privacy:${account.publicKey}` ? <Loader2 className="h-4 w-4 animate-spin" /> : <KeyRound className="h-4 w-4" />}
+                        {record?.recoveryModel === "mnemonic" ? "Reveal phrase and private key" : "Reveal private key"}
+                      </Button>
+                      {reveal && (
+                        <div className="rounded-xl border border-primary/20 bg-primary/5 px-3 py-3 text-xs text-muted-foreground space-y-2">
+                          {reveal.model === "mnemonic" && (
+                            <>
+                              <p className="text-sm font-medium text-foreground">Recovery phrase</p>
+                              <code className="block rounded-lg bg-background px-3 py-2 font-mono leading-relaxed text-foreground">
+                                {reveal.mnemonic}
+                              </code>
+                              <p>Derivation path: <span className="font-mono text-foreground">{reveal.derivationPath}</span></p>
+                            </>
+                          )}
+                          <p className="text-sm font-medium text-foreground">Private key</p>
+                          <code className="block break-all rounded-lg bg-background px-3 py-2 font-mono text-foreground">
+                            {reveal.privateKeyBase58}
+                          </code>
+                          <Button variant="secondary" className="w-full gap-2" onClick={() => void navigator.clipboard.writeText(reveal.privateKeyBase58)}>
+                            Copy private key
+                          </Button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            <div className="space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-sm font-medium">PQC wallets</p>
+                <Badge variant="outline">{pqcWalletEntries.length}</Badge>
+              </div>
+              {pqcWalletEntries.length === 0 ? (
+                <div className="rounded-xl border border-border bg-card/60 px-3 py-4 text-xs text-muted-foreground">
+                  No local PQC wallet material is stored on this device yet.
+                </div>
+              ) : (
+                pqcWalletEntries.map(({ walletPublicKey, account, summary }) => {
+                  const reveal = revealedQuantumVaults[walletPublicKey];
+                  return (
+                    <div key={walletPublicKey} className="rounded-xl border border-border bg-card/60 p-3 space-y-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="space-y-1">
+                          <p className="text-sm font-medium">{account?.name ?? shortenAddress(walletPublicKey)}</p>
+                          <p className="text-[11px] text-muted-foreground">
+                            Wallet id {summary.walletIdHex?.slice(0, 12)}... · {summary.recoverableWithMnemonic ? "Mnemonic-backed" : "Backup-only"}
+                          </p>
+                        </div>
+                        <Badge variant="outline">{summary.source}</Badge>
+                      </div>
+                      <Button
+                        variant="outline"
+                        className="w-full gap-2"
+                        onClick={() => void handleRevealQuantumSecret(walletPublicKey)}
+                        disabled={revealingSecretKey === `pqc:${walletPublicKey}`}
+                      >
+                        {revealingSecretKey === `pqc:${walletPublicKey}` ? <Loader2 className="h-4 w-4 animate-spin" /> : <Shield className="h-4 w-4" />}
+                        Reveal recovery details
+                      </Button>
+                      {reveal && (
+                        <div className="rounded-xl border border-primary/20 bg-primary/5 px-3 py-3 text-xs text-muted-foreground space-y-2">
+                          {reveal.model === "mnemonic" ? (
+                            <>
+                              <p className="text-sm font-medium text-foreground">PQC recovery phrase</p>
+                              <code className="block rounded-lg bg-background px-3 py-2 font-mono leading-relaxed text-foreground">
+                                {reveal.mnemonic}
+                              </code>
+                              <p>
+                                Position: <span className="font-mono text-foreground">{`${reveal.position.wallet}/${reveal.position.parent}/${reveal.position.child}`}</span>
+                              </p>
+                            </>
+                          ) : (
+                            <p>{reveal.reason}</p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
         </Card>
 
         <Card className="overflow-hidden">

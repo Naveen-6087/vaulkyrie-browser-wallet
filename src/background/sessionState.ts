@@ -37,6 +37,11 @@ export function setWalletSessionPasswordInBackground(password: string): void {
 }
 
 export async function unlockWalletSessionInBackground(password: string): Promise<void> {
+  await assertWalletPasswordInBackground(password);
+  setWalletSessionPasswordInBackground(password);
+}
+
+export async function assertWalletPasswordInBackground(password: string): Promise<void> {
   const state = await readPersistedWalletState();
   if (!state.passwordHash || !state.passwordSalt) {
     throw new Error("Set a wallet password before unlocking Vaulkyrie.");
@@ -45,7 +50,6 @@ export async function unlockWalletSessionInBackground(password: string): Promise
   if (!valid) {
     throw new Error("Incorrect password");
   }
-  setWalletSessionPasswordInBackground(password);
 }
 
 export function lockWalletSessionInBackground(): void {

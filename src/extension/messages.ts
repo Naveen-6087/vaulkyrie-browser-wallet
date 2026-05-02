@@ -4,7 +4,11 @@ import type {
 } from "@/services/umbra/umbraClient";
 import type { UmbraTokenConfig } from "@/services/umbra/umbraConfig";
 import type { NetworkId, WalletAccount } from "@/types";
-import type { PrivacyVaultEncryptedKeyRecord } from "@/store/walletStore";
+import type {
+  PrivacyVaultEncryptedKeyRecord,
+  QuantumVaultEncryptedKeyRecord,
+} from "@/store/walletStore";
+import type { PqcDerivationPosition } from "@/types";
 
 export const VAULKYRIE_PROVIDER_REQUEST = "VAULKYRIE_PROVIDER_REQUEST";
 export const VAULKYRIE_PROVIDER_RESPONSE = "VAULKYRIE_PROVIDER_RESPONSE";
@@ -28,8 +32,13 @@ export type InternalRpcMethod =
   | "unlockWalletSession"
   | "lockWalletSession"
   | "createPrivacyVaultAccount"
+  | "createQuantumVaultKey"
+  | "prepareQuantumVaultAdvance"
   | "signPrivacyVaultMessage"
   | "signPrivacyVaultTransaction"
+  | "revealPrivacyVaultRecovery"
+  | "revealQuantumVaultRecovery"
+  | "migrateSensitiveRecords"
   | "umbraOperation";
 
 export interface SignTransactionParams {
@@ -90,11 +99,63 @@ export interface UnlockWalletSessionParams {
 
 export interface CreatePrivacyVaultAccountParams {
   name: string;
+  mnemonic?: string;
 }
 
 export interface CreatePrivacyVaultAccountResult {
   account: WalletAccount;
   keyRecord: PrivacyVaultEncryptedKeyRecord;
+  recoveryPhrase?: string;
+}
+
+export interface CreateQuantumVaultKeyParams {
+  mode: "generated" | "imported" | "random";
+  mnemonic?: string;
+}
+
+export interface CreateQuantumVaultKeyResult {
+  keyRecord: QuantumVaultEncryptedKeyRecord;
+  walletIdHex: string;
+  currentRootHex: string;
+  recoveryPhrase?: string;
+}
+
+export interface PrepareQuantumVaultAdvanceParams {
+  walletPublicKey: string;
+  currentRootHex: string;
+  destinationAddress: string;
+  amountLamports: string;
+  sequence: string;
+}
+
+export interface PrepareQuantumVaultAdvanceResult {
+  walletIdHex: string;
+  signature: string;
+  nextRootHex: string;
+  proofPreviewHex: string;
+  nextKeyRecord: QuantumVaultEncryptedKeyRecord;
+}
+
+export interface RevealPrivacyVaultRecoveryParams {
+  walletPublicKey: string;
+  password: string;
+}
+
+export type RevealPrivacyVaultRecoveryResult =
+  | { model: "mnemonic"; mnemonic: string; derivationPath: string; privateKeyBase58: string }
+  | { model: "private-key"; privateKeyBase58: string };
+
+export interface RevealQuantumVaultRecoveryParams {
+  walletPublicKey: string;
+  password: string;
+}
+
+export type RevealQuantumVaultRecoveryResult =
+  | { model: "mnemonic"; walletIdHex: string; mnemonic: string; position: PqcDerivationPosition }
+  | { model: "backup-only"; walletIdHex: string; reason: string };
+
+export interface MigrateSensitiveRecordsResult {
+  migrated: true;
 }
 
 export interface InternalSignMessageParams {

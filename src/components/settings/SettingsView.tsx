@@ -748,21 +748,13 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
               <div className="space-y-3 p-4">
                 <p className="text-sm font-medium">Recovery & restore workspace</p>
                 <p className="text-xs leading-relaxed text-muted-foreground">
-                  {activeAccountKind === "privacy-vault"
-                    ? "Privacy Vaults use the backup export flow here. Threshold recovery coordination stays available when you switch back to a Threshold Vault."
-                    : "Open the full recovery view for encrypted backup imports, staged restore previews, and onchain recovery coordination."}
+                  Open the full recovery view for encrypted backup imports, threshold recovery coordination, Privacy Vault secret reveals, and PQC recovery details.
                 </p>
                 <Button
                   className="w-full"
-                  onClick={() => {
-                    if (activeAccountKind === "privacy-vault") {
-                      setActiveSection("overview");
-                      return;
-                    }
-                    onNavigate("recovery");
-                  }}
+                  onClick={() => onNavigate("recovery")}
                 >
-                  {activeAccountKind === "privacy-vault" ? "Switch to Threshold Vault for recovery" : "Open Recovery & Restore"}
+                  Open Recovery & Secrets
                 </Button>
               </div>
             </Card>

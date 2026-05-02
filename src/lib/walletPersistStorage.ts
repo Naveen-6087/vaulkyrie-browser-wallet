@@ -87,6 +87,7 @@ const walletStateStorage: StateStorage<Promise<void> | void> = {
       const localValue = getLocalStorageValue(name);
       if (localValue) {
         await chromeStorageSet(name, localValue);
+        removeLocalStorageValue(name);
         return localValue;
       }
 
@@ -98,7 +99,7 @@ const walletStateStorage: StateStorage<Promise<void> | void> = {
   async setItem(name, value) {
     if (canUseChromeStorage()) {
       await chromeStorageSet(name, value);
-      setLocalStorageValue(name, value);
+      removeLocalStorageValue(name);
       return;
     }
 

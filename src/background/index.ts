@@ -9,8 +9,12 @@ import {
   type ApprovalStatusParams,
   type ApprovalStatusResult,
   type CreatePrivacyVaultAccountParams,
+  type CreateQuantumVaultKeyParams,
   type InternalSignMessageParams,
   type InternalSignTransactionParams,
+  type PrepareQuantumVaultAdvanceParams,
+  type RevealPrivacyVaultRecoveryParams,
+  type RevealQuantumVaultRecoveryParams,
   type UmbraOperationParams,
 } from "@/extension/messages";
 import { readExtensionProviderState } from "@/extension/providerState";
@@ -477,7 +481,31 @@ async function handleInternalRequest(message: InternalRpcRequest) {
         throw new Error("Privacy Vault name is required.");
       }
       return import("@/background/vaultSession").then(({ createPrivacyVaultAccountInBackground }) =>
-        createPrivacyVaultAccountInBackground(params.name.trim()),
+        createPrivacyVaultAccountInBackground(params.name.trim(), { mnemonic: params.mnemonic }),
+      );
+    }
+    case "createQuantumVaultKey": {
+      const params = message.params as CreateQuantumVaultKeyParams | undefined;
+      if (!params?.mode) {
+        throw new Error("PQC key mode is required.");
+      }
+      return import("@/background/quantumVaultSession").then(({ createQuantumVaultKeyInBackground }) =>
+        createQuantumVaultKeyInBackground(params),
+      );
+    }
+    case "prepareQuantumVaultAdvance": {
+      const params = message.params as PrepareQuantumVaultAdvanceParams | undefined;
+      if (
+        !params?.walletPublicKey ||
+        !params.currentRootHex ||
+        !params.destinationAddress ||
+        !params.amountLamports ||
+        !params.sequence
+      ) {
+        throw new Error("PQC advance payload is incomplete.");
+      }
+      return import("@/background/quantumVaultSession").then(({ prepareQuantumVaultAdvanceInBackground }) =>
+        prepareQuantumVaultAdvanceInBackground(params),
       );
     }
     case "signPrivacyVaultMessage": {
@@ -512,6 +540,33 @@ async function handleInternalRequest(message: InternalRpcRequest) {
         ),
       );
     }
+    case "revealPrivacyVaultRecovery": {
+      const params = message.params as RevealPrivacyVaultRecoveryParams | undefined;
+      if (!params?.walletPublicKey || !params.password) {
+        throw new Error("Privacy Vault recovery payload is incomplete.");
+      }
+      return import("@/background/vaultSession").then(({ revealPrivacyVaultRecoveryMaterialInBackground }) =>
+        revealPrivacyVaultRecoveryMaterialInBackground(params.walletPublicKey, params.password),
+      );
+    }
+    case "revealQuantumVaultRecovery": {
+      const params = message.params as RevealQuantumVaultRecoveryParams | undefined;
+      if (!params?.walletPublicKey || !params.password) {
+        throw new Error("PQC recovery payload is incomplete.");
+      }
+      return import("@/background/quantumVaultSession").then(({ revealQuantumVaultRecoveryMaterialInBackground }) =>
+        revealQuantumVaultRecoveryMaterialInBackground(params.walletPublicKey, params.password),
+      );
+    }
+    case "migrateSensitiveRecords":
+      return Promise.all([
+        import("@/background/vaultSession").then(({ migratePrivacyVaultRecordsInBackground }) =>
+          migratePrivacyVaultRecordsInBackground(),
+        ),
+        import("@/background/quantumVaultSession").then(({ migrateQuantumVaultRecordsInBackground }) =>
+          migrateQuantumVaultRecordsInBackground(),
+        ),
+      ]).then(() => ({ migrated: true }));
     case "umbraOperation": {
       const params = message.params as UmbraOperationParams | undefined;
       if (!params?.walletPublicKey || !params.network) {

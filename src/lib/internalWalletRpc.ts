@@ -3,6 +3,8 @@ import {
   VAULKYRIE_INTERNAL_RPC,
   type CreatePrivacyVaultAccountParams,
   type CreatePrivacyVaultAccountResult,
+  type CreateQuantumVaultKeyParams,
+  type CreateQuantumVaultKeyResult,
   type InternalRpcMethod,
   type InternalRpcRequest,
   type InternalRpcResponse,
@@ -10,6 +12,13 @@ import {
   type InternalSignMessageResult,
   type InternalSignTransactionParams,
   type InternalSignTransactionResult,
+  type MigrateSensitiveRecordsResult,
+  type PrepareQuantumVaultAdvanceParams,
+  type PrepareQuantumVaultAdvanceResult,
+  type RevealPrivacyVaultRecoveryParams,
+  type RevealPrivacyVaultRecoveryResult,
+  type RevealQuantumVaultRecoveryParams,
+  type RevealQuantumVaultRecoveryResult,
   type UmbraOperationParams,
   type WalletSessionStatusResult,
 } from "@/extension/messages";
@@ -64,7 +73,29 @@ async function callDirectInternalWalletRpc<TResult>(
       if (!payload?.name?.trim()) {
         throw new Error("Privacy Vault name is required.");
       }
-      return createPrivacyVaultAccountInBackground(payload.name.trim()) as Promise<TResult>;
+      return createPrivacyVaultAccountInBackground(payload.name.trim(), { mnemonic: payload.mnemonic }) as Promise<TResult>;
+    }
+    case "createQuantumVaultKey": {
+      const { createQuantumVaultKeyInBackground } = await import("@/background/quantumVaultSession");
+      const payload = params as CreateQuantumVaultKeyParams | undefined;
+      if (!payload?.mode) {
+        throw new Error("PQC key mode is required.");
+      }
+      return createQuantumVaultKeyInBackground(payload) as Promise<TResult>;
+    }
+    case "prepareQuantumVaultAdvance": {
+      const { prepareQuantumVaultAdvanceInBackground } = await import("@/background/quantumVaultSession");
+      const payload = params as PrepareQuantumVaultAdvanceParams | undefined;
+      if (
+        !payload?.walletPublicKey ||
+        !payload.currentRootHex ||
+        !payload.destinationAddress ||
+        !payload.amountLamports ||
+        !payload.sequence
+      ) {
+        throw new Error("PQC advance payload is incomplete.");
+      }
+      return prepareQuantumVaultAdvanceInBackground(payload) as Promise<TResult>;
     }
     case "signPrivacyVaultMessage": {
       const { signPrivacyVaultMessageInBackground } = await import("@/background/vaultSession");
@@ -95,6 +126,29 @@ async function callDirectInternalWalletRpc<TResult>(
         payload.serializedTransaction,
         payload.kind,
       ) as Promise<TResult>;
+    }
+    case "revealPrivacyVaultRecovery": {
+      const { revealPrivacyVaultRecoveryMaterialInBackground } = await import("@/background/vaultSession");
+      const payload = params as RevealPrivacyVaultRecoveryParams | undefined;
+      if (!payload?.walletPublicKey || !payload.password) {
+        throw new Error("Privacy Vault recovery payload is incomplete.");
+      }
+      return revealPrivacyVaultRecoveryMaterialInBackground(payload.walletPublicKey, payload.password) as Promise<TResult>;
+    }
+    case "revealQuantumVaultRecovery": {
+      const { revealQuantumVaultRecoveryMaterialInBackground } = await import("@/background/quantumVaultSession");
+      const payload = params as RevealQuantumVaultRecoveryParams | undefined;
+      if (!payload?.walletPublicKey || !payload.password) {
+        throw new Error("PQC recovery payload is incomplete.");
+      }
+      return revealQuantumVaultRecoveryMaterialInBackground(payload.walletPublicKey, payload.password) as Promise<TResult>;
+    }
+    case "migrateSensitiveRecords": {
+      const { migratePrivacyVaultRecordsInBackground } = await import("@/background/vaultSession");
+      const { migrateQuantumVaultRecordsInBackground } = await import("@/background/quantumVaultSession");
+      await migratePrivacyVaultRecordsInBackground();
+      await migrateQuantumVaultRecordsInBackground();
+      return { migrated: true } as TResult;
     }
     case "umbraOperation": {
       const payload = params as UmbraOperationParams | undefined;
@@ -223,6 +277,18 @@ export async function createPrivacyVaultAccountInBackground(
   return callInternalWalletRpc<CreatePrivacyVaultAccountResult>("createPrivacyVaultAccount", params as unknown as Record<string, unknown>);
 }
 
+export async function createQuantumVaultKeyInBackground(
+  params: CreateQuantumVaultKeyParams,
+): Promise<CreateQuantumVaultKeyResult> {
+  return callInternalWalletRpc<CreateQuantumVaultKeyResult>("createQuantumVaultKey", params as unknown as Record<string, unknown>);
+}
+
+export async function prepareQuantumVaultAdvanceInBackground(
+  params: PrepareQuantumVaultAdvanceParams,
+): Promise<PrepareQuantumVaultAdvanceResult> {
+  return callInternalWalletRpc<PrepareQuantumVaultAdvanceResult>("prepareQuantumVaultAdvance", params as unknown as Record<string, unknown>);
+}
+
 export async function signPrivacyVaultMessageInBackground(
   params: InternalSignMessageParams,
 ): Promise<InternalSignMessageResult> {
@@ -233,6 +299,22 @@ export async function signPrivacyVaultTransactionInBackground(
   params: InternalSignTransactionParams,
 ): Promise<InternalSignTransactionResult> {
   return callInternalWalletRpc<InternalSignTransactionResult>("signPrivacyVaultTransaction", params as unknown as Record<string, unknown>);
+}
+
+export async function revealPrivacyVaultRecoveryInBackground(
+  params: RevealPrivacyVaultRecoveryParams,
+): Promise<RevealPrivacyVaultRecoveryResult> {
+  return callInternalWalletRpc<RevealPrivacyVaultRecoveryResult>("revealPrivacyVaultRecovery", params as unknown as Record<string, unknown>);
+}
+
+export async function revealQuantumVaultRecoveryInBackground(
+  params: RevealQuantumVaultRecoveryParams,
+): Promise<RevealQuantumVaultRecoveryResult> {
+  return callInternalWalletRpc<RevealQuantumVaultRecoveryResult>("revealQuantumVaultRecovery", params as unknown as Record<string, unknown>);
+}
+
+export async function migrateSensitiveRecordsInBackground(): Promise<MigrateSensitiveRecordsResult> {
+  return callInternalWalletRpc<MigrateSensitiveRecordsResult>("migrateSensitiveRecords");
 }
 
 export async function invokeUmbraOperationInBackground<TResult>(

@@ -24,6 +24,7 @@ import { DKGCeremony } from "@/components/ceremony/DKGCeremony";
 import { JoinCeremony } from "@/components/ceremony/JoinCeremony";
 import { getWalletAccountKind } from "@/lib/walletAccounts";
 import { hasWalletSessionPassword } from "@/lib/walletSession";
+import { migrateSensitiveRecordsInBackground } from "@/lib/internalWalletRpc";
 import { useWalletStore } from "@/store/walletStore";
 import type { VaultConfig } from "@/components/onboarding/VaultConfigStep";
 import type { WalletView } from "@/types";
@@ -81,6 +82,9 @@ function App() {
           setIsLocked(true);
           setView("lock");
         } else {
+          await migrateSensitiveRecordsInBackground().catch((error) => {
+            console.warn("Failed to migrate Vaulkyrie sensitive records.", error);
+          });
           setIsLocked(false);
           setView(isOnboarded ? (requestedView ?? "dashboard") : "onboarding");
         }
@@ -400,12 +404,6 @@ function App() {
         );
 
       case "recovery":
-        if (activeAccountKind === "privacy-vault") {
-          return renderThresholdOnlyView(
-            "Recovery coordination only",
-            "Onchain recovery sessions apply to Threshold Vaults. Privacy Vaults use encrypted backup export from Settings instead.",
-          );
-        }
         return <RecoveryView onNavigate={setView} />;
 
       case "contacts":

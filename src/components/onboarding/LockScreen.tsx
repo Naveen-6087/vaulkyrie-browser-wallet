@@ -3,6 +3,7 @@ import { motion } from "framer-motion";
 import { Lock, Eye, EyeOff, Loader2 } from "lucide-react";
 import { hashPassword, verifyPassword } from "@/lib/crypto";
 import { setWalletSessionPassword } from "@/lib/walletSession";
+import { migrateSensitiveRecordsInBackground } from "@/lib/internalWalletRpc";
 import { useWalletStore } from "@/store/walletStore";
 import logo from "@/assets/xlogo.jpeg";
 
@@ -58,6 +59,7 @@ export function LockScreen({ onUnlock }: LockScreenProps) {
         const { hash, salt } = await hashPassword(password);
         setPasswordHash(hash, salt);
         await setWalletSessionPassword(password);
+        await migrateSensitiveRecordsInBackground();
         onUnlock();
       } catch {
         setError("Failed to set password");
@@ -75,6 +77,7 @@ export function LockScreen({ onUnlock }: LockScreenProps) {
         if (valid) {
           resetUnlockFailures();
           await setWalletSessionPassword(password);
+          await migrateSensitiveRecordsInBackground();
           onUnlock();
         } else {
           const { blockedUntil } = registerUnlockFailure();

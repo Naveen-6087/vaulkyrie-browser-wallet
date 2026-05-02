@@ -2,10 +2,20 @@ import type { MasterSeedGeneratorFunction } from "@umbra-privacy/sdk";
 import { assertMasterSeed, type MasterSeed } from "@umbra-privacy/sdk/types";
 import type { GetUmbraClientDeps } from "@umbra-privacy/sdk";
 import type { UmbraNetworkId } from "@/types";
-import {
-  loadUmbraMasterSeedInBackground,
-  storeUmbraMasterSeedInBackground,
-} from "@/background/vaultSession";
+
+async function loadUmbraMasterSeedForStorage(walletPublicKey: string, network: UmbraNetworkId) {
+  const { loadUmbraMasterSeedInBackground } = await import("@/background/vaultSession");
+  return loadUmbraMasterSeedInBackground(walletPublicKey, network);
+}
+
+async function storeUmbraMasterSeedForStorage(
+  walletPublicKey: string,
+  network: UmbraNetworkId,
+  seed: Uint8Array,
+): Promise<void> {
+  const { storeUmbraMasterSeedInBackground } = await import("@/background/vaultSession");
+  return storeUmbraMasterSeedInBackground(walletPublicKey, network, seed);
+}
 
 export function createBackgroundUmbraMasterSeedStorage(
   walletPublicKey: string,
@@ -16,7 +26,7 @@ export function createBackgroundUmbraMasterSeedStorage(
 ): NonNullable<GetUmbraClientDeps["masterSeedStorage"]> {
   return {
     load: async () => {
-      const result = await loadUmbraMasterSeedInBackground(walletPublicKey, network);
+      const result = await loadUmbraMasterSeedForStorage(walletPublicKey, network);
       if (!result.exists) {
         return { exists: false };
       }
@@ -26,7 +36,7 @@ export function createBackgroundUmbraMasterSeedStorage(
     generate: options?.generate ?? createRandomMasterSeedGenerator(),
     store: async (seed) => {
       try {
-        await storeUmbraMasterSeedInBackground(walletPublicKey, network, Uint8Array.from(seed));
+        await storeUmbraMasterSeedForStorage(walletPublicKey, network, Uint8Array.from(seed));
         return { success: true };
       } catch (error) {
         return {

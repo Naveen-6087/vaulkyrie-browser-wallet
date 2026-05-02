@@ -19,7 +19,15 @@ export default defineConfig({
     },
   },
   optimizeDeps: {
-    include: ["buffer", "@solana/web3.js", "@solana/spl-token"],
+    include: [
+      "buffer",
+      "@solana/web3.js",
+      "@solana/spl-token",
+      "@solana/kit",
+      "@umbra-privacy/sdk",
+      "@umbra-privacy/umbra-codama",
+      "@noble/hashes/sha2.js",
+    ],
   },
   define: {
     "globalThis.process": JSON.stringify({ env: {} }),

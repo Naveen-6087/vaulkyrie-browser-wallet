@@ -147,6 +147,12 @@ export interface UmbraActivityRecord {
   updatedAt: number;
 }
 
+export interface PqcDerivationPosition {
+  wallet: number;
+  parent: number;
+  child: number;
+}
+
 export type WalletView =
   | "dashboard"
   | "send"
