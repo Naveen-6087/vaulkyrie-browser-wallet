@@ -22,6 +22,19 @@ export type { RelaySessionMetadata };
 
 export type RelayMode = "local" | "remote";
 const LOCAL_RELAY_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
+const LOCAL_DEVELOPMENT_RELAY_URL = "ws://localhost:8765";
+
+export const VAULKYRIE_MANAGED_RELAY_URL = "wss://relay.vaulkyrie.xyz";
+
+function resolveDefaultRelayUrl(): string {
+  const configured = import.meta.env.VITE_RELAY_URL?.trim();
+  if (configured) return configured;
+
+  const hosted = inferHostedRelayUrl();
+  if (hosted) return hosted;
+
+  return import.meta.env.DEV ? LOCAL_DEVELOPMENT_RELAY_URL : VAULKYRIE_MANAGED_RELAY_URL;
+}
 
 function inferHostedRelayUrl(): string | null {
   if (typeof window === "undefined") {
@@ -329,6 +342,5 @@ export function createRelay(opts: CreateRelayOptions): RelayAdapter {
   });
 }
 
-/** Default relay server URL — can be overridden via environment or settings */
-export const DEFAULT_RELAY_URL =
-  import.meta.env.VITE_RELAY_URL?.trim() || inferHostedRelayUrl() || "ws://localhost:8765";
+/** Default relay server URL. Dev builds use localhost; packaged builds use the hosted relay. */
+export const DEFAULT_RELAY_URL = resolveDefaultRelayUrl();

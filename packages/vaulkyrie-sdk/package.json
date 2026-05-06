@@ -1,0 +1,38 @@
+{
+  "name": "@vaulkyrie/sdk",
+  "version": "0.1.0",
+  "description": "Browser-oriented TypeScript SDK for building Vaulkyrie Solana wallet integrations.",
+  "type": "module",
+  "license": "MIT",
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ],
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./spendBindings": {
+      "types": "./dist/spendBindings.d.ts",
+      "import": "./dist/spendBindings.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "@solana/web3.js": "^1.98.4",
+    "buffer": "^6.0.3"
+  },
+  "devDependencies": {
+    "typescript": "~6.0.2"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
