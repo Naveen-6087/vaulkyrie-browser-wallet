@@ -1,12 +1,12 @@
 import {
   Home,
   ArrowUpRight,
-  ArrowLeftRight,
   ArrowDownLeft,
   Settings,
   Atom,
   Shield,
   RadioTower,
+  Bell,
 } from "lucide-react";
 import { getWalletAccountKind } from "@/lib/walletAccounts";
 import { cn } from "@/lib/utils";
@@ -24,8 +24,8 @@ export function BottomNav({ active, onNavigate }: BottomNavProps) {
     getWalletAccountKind(activeAccount) === "privacy-vault"
       ? [
           { view: "dashboard", icon: Home, label: "Home" },
-          { view: "swap", icon: ArrowLeftRight, label: "Swap" },
           { view: "privacy", icon: Shield, label: "Privacy" },
+          { view: "notifications", icon: Bell, label: "Sign" },
           { view: "receive", icon: ArrowDownLeft, label: "Receive" },
           { view: "activity", icon: RadioTower, label: "Activity" },
           { view: "settings", icon: Settings, label: "Settings" },
@@ -33,8 +33,8 @@ export function BottomNav({ active, onNavigate }: BottomNavProps) {
       : [
           { view: "dashboard", icon: Home, label: "Home" },
           { view: "send", icon: ArrowUpRight, label: "Send" },
+          { view: "notifications", icon: Bell, label: "Sign" },
           { view: "quantum-vault", icon: Atom, label: "PQC" },
-          { view: "privacy", icon: Shield, label: "Privacy" },
           { view: "receive", icon: ArrowDownLeft, label: "Receive" },
           { view: "settings", icon: Settings, label: "Settings" },
         ];

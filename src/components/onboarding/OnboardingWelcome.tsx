@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Shield, Users, Zap, ChevronRight } from "lucide-react";
+import { Shield, Users, Zap, ChevronRight, Radio } from "lucide-react";
 import logo from "@/assets/xlogo.jpeg";
 import banner from "@/assets/xbannerv.jpeg";
 
@@ -134,6 +134,20 @@ export function OnboardingWelcome({
         </div>
 
         <div className="flex flex-col gap-3 mt-auto">
+          {onJoinCeremony && (
+            <button
+              onClick={onJoinCeremony}
+              className="w-full py-3.5 rounded-xl font-semibold text-sm cursor-pointer
+                         border border-primary/30 bg-primary/10 text-foreground
+                         hover:bg-primary/15 hover:border-primary/45 transition-[background-color,border-color,transform]
+                         flex items-center justify-center gap-2 active:scale-[0.985]
+                         focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+            >
+              <Radio className="h-4 w-4 text-primary" />
+              Join Ceremony
+            </button>
+          )}
+
           <motion.button
             whileHover={{ scale: 1.02 }}
             whileTap={{ scale: 0.98 }}
@@ -167,19 +181,6 @@ export function OnboardingWelcome({
           >
             Import Existing Vault
           </button>
-
-          {onJoinCeremony && (
-            <button
-              onClick={onJoinCeremony}
-              className="w-full py-3 rounded-xl font-medium text-sm cursor-pointer
-                         border border-border text-muted-foreground
-                         hover:bg-card hover:text-foreground hover:border-primary/30 transition-all
-                         flex items-center justify-center gap-2"
-            >
-              <Users className="h-4 w-4" />
-              Join Existing Ceremony
-            </button>
-          )}
         </div>
       </div>
     </div>

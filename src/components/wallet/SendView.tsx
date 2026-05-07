@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { ArrowUpRight, AlertCircle, Loader2, Check, ExternalLink, Users, ChevronDown, Radio } from "lucide-react";
+import { ArrowUpRight, AlertCircle, Loader2, Check, Copy, ExternalLink, Users, ChevronDown, Radio } from "lucide-react";
 import { PublicKey, SystemProgram, Transaction, LAMPORTS_PER_SOL } from "@solana/web3.js";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -18,6 +18,7 @@ import {
 import type { SignRequestPayload } from "@/services/relay/channelRelay";
 import { createRelaySessionMetadata } from "@/services/relay/sessionInvite";
 import { useWalletStore } from "@/store/walletStore";
+import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { createConnection, SOL_ICON } from "@/services/solanaRpc";
 import { buildSplTransferTransaction } from "@/services/splToken";
 import {
@@ -32,7 +33,7 @@ import {
   serializeWinterAuthoritySignerState,
 } from "@/services/quantum/winterAuthority";
 import { shortenAddress } from "@/lib/utils";
-import type { WalletView, Token } from "@/types";
+import type { NetworkId, WalletView, Token } from "@/types";
 import { VaulkyrieClient } from "@/sdk/client";
 import {
   createCommitSpendOrchestrationInstruction,
@@ -55,6 +56,9 @@ import {
 interface SendViewProps {
   balance: number;
   onNavigate: (view: WalletView) => void;
+  initialMode?: SendMode;
+  initialInvite?: string;
+  onInitialInviteConsumed?: () => void;
 }
 
 type SendPhase = "form" | "review" | "join-review" | "signing" | "coordinate" | "success" | "error";
@@ -225,7 +229,25 @@ function formatFeeLabel(lamports: number | null): string {
   return `~${(lamports / LAMPORTS_PER_SOL).toFixed(6)} SOL`;
 }
 
-export function SendView({ balance, onNavigate }: SendViewProps) {
+function showLocalSigningNotification(title: string, body: string) {
+  if (!("Notification" in window) || Notification.permission !== "granted") {
+    return;
+  }
+
+  try {
+    new Notification(title, { body });
+  } catch {
+    // Browser extensions may deny Notification construction in some popup contexts.
+  }
+}
+
+export function SendView({
+  balance,
+  onNavigate,
+  initialMode,
+  initialInvite,
+  onInitialInviteConsumed,
+}: SendViewProps) {
   const [recipient, setRecipient] = useState("");
   const [amount, setAmount] = useState("");
   const [error, setError] = useState("");
@@ -241,6 +263,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
   const [reviewAnalysis, setReviewAnalysis] = useState<ReviewAnalysisState>({ status: "idle" });
   const [selectedToken, setSelectedToken] = useState("SOL");
   const [showContacts, setShowContacts] = useState(false);
+  const { copy, isCopied } = useCopyToClipboard({ resetAfterMs: 1500 });
   const {
     activeAccount,
     network,
@@ -255,6 +278,7 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
     refreshTransactions,
     refreshVaultState,
     recordOrchestrationActivity,
+    recordSigningNotification,
   } = useWalletStore();
   const relayRef = useRef<RelayAdapter | null>(null);
   const orchestratorRef = useRef<SigningOrchestrator | null>(null);
@@ -305,6 +329,22 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
   }, [clearSigningTimeout]);
 
   useEffect(() => () => cleanupRelayState(), [cleanupRelayState]);
+
+  useEffect(() => {
+    if (initialMode) {
+      setMode(initialMode);
+      setPhase("form");
+      setError("");
+    }
+  }, [initialMode]);
+
+  useEffect(() => {
+    if (!initialInvite) return;
+    setMode("join");
+    setJoinSessionCode(initialInvite);
+    setError("");
+    onInitialInviteConsumed?.();
+  }, [initialInvite, onInitialInviteConsumed]);
 
   const queueOrHandleSigningMessage = useCallback((message: BufferedSigningMessage) => {
     const orchestrator = orchestratorRef.current;
@@ -961,10 +1001,20 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
           }
         },
         onSessionCreated: (session) => {
+          recordSigningNotification({
+            kind: "signing-invite",
+            title: "Signing invite ready",
+            detail: `Share this invite with the other ${requiredSigners - 1} signer${requiredSigners === 2 ? "" : "s"}.`,
+            accountPublicKey: activeAccount?.publicKey ?? null,
+            invite: session.invite,
+            verificationPhrase: session.verificationPhrase,
+            network,
+          });
+          showLocalSigningNotification("Vaulkyrie signing invite", session.verificationPhrase);
           onStatus(
             cosigner?.enabled
               ? `Signing session created. Requesting ${cosigner.label}...`
-              : `Signing session created: ${session.invite}. Share with other signers.`,
+              : "Signing invite created. Other signers can join from Signing Inbox.",
           );
           setSigningSessionCode(session.invite);
           setRelaySessionInfo(session);
@@ -991,11 +1041,13 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
     });
   }, [
     activeAccount?.name,
+    activeAccount?.publicKey,
     cleanupRelayState,
     network,
     parsedAmount,
     recipient,
     queueOrHandleSigningMessage,
+    recordSigningNotification,
     relayUrl,
     runSigningOrchestrator,
     selectedToken,
@@ -1051,6 +1103,16 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
               return;
             }
 
+            recordSigningNotification({
+              kind: "signing-request",
+              title: "Approval requested",
+              detail: request.summary ?? `${request.amount} ${request.token} to ${shortenAddress(request.recipient, 6)}`,
+              accountPublicKey: activeAccount?.publicKey ?? null,
+              invite: parsedJoinSession.invite,
+              verificationPhrase: parsedJoinSession.verificationPhrase,
+              network: request.network as NetworkId,
+            });
+            showLocalSigningNotification("Vaulkyrie signing request", request.summary ?? "Review the request in Vaulkyrie.");
             setPendingSignRequest(request);
             setSigningMessage(request.summary ?? `Review the ${request.token} transfer request before signing.`);
             setPhase("join-review");
@@ -1088,7 +1150,15 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
       setError(err instanceof Error ? err.message : String(err));
       setPhase("error");
     }
-  }, [cleanupRelayState, loadDkgState, parsedJoinSession, queueOrHandleSigningMessage, relayUrl]);
+  }, [
+    activeAccount?.publicKey,
+    cleanupRelayState,
+    loadDkgState,
+    parsedJoinSession,
+    queueOrHandleSigningMessage,
+    recordSigningNotification,
+    relayUrl,
+  ]);
 
   const handleApproveSigningRequest = useCallback(async () => {
     if (!pendingSignRequest || !relayRef.current) {
@@ -1193,11 +1263,25 @@ export function SendView({ balance, onNavigate }: SendViewProps) {
               {signingSessionCode}
             </code>
             <p className="text-[10px] text-muted-foreground mt-1">
-              Share this {relaySessionInfo.authToken ? "invite" : "code"} with other vault signers
+              Other signers can paste this in Signing Inbox
             </p>
             <p className="text-[11px] text-muted-foreground">
               Verify phrase: <span className="font-mono text-foreground">{relaySessionInfo.verificationPhrase}</span>
             </p>
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              className="mt-2 gap-2"
+              onClick={() => copy(signingSessionCode, "send-signing-invite")}
+            >
+              {isCopied("send-signing-invite") ? (
+                <Check className="h-3.5 w-3.5 text-success" />
+              ) : (
+                <Copy className="h-3.5 w-3.5" />
+              )}
+              Copy invite
+            </Button>
           </div>
         )}
         <p className="text-xs text-muted-foreground text-center px-8 mt-2">

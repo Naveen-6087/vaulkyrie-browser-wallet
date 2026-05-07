@@ -491,10 +491,9 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
       const myKeyPackage = dkg.keyPackages?.[myParticipantId];
       const availableKeyIds = Object.keys(dkg.keyPackages ?? {}).map(Number);
       relay = relayRef.current;
-      isMultiDevice = dkg.isMultiDevice === true;
-      const useServerCosigner = !isMultiDevice
-        && Boolean(dkg.cosigner?.enabled)
+      const useServerCosigner = Boolean(dkg.cosigner?.enabled)
         && availableKeyIds.length < dkg.threshold;
+      isMultiDevice = dkg.isMultiDevice === true && !useServerCosigner;
 
       const result = await withRpcFallback(network, async (connection) => {
         const prepared = await prepareVaultBootstrapTransaction({
@@ -938,7 +937,7 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
                   threshold: config.threshold,
                   participants: config.totalParticipants,
                   participantId: 1,
-                  isMultiDevice: cosignerConfig ? true : undefined,
+                  isMultiDevice: cosignerConfig ? false : undefined,
                   cosigner,
                   createdAt: Date.now(),
                 }),

@@ -25,12 +25,13 @@ import {
   Share2,
 } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
-import { LAMPORTS_PER_SOL, PublicKey, SystemProgram, Transaction, type Connection } from "@solana/web3.js";
+import { ComputeBudgetProgram, LAMPORTS_PER_SOL, PublicKey, SystemProgram, Transaction, type Connection } from "@solana/web3.js";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { ScreenHeader } from "@/components/layout/ScreenHeader";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
+import { cn } from "@/lib/utils";
 import {
   bytesToHex,
   hexToBytes as hexToQuantumBytes,
@@ -91,6 +92,41 @@ function crossDeviceRelayUnavailableMessage(): string {
   return "Cross-device relay is unavailable right now. Check your internet connection, then try again. Advanced users can switch to a self-hosted relay in Settings > Cross-device Relay.";
 }
 
+function humanizeQuantumError(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  if (/invalid public key|Non-base58|Invalid character/i.test(raw)) {
+    return "Enter a valid Solana address.";
+  }
+  if (/insufficient|0x1|fund/i.test(raw)) {
+    return "This vault needs more SOL for the amount and network fees.";
+  }
+  if (/relay|websocket|connection/i.test(raw)) {
+    return crossDeviceRelayUnavailableMessage();
+  }
+  if (/timed out|timeout/i.test(raw)) {
+    return "Signing timed out. Ask the other signer to open Signing Inbox and try again.";
+  }
+  if (/key package|DKG/i.test(raw)) {
+    return "This device is missing threshold signing keys. Restore the vault or join from a signer device.";
+  }
+  if (/Winternitz|root|PQC/i.test(raw)) {
+    return raw;
+  }
+  return raw || "The PQC action failed. Check the network and try again.";
+}
+
+function showLocalSigningNotification(title: string, body: string) {
+  if (!("Notification" in window) || Notification.permission !== "granted") {
+    return;
+  }
+
+  try {
+    new Notification(title, { body });
+  } catch {
+    // Extension popups can deny direct Notification construction.
+  }
+}
+
 // ── Vault Status ─────────────────────────────────────────────────────
 
 const VaultStatus = {
@@ -130,6 +166,7 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
     getWinterAuthorityState,
     refreshBalances,
     refreshTransactions,
+    recordSigningNotification,
   } = useWalletStore();
   const [vault, setVault] = useState<QuantumVaultState>({
     status: VaultStatus.None,
@@ -151,12 +188,15 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
   >("overview");
   const [isProcessing, setIsProcessing] = useState(false);
   const [statusMessage, setStatusMessage] = useState("");
+  const [statusTone, setStatusTone] = useState<"info" | "success" | "error">("info");
+  const [lastTransactionSignature, setLastTransactionSignature] = useState("");
   const [migrationAmount, setMigrationAmount] = useState("");
   const [splitAmount, setSplitAmount] = useState("");
   const [splitDestination, setSplitDestination] = useState("");
   const [mnemonicInput, setMnemonicInput] = useState("");
   const [showMnemonicImport, setShowMnemonicImport] = useState(false);
   const [generatedMnemonic, setGeneratedMnemonic] = useState("");
+  const [showTechnicalDetails, setShowTechnicalDetails] = useState(false);
   const [sponsorStatus, setSponsorStatus] = useState<PqcSponsorStatus | null>(null);
   const [lastProofHex, setLastProofHex] = useState("");
   const [signingSessionCode, setSigningSessionCode] = useState("");
@@ -166,6 +206,24 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
   const orchestratorRef = useRef<SigningOrchestrator | null>(null);
   const pendingSigningMessagesRef = useRef<BufferedSigningMessage[]>([]);
   const signingTimeoutRef = useRef<number | null>(null);
+
+  const setInfo = useCallback((message: string) => {
+    setStatusTone("info");
+    setStatusMessage(message);
+  }, []);
+
+  const setSuccess = useCallback((message: string, signature?: string) => {
+    setStatusTone("success");
+    setStatusMessage(message);
+    if (signature) {
+      setLastTransactionSignature(signature);
+    }
+  }, []);
+
+  const setFriendlyError = useCallback((error: unknown) => {
+    setStatusTone("error");
+    setStatusMessage(humanizeQuantumError(error));
+  }, []);
 
   const clearSigningTimeout = useCallback(() => {
     if (signingTimeoutRef.current !== null) {
@@ -246,10 +304,9 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
     const dkg = loadDkgResult(activeAccount.publicKey);
     const availableKeyIds = Object.keys(dkg.keyPackages).map(Number);
     const hasLocalThreshold = availableKeyIds.length >= dkg.threshold;
-    const isMultiDevice = dkg.isMultiDevice === true;
-    const useServerCosigner = !isMultiDevice
-      && Boolean(dkg.cosigner?.enabled)
+    const useServerCosigner = Boolean(dkg.cosigner?.enabled)
       && availableKeyIds.length < dkg.threshold;
+    const isMultiDevice = dkg.isMultiDevice === true && !useServerCosigner;
 
     if ((hasLocalThreshold && !isMultiDevice) || useServerCosigner) {
       cleanupRelayState();
@@ -379,10 +436,20 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
         onSessionCreated: (session) => {
           setSigningSessionCode(session.invite);
           setRelaySessionInfo(session);
+          recordSigningNotification({
+            kind: "pqc-signing",
+            title: "PQC signing invite ready",
+            detail: "Other signers can approve this PQC action from Signing Inbox.",
+            accountPublicKey: activeAccount.publicKey,
+            invite: session.invite,
+            verificationPhrase: session.verificationPhrase,
+            network,
+          });
+          showLocalSigningNotification("Vaulkyrie PQC signing", session.verificationPhrase);
           setStatusMessage(
             dkg.cosigner?.enabled
               ? `Signing session created. Requesting ${dkg.cosigner.label}...`
-              : `Signing session created: ${session.invite}. Share it with another signer.`,
+              : "Signing invite created. Other signers can join from Signing Inbox.",
           );
           if (dkg.cosigner?.enabled) {
             void requestCosignerSignature({ cosigner: dkg.cosigner, relayUrl, session })
@@ -422,6 +489,7 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
     cleanupRelayState,
     network,
     queueOrHandleSigningMessage,
+    recordSigningNotification,
     relayUrl,
     runSigningOrchestrator,
   ]);
@@ -547,12 +615,12 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
   const handleRequestPqcSetupAirdrop = async () => {
     if (!activeAccount?.publicKey) return;
     if (network !== "devnet") {
-      setStatusMessage("Devnet faucet is only available while the wallet network is set to devnet.");
+      setInfo("Switch to devnet to use setup funding.");
       return;
     }
 
     setIsProcessing(true);
-    setStatusMessage("Requesting 1 SOL for PQC wallet setup...");
+    setInfo("Requesting 1 SOL for setup...");
 
     try {
       const payer = new PublicKey(activeAccount.publicKey);
@@ -562,13 +630,10 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
         await connection.confirmTransaction({ signature: sig, ...latest }, "confirmed");
         return sig;
       });
-      setStatusMessage(`Devnet setup funding received. Tx: ${signature}`);
+      setSuccess("Devnet setup funding received.", signature);
       await refreshBalances();
     } catch (err) {
-      setStatusMessage(
-        `Faucet request failed: ${err instanceof Error ? err.message : String(err)}. ` +
-        `Send a small amount of devnet SOL to ${activeAccount.publicKey}, then retry.`,
-      );
+      setFriendlyError(err);
     } finally {
       setIsProcessing(false);
     }
@@ -579,7 +644,7 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
 
     setIsProcessing(true);
     setGeneratedMnemonic("");
-    setStatusMessage("Preparing PQC wallet setup...");
+    setInfo("Preparing PQC wallet setup...");
 
     try {
       const payer = new PublicKey(activeAccount.publicKey);
@@ -659,13 +724,11 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
       }
       setMnemonicInput("");
       setLastProofHex("");
-      setStatusMessage(
-        `PQC wallet opened with ${setupMode} setup. Fund ${vaultPda.toBase58()} before sending from it. Tx: ${signature}`,
-      );
+      setSuccess(`PQC wallet opened with ${setupMode} setup.`, signature);
       setActivePanel("overview");
       await Promise.all([refreshQuantumVault(), refreshBalances(), refreshTransactions()]);
     } catch (err) {
-      setStatusMessage(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      setFriendlyError(err);
     } finally {
       setIsProcessing(false);
     }
@@ -678,12 +741,12 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
 
     const amount = parseFloat(migrationAmount);
     if (isNaN(amount) || amount <= 0) {
-      setStatusMessage("Enter a valid migration amount.");
+      setFriendlyError("Enter a valid migration amount.");
       return;
     }
 
     setIsProcessing(true);
-    setStatusMessage("Preparing SOL migration into the PQC wallet PDA...");
+    setInfo("Preparing migration. Other signers may need to approve.");
 
     try {
       const from = new PublicKey(activeAccount.publicKey);
@@ -715,10 +778,10 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
       });
 
       setMigrationAmount("");
-      setStatusMessage(`SOL migrated into the PQC wallet. Tx: ${signature}`);
+      setSuccess("SOL migrated into the PQC wallet.", signature);
       await Promise.all([refreshQuantumVault(), refreshBalances(), refreshTransactions()]);
     } catch (err) {
-      setStatusMessage(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      setFriendlyError(err);
     } finally {
       setIsProcessing(false);
     }
@@ -731,12 +794,12 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
 
     const amount = parseFloat(splitAmount);
     if (isNaN(amount) || amount <= 0) {
-      setStatusMessage("Enter a valid amount");
+      setFriendlyError("Enter a valid amount.");
       return;
     }
 
     setIsProcessing(true);
-    setStatusMessage("Building rolling Winternitz send authorization...");
+    setInfo("Building rolling Winternitz send authorization...");
 
     try {
       const storedKey = getQuantumVaultKey(walletAddress);
@@ -769,7 +832,7 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
       const signatureBytes = Uint8Array.from(Buffer.from(preparedAdvance.signature, "base64"));
       setLastProofHex(preparedAdvance.proofPreviewHex);
 
-      await withRpcFallback(network, async (connection) => {
+      const signature = await withRpcFallback(network, async (connection) => {
         const ix = createAdvancePqcWalletInstruction(
           pqcWalletPda,
           destination,
@@ -780,7 +843,10 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
           },
         );
 
-        const tx = new Transaction().add(ix);
+        const tx = new Transaction().add(
+          ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }),
+          ix,
+        );
         return signAndSendQuantumTransaction(
           connection,
           tx,
@@ -794,13 +860,13 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
       });
 
       storeQuantumVaultKey(walletAddress, preparedAdvance.nextKeyRecord);
-      setStatusMessage("PQC wallet send completed. The Winternitz root rolled forward.");
+      setSuccess("PQC wallet send completed. The root rolled forward.", signature);
       setSplitAmount("");
       setSplitDestination("");
       setActivePanel("overview");
       await Promise.all([refreshQuantumVault(), refreshBalances(), refreshTransactions()]);
     } catch (err) {
-      setStatusMessage(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      setFriendlyError(err);
     } finally {
       setIsProcessing(false);
     }
@@ -864,6 +930,9 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
   const explorerClusterParam = network === "mainnet" ? "" : `?cluster=${network}`;
   const quantumVaultExplorerUrl = vault.vaultAddress
     ? `https://explorer.solana.com/address/${vault.vaultAddress}${explorerClusterParam}`
+    : null;
+  const lastTransactionExplorerUrl = lastTransactionSignature
+    ? `https://explorer.solana.com/tx/${lastTransactionSignature}${explorerClusterParam}`
     : null;
 
     // ── Render ───────────────────────────────────────────────────────
@@ -1121,59 +1190,60 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
             {/* Authority info */}
             <Card>
               <CardHeader>
-                <CardTitle className="text-sm">Wallet Info</CardTitle>
+                <CardTitle className="text-sm">PQC Wallet</CardTitle>
               </CardHeader>
               <CardContent className="space-y-3">
                 <div>
-                  <p className="text-[10px] text-muted-foreground mb-1">PQC Wallet Address</p>
-                  <div className="flex items-center gap-2">
-                    <code className="flex-1 text-[10px] font-mono bg-muted rounded px-2 py-1.5 truncate">
+                  <p className="text-[10px] text-muted-foreground mb-1">Address</p>
+                  <div className="flex items-center gap-2 rounded-xl border border-border/80 bg-muted/35 px-2 py-2">
+                    <code className="flex-1 truncate text-xs font-mono">
                       {vault.vaultAddress}
                     </code>
-                    <button
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
                       onClick={handleCopyVaultAddress}
-                      className="p-1 rounded hover:bg-accent transition-colors cursor-pointer"
+                      aria-label="Copy PQC wallet address"
                     >
                       {isCopied("vault-address") ? (
-                        <Check className="h-3 w-3 text-success" />
+                        <Check className="h-4 w-4 text-success" />
                       ) : (
-                        <Copy className="h-3 w-3 text-muted-foreground" />
+                        <Copy className="h-4 w-4" />
                       )}
-                    </button>
+                    </Button>
+                    {quantumVaultExplorerUrl && (
+                      <a
+                        href={quantumVaultExplorerUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex h-10 w-10 items-center justify-center rounded-xl text-muted-foreground transition-colors hover:bg-accent/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                        aria-label="View PQC wallet on explorer"
+                      >
+                        <ExternalLink className="h-4 w-4" />
+                      </a>
+                    )}
                   </div>
                 </div>
 
-                <div>
-                  <div className="flex justify-between mb-1">
-                    <p className="text-[10px] text-muted-foreground">Onchain Balance</p>
-                    <p className="text-[10px] font-mono text-primary">{vaultBalanceSol.toFixed(9)} SOL</p>
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="rounded-lg bg-muted/55 p-2">
+                    <p className="text-[10px] text-muted-foreground">Balance</p>
+                    <p className="mt-1 text-sm font-semibold font-mono text-primary">
+                      {vaultBalanceSol.toFixed(4)} SOL
+                    </p>
                   </div>
-                  <p className="text-[10px] text-muted-foreground mt-1">
-                    Migrate SOL here from your active Vaulkyrie wallet, then send from this PDA with rolling Winternitz authorization.
-                  </p>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2">
-                  <div className="p-2 rounded-lg bg-muted text-center">
-                    <p className="text-sm font-bold">{vault.hasLocalKey ? "Loaded" : "Missing"}</p>
-                    <p className="text-[10px] text-muted-foreground">Local Winternitz key</p>
+                  <div className="rounded-lg bg-muted/55 p-2">
+                    <p className="text-[10px] text-muted-foreground">Key</p>
+                    <p className="mt-1 text-sm font-semibold">{vault.hasLocalKey ? "Loaded" : "Missing"}</p>
                   </div>
-                  <div className="p-2 rounded-lg bg-muted text-center">
-                    <p className="text-sm font-bold">{vault.sequence?.toString() ?? "0"}</p>
-                    <p className="text-[10px] text-muted-foreground">Wallet sequence</p>
+                  <div className="rounded-lg bg-muted/55 p-2">
+                    <p className="text-[10px] text-muted-foreground">Seq</p>
+                    <p className="mt-1 truncate text-sm font-semibold font-mono">
+                      {vault.sequence?.toString() ?? "0"}
+                    </p>
                   </div>
                 </div>
-
-                {quantumVaultExplorerUrl && (
-                  <a
-                    href={quantumVaultExplorerUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-xs text-blue-400 hover:underline flex items-center gap-1"
-                  >
-                    View vault on Explorer <ExternalLink className="h-3 w-3" />
-                  </a>
-                )}
               </CardContent>
             </Card>
 
@@ -1217,24 +1287,45 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
               </CardContent>
             </Card>
 
-            {vault.publicKeyHashHex && (
+            {(vault.publicKeyHashHex || vault.walletIdHex || lastProofHex) && (
               <Card>
-                <CardContent className="pt-4 pb-4 space-y-2">
-                  <p className="text-[10px] text-muted-foreground">Winternitz Public Key Hash</p>
-                  <code className="text-[10px] font-mono text-muted-foreground break-all">
-                    {vault.publicKeyHashHex}
-                  </code>
-                </CardContent>
-              </Card>
-            )}
-
-            {vault.walletIdHex && (
-              <Card>
-                <CardContent className="pt-4 pb-4 space-y-2">
-                  <p className="text-[10px] text-muted-foreground">Stable Wallet ID</p>
-                  <code className="text-[10px] font-mono text-muted-foreground break-all">
-                    {vault.walletIdHex}
-                  </code>
+                <CardContent className="space-y-3 pt-4 pb-4">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="w-full"
+                    onClick={() => setShowTechnicalDetails((value) => !value)}
+                  >
+                    {showTechnicalDetails ? "Hide technical details" : "Show technical details"}
+                  </Button>
+                  {showTechnicalDetails && (
+                    <div className="space-y-3">
+                      {vault.publicKeyHashHex && (
+                        <div>
+                          <p className="text-[10px] text-muted-foreground">Winternitz public key hash</p>
+                          <code className="mt-1 block max-h-20 overflow-y-auto rounded bg-muted/50 px-2 py-2 text-[10px] font-mono text-muted-foreground break-all">
+                            {vault.publicKeyHashHex}
+                          </code>
+                        </div>
+                      )}
+                      {vault.walletIdHex && (
+                        <div>
+                          <p className="text-[10px] text-muted-foreground">Stable wallet ID</p>
+                          <code className="mt-1 block max-h-20 overflow-y-auto rounded bg-muted/50 px-2 py-2 text-[10px] font-mono text-muted-foreground break-all">
+                            {vault.walletIdHex}
+                          </code>
+                        </div>
+                      )}
+                      {lastProofHex && (
+                        <div>
+                          <p className="text-[10px] text-muted-foreground">Last proof</p>
+                          <code className="mt-1 block max-h-24 overflow-y-auto rounded bg-muted/50 px-2 py-2 text-[10px] font-mono text-muted-foreground break-all">
+                            {lastProofHex}
+                          </code>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </CardContent>
               </Card>
             )}
@@ -1249,6 +1340,9 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
                   The migration uses your normal threshold signer; later withdrawal uses the
                   rolling post-quantum authorization.
                 </p>
+                <div className="rounded-xl border border-primary/25 bg-primary/5 px-3 py-2 text-xs text-muted-foreground">
+                  Multi-device vaults will create a signing invite. Other signers can approve it from Signing Inbox.
+                </div>
                 <div>
                   <label className="text-xs text-muted-foreground block mb-1">Amount (SOL)</label>
                   <Input
@@ -1272,6 +1366,14 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
                     <Shield className="h-4 w-4" />
                   )}
                   Migrate SOL
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full"
+                  onClick={() => onNavigate("notifications")}
+                >
+                  Open Signing Inbox
                 </Button>
               </CardContent>
             </Card>
@@ -1325,18 +1427,6 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
                       ? "Local Winter signer state is loaded. Authority advances roll to a fresh root after each high-risk admin authorization."
                       : `Legacy XMSS authority tree. Next leaf: ${vault.authorityNextLeafIndex ?? 0}.`}
                   </p>
-                </CardContent>
-              </Card>
-            )}
-
-            {/* Last proof */}
-            {lastProofHex && (
-              <Card>
-                <CardContent className="pt-4 pb-4">
-                  <p className="text-[10px] text-muted-foreground mb-1">Last Proof</p>
-                  <code className="text-[10px] font-mono text-muted-foreground break-all">
-                    {lastProofHex}
-                  </code>
                 </CardContent>
               </Card>
             )}
@@ -1441,14 +1531,29 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
           <CardContent className="space-y-2">
             {signingSessionCode ? (
               <>
-                <Input
-                  value={signingSessionCode}
-                  readOnly
-                  className="font-mono text-xs"
-                  onFocus={(event) => event.currentTarget.select()}
-                />
+                <div className="flex items-center gap-2">
+                  <Input
+                    value={signingSessionCode}
+                    readOnly
+                    className="font-mono text-xs"
+                    onFocus={(event) => event.currentTarget.select()}
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    onClick={() => copy(signingSessionCode, "pqc-signing-invite")}
+                    aria-label="Copy signing invite"
+                  >
+                    {isCopied("pqc-signing-invite") ? (
+                      <Check className="h-4 w-4 text-success" />
+                    ) : (
+                      <Copy className="h-4 w-4" />
+                    )}
+                  </Button>
+                </div>
                 <p className="text-[10px] text-muted-foreground">
-                  Open Send &gt; Join Signing Session on another signer device and paste this invite.
+                  Open Signing Inbox on another signer device and paste this invite.
                 </p>
                 <p className="text-[11px] text-muted-foreground">
                   Verify phrase: <span className="font-mono text-foreground">{relaySessionInfo.verificationPhrase}</span>
@@ -1463,15 +1568,41 @@ export function QuantumVault({ walletAddress, onNavigate }: QuantumVaultProps) {
         </Card>
       )}
 
-      {/* Status message */}
       {statusMessage && (
-        <motion.p
+        <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
-          className="text-xs text-center text-muted-foreground px-2"
+          className={cn(
+            "rounded-xl border px-3 py-3 text-xs",
+            statusTone === "error" && "border-destructive/35 bg-destructive/10 text-destructive",
+            statusTone === "success" && "border-success/30 bg-success/10 text-success",
+            statusTone === "info" && "border-border/80 bg-card/55 text-muted-foreground",
+          )}
         >
-          {statusMessage}
-        </motion.p>
+          <div className="flex items-start gap-2">
+            {statusTone === "error" ? (
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            ) : statusTone === "success" ? (
+              <Check className="mt-0.5 h-4 w-4 shrink-0" />
+            ) : (
+              <Info className="mt-0.5 h-4 w-4 shrink-0" />
+            )}
+            <div className="min-w-0 flex-1">
+              <p className="leading-relaxed">{statusMessage}</p>
+              {lastTransactionExplorerUrl && statusTone === "success" && (
+                <a
+                  href={lastTransactionExplorerUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="mt-2 inline-flex items-center gap-1 text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                >
+                  View transaction
+                  <ExternalLink className="h-3.5 w-3.5" />
+                </a>
+              )}
+            </div>
+          </div>
+        </motion.div>
       )}
     </div>
   );

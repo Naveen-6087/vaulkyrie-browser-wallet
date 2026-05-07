@@ -378,6 +378,12 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
                 />
                 <SettingRow
                   icon={Bell}
+                  label="Signing Inbox"
+                  value="Join ceremonies and approve multi-device requests"
+                  onClick={() => onNavigate("notifications")}
+                />
+                <SettingRow
+                  icon={Bell}
                   label="DApp Approvals"
                   value="Review extension connection and signature prompts"
                   onClick={() => onNavigate("approval")}
@@ -385,8 +391,24 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
                 <SettingRow
                   icon={Info}
                   label="About Vaulkyrie"
-                  value="v0.1.0 · Solana threshold and privacy wallet"
+                  value="v0.1.0 · Policies and product details below"
                 />
+              </div>
+            </Card>
+
+            <Card className="overflow-hidden">
+              <div className="border-b border-border/70 px-4 py-3">
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                  About Vaulkyrie
+                </p>
+              </div>
+              <div className="space-y-3 p-4">
+                <p className="text-sm font-medium">Threshold, privacy, and PQC wallet for Solana.</p>
+                <div className="grid gap-2 text-xs text-muted-foreground">
+                  <p>Signatures are user approved. Vaulkyrie does not auto-sign transactions.</p>
+                  <p>Recovery phrases, local keys, and encrypted backups must stay offline and private.</p>
+                  <p>Multi-device signing uses relay invites. Verify the phrase before approving.</p>
+                </div>
               </div>
             </Card>
 

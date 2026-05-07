@@ -50,6 +50,19 @@ export interface SpendOrchestrationActivity {
   orchestrationAddress: string;
 }
 
+export interface SigningNotification {
+  id: string;
+  kind: "signing-invite" | "signing-request" | "pqc-signing" | "activity";
+  title: string;
+  detail: string;
+  accountPublicKey?: string | null;
+  invite?: string | null;
+  verificationPhrase?: string | null;
+  network: NetworkId;
+  createdAt: number;
+  read: boolean;
+}
+
 export interface RecoverySessionRecord {
   id: string;
   accountPublicKey: string;
@@ -160,6 +173,7 @@ export type WalletView =
   | "privacy"
   | "swap"
   | "activity"
+  | "notifications"
   | "settings"
   | "recovery"
   | "vault"

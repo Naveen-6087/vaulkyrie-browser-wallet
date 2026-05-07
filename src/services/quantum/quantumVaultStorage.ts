@@ -1,5 +1,7 @@
 import { decryptString, encryptString } from "@/lib/crypto";
 import {
+  deriveSolanaWinternitzKeyPairFromMnemonic,
+  deriveSolanaWinternitzKeyPairFromSeed,
   deriveWotsKeyPairFromMnemonic,
   deriveWotsKeyPairFromSeed,
   generateWotsKeyPair,
@@ -195,7 +197,13 @@ export async function loadQuantumVaultWorkingState(
       };
     }
     if (payload.source === "bip39") {
-      const currentKeyPair = await deriveWotsKeyPairFromMnemonic(payload.mnemonic, payload.position);
+      let currentKeyPair = await deriveSolanaWinternitzKeyPairFromMnemonic(payload.mnemonic, payload.position);
+      if (bytesToHex(currentKeyPair.publicKeyHash) !== record.currentPublicKeyHashHex) {
+        const legacyKeyPair = await deriveWotsKeyPairFromMnemonic(payload.mnemonic, payload.position);
+        if (bytesToHex(legacyKeyPair.publicKeyHash) === record.currentPublicKeyHashHex) {
+          currentKeyPair = legacyKeyPair;
+        }
+      }
       return {
         workingState: {
           walletId: hexToBytes(payload.walletIdHex),
@@ -208,7 +216,13 @@ export async function loadQuantumVaultWorkingState(
         },
       };
     }
-    const currentKeyPair = await deriveWotsKeyPairFromSeed(hexToBytes(payload.seedHex), payload.position);
+    let currentKeyPair = await deriveSolanaWinternitzKeyPairFromSeed(hexToBytes(payload.seedHex), payload.position);
+    if (bytesToHex(currentKeyPair.publicKeyHash) !== record.currentPublicKeyHashHex) {
+      const legacyKeyPair = await deriveWotsKeyPairFromSeed(hexToBytes(payload.seedHex), payload.position);
+      if (bytesToHex(legacyKeyPair.publicKeyHash) === record.currentPublicKeyHashHex) {
+        currentKeyPair = legacyKeyPair;
+      }
+    }
     return {
       workingState: {
         walletId: hexToBytes(payload.walletIdHex),

@@ -14,6 +14,7 @@ import type {
   WalletView,
   SpendOrchestrationActivity,
   RecoverySessionRecord,
+  SigningNotification,
   UmbraAccountRecord,
   UmbraActivityRecord,
   UmbraNetworkId,
@@ -168,6 +169,7 @@ export interface PersistedWalletState {
   xmssTrees: Record<string, string>;
   winterAuthorityStates: Record<string, string>;
   quantumVaultKeys: Record<string, QuantumVaultStoredKey>;
+  signingNotifications: SigningNotification[];
   orchestrationHistory: Record<string, SpendOrchestrationActivity[]>;
   recoverySessions: Record<string, RecoverySessionRecord[]>;
   umbraAccounts: Record<string, Partial<Record<UmbraNetworkId, UmbraAccountRecord>>>;
@@ -248,6 +250,9 @@ interface WalletState extends PersistedWalletState {
   storeQuantumVaultKey: (publicKey: string, serialized: QuantumVaultStoredKey) => void;
   getQuantumVaultKey: (publicKey: string) => QuantumVaultStoredKey | null;
   clearQuantumVaultKey: (publicKey: string) => void;
+  recordSigningNotification: (notification: Omit<SigningNotification, "id" | "createdAt" | "read"> & Partial<Pick<SigningNotification, "id" | "createdAt" | "read">>) => void;
+  markSigningNotificationRead: (id: string) => void;
+  clearSigningNotifications: () => void;
 
   recordOrchestrationActivity: (publicKey: string, activity: SpendOrchestrationActivity) => void;
   getOrchestrationHistory: (publicKey: string) => SpendOrchestrationActivity[];
@@ -292,6 +297,7 @@ export function pickPersistedWalletState(state: WalletState): PersistedWalletSta
     xmssTrees: state.xmssTrees,
     winterAuthorityStates: state.winterAuthorityStates,
     quantumVaultKeys: state.quantumVaultKeys,
+    signingNotifications: state.signingNotifications,
     orchestrationHistory: state.orchestrationHistory,
     recoverySessions: state.recoverySessions,
     umbraAccounts: state.umbraAccounts,
@@ -324,6 +330,7 @@ export const useWalletStore = create<WalletState>()(
       xmssTrees: {},
       winterAuthorityStates: {},
       quantumVaultKeys: {},
+      signingNotifications: [],
       orchestrationHistory: {},
       recoverySessions: {},
       umbraAccounts: {},
@@ -373,6 +380,9 @@ export const useWalletStore = create<WalletState>()(
           delete winterAuthorityStates[publicKey];
           const quantumVaultKeys = { ...state.quantumVaultKeys };
           delete quantumVaultKeys[publicKey];
+          const signingNotifications = state.signingNotifications.filter(
+            (notification) => notification.accountPublicKey !== publicKey,
+          );
           const orchestrationHistory = { ...state.orchestrationHistory };
           delete orchestrationHistory[publicKey];
           const recoverySessions = { ...state.recoverySessions };
@@ -397,6 +407,7 @@ export const useWalletStore = create<WalletState>()(
             xmssTrees,
             winterAuthorityStates,
             quantumVaultKeys,
+            signingNotifications,
             orchestrationHistory,
             recoverySessions,
             umbraAccounts,
@@ -540,6 +551,30 @@ export const useWalletStore = create<WalletState>()(
           delete next[publicKey];
           return { quantumVaultKeys: next };
         }),
+      recordSigningNotification: (notification) =>
+        set((state) => {
+          const id = notification.id ?? crypto.randomUUID();
+          const next: SigningNotification = {
+            ...notification,
+            id,
+            createdAt: notification.createdAt ?? Date.now(),
+            read: notification.read ?? false,
+          };
+
+          return {
+            signingNotifications: [
+              next,
+              ...state.signingNotifications.filter((existing) => existing.id !== id),
+            ].slice(0, 50),
+          };
+        }),
+      markSigningNotificationRead: (id) =>
+        set((state) => ({
+          signingNotifications: state.signingNotifications.map((notification) =>
+            notification.id === id ? { ...notification, read: true } : notification,
+          ),
+        })),
+      clearSigningNotifications: () => set({ signingNotifications: [] }),
       recordOrchestrationActivity: (publicKey, activity) =>
         set((state) => ({
           orchestrationHistory: {

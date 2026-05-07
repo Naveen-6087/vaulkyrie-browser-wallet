@@ -10,12 +10,16 @@ import {
 import {
   bytesToHex,
   generatePqcMnemonic,
-  generateWotsKeyPair,
+  generateSolanaWinternitzKeyPair,
+  isSolanaWinternitzKeyPair,
   pqcWalletAdvanceMessage,
   serializeWotsSignature,
+  serializeSolanaWinternitzSignature,
   validatePqcMnemonic,
   wotsSignMessage,
   wotsVerifyMessage,
+  solanaWinternitzSignMessage,
+  solanaWinternitzVerifyMessage,
   type PqcSigningPosition,
 } from "@/services/quantum/wots";
 import {
@@ -86,7 +90,7 @@ export async function createQuantumVaultKeyInBackground(options: {
     };
   }
 
-  const currentKeyPair = await generateWotsKeyPair();
+  const currentKeyPair = await generateSolanaWinternitzKeyPair();
   const walletIdHex = bytesToHex(currentKeyPair.publicKeyHash);
   return {
     keyRecord: await createEncryptedQuantumVaultRecordFromRandomKeyPair(
@@ -128,7 +132,6 @@ export async function prepareQuantumVaultAdvanceInBackground(params: {
   if (bytesToHex(workingState.currentKeyPair.publicKeyHash) !== params.currentRootHex) {
     throw new Error("Stored Winternitz key does not match the current onchain wallet root.");
   }
-
   const { nextKeyRecord, nextKeyPair } = await buildNextQuantumVaultRecord(workingState, password);
   const message = await pqcWalletAdvanceMessage(
     workingState.walletId,
@@ -138,13 +141,21 @@ export async function prepareQuantumVaultAdvanceInBackground(params: {
     BigInt(params.amountLamports),
     BigInt(params.sequence),
   );
-  const signature = await wotsSignMessage(message, workingState.currentKeyPair.secretKey);
-  const valid = await wotsVerifyMessage(message, signature, workingState.currentKeyPair.publicKey);
+
+  const usesSolanaWinternitz = isSolanaWinternitzKeyPair(workingState.currentKeyPair);
+  const signature = usesSolanaWinternitz
+    ? await solanaWinternitzSignMessage(message, workingState.currentKeyPair.secretKey)
+    : await wotsSignMessage(message, workingState.currentKeyPair.secretKey);
+  const valid = usesSolanaWinternitz
+    ? await solanaWinternitzVerifyMessage(message, signature, workingState.currentKeyPair.publicKey)
+    : await wotsVerifyMessage(message, signature, workingState.currentKeyPair.publicKey);
   if (!valid) {
     throw new Error("PQC signature verification failed.");
   }
 
-  const signatureBytes = serializeWotsSignature(signature);
+  const signatureBytes = usesSolanaWinternitz
+    ? serializeSolanaWinternitzSignature(signature)
+    : serializeWotsSignature(signature);
   return {
     walletIdHex: workingState.walletIdHex,
     signature: Buffer.from(signatureBytes).toString("base64"),

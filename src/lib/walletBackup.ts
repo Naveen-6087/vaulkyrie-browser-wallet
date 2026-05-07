@@ -96,6 +96,7 @@ function validatePersistedWalletState(value: unknown): PersistedWalletState {
     xmssTrees: candidate.xmssTrees ?? {},
     winterAuthorityStates: candidate.winterAuthorityStates ?? {},
     quantumVaultKeys: candidate.quantumVaultKeys ?? {},
+    signingNotifications: candidate.signingNotifications ?? [],
     orchestrationHistory: candidate.orchestrationHistory ?? {},
     recoverySessions: candidate.recoverySessions ?? {},
     umbraAccounts: candidate.umbraAccounts ?? {},

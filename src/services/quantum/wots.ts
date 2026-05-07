@@ -21,6 +21,7 @@
 
 import { generateMnemonic, mnemonicToSeed, validateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english.js";
+import { keccak_256 } from "@noble/hashes/sha3";
 
 // ── Constants ────────────────────────────────────────────────────────
 
@@ -29,10 +30,24 @@ const CHAIN_LEN = 15;
 const HASH_LEN = 32;
 const WOTS_PUBKEY_LEN = CHAINS * HASH_LEN;  // 512
 const WOTS_SIG_LEN = CHAINS * HASH_LEN;     // 512
+const SOLANA_WINTERNITZ_CHAINS = 32;
+const SOLANA_WINTERNITZ_ELEMENT_LEN = 28;
+const SOLANA_WINTERNITZ_CHAIN_STEPS = 256;
+const SOLANA_WINTERNITZ_SIGNATURE_LEN =
+  SOLANA_WINTERNITZ_CHAINS * SOLANA_WINTERNITZ_ELEMENT_LEN;
 const HARDENED_OFFSET = 0x80000000;
 const VAULKYRIE_WOTS_DERIVATION_DOMAIN = new TextEncoder().encode("Vaulkyrie PQC seed v1");
 
-export { CHAINS, CHAIN_LEN, HASH_LEN, WOTS_PUBKEY_LEN, WOTS_SIG_LEN };
+export {
+  CHAINS,
+  CHAIN_LEN,
+  HASH_LEN,
+  WOTS_PUBKEY_LEN,
+  WOTS_SIG_LEN,
+  SOLANA_WINTERNITZ_CHAINS,
+  SOLANA_WINTERNITZ_ELEMENT_LEN,
+  SOLANA_WINTERNITZ_SIGNATURE_LEN,
+};
 
 // ── SHA-256 wrapper ──────────────────────────────────────────────────
 
@@ -40,6 +55,14 @@ async function sha256(data: Uint8Array): Promise<Uint8Array> {
   const buf = new Uint8Array(data).buffer as ArrayBuffer;
   const hash = await crypto.subtle.digest("SHA-256", buf);
   return new Uint8Array(hash);
+}
+
+function keccak256(data: Uint8Array): Uint8Array {
+  return new Uint8Array(keccak_256(data));
+}
+
+function solanaWinternitzHashElement(data: Uint8Array): Uint8Array {
+  return keccak256(data).slice(0, SOLANA_WINTERNITZ_ELEMENT_LEN);
 }
 
 function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
@@ -51,6 +74,17 @@ async function chainHash(value: Uint8Array, steps: number): Promise<Uint8Array> 
   let current = value;
   for (let i = 0; i < steps; i++) {
     current = await sha256(current);
+  }
+  return current;
+}
+
+async function solanaWinternitzChainHash(
+  value: Uint8Array,
+  steps: number,
+): Promise<Uint8Array> {
+  let current = value;
+  for (let i = 0; i < steps; i++) {
+    current = solanaWinternitzHashElement(current);
   }
   return current;
 }
@@ -198,6 +232,35 @@ async function keyPairFromSecretElements(secretElements: Uint8Array[]): Promise<
   };
 }
 
+async function solanaWinternitzKeyPairFromSecretElements(
+  secretElements: Uint8Array[],
+): Promise<WotsKeyPair> {
+  if (secretElements.length !== SOLANA_WINTERNITZ_CHAINS) {
+    throw new Error(`Solana Winternitz key must have ${SOLANA_WINTERNITZ_CHAINS} secret elements.`);
+  }
+
+  const publicElements: Uint8Array[] = [];
+  for (let i = 0; i < SOLANA_WINTERNITZ_CHAINS; i++) {
+    if (secretElements[i].length !== SOLANA_WINTERNITZ_ELEMENT_LEN) {
+      throw new Error(
+        `Solana Winternitz secret element ${i} must be ${SOLANA_WINTERNITZ_ELEMENT_LEN} bytes.`,
+      );
+    }
+    publicElements.push(
+      await solanaWinternitzChainHash(secretElements[i], SOLANA_WINTERNITZ_CHAIN_STEPS),
+    );
+  }
+
+  const publicKey = { elements: publicElements };
+  const publicKeyHash = solanaWinternitzMerkleRoot(publicElements);
+
+  return {
+    secretKey: { elements: secretElements },
+    publicKey,
+    publicKeyHash,
+  };
+}
+
 /** Generate a single WOTS+ key pair */
 export async function generateWotsKeyPair(): Promise<WotsKeyPair> {
   // Generate 16 random 32-byte secret elements
@@ -271,6 +334,44 @@ export async function deriveWotsKeyPairFromSeed(
   return keyPairFromSecretElements(secretElements);
 }
 
+export async function deriveSolanaWinternitzKeyPairFromSeed(
+  seed: Uint8Array,
+  position: PqcSigningPosition = { wallet: 0, parent: 0, child: 0 },
+): Promise<WotsKeyPair> {
+  assertDerivationIndex(position.wallet, "Wallet");
+  assertDerivationIndex(position.parent, "Parent");
+  assertDerivationIndex(position.child, "Child");
+
+  const master = await hmacSha512(VAULKYRIE_WOTS_DERIVATION_DOMAIN, seed);
+  let node: { key: Uint8Array; chainCode: Uint8Array } = {
+    key: master.slice(0, HASH_LEN),
+    chainCode: master.slice(HASH_LEN),
+  };
+
+  for (const index of [position.wallet, position.parent, position.child]) {
+    node = await deriveHardenedNode(node.key, node.chainCode, index);
+  }
+
+  const secretElements: Uint8Array[] = [];
+  for (let i = 0; i < SOLANA_WINTERNITZ_CHAINS; i++) {
+    const element = await deriveHardenedNode(node.key, node.chainCode, i);
+    secretElements.push(element.key.slice(0, SOLANA_WINTERNITZ_ELEMENT_LEN));
+  }
+
+  return solanaWinternitzKeyPairFromSecretElements(secretElements);
+}
+
+export async function generateSolanaWinternitzKeyPair(): Promise<WotsKeyPair> {
+  const secretElements: Uint8Array[] = [];
+  for (let i = 0; i < SOLANA_WINTERNITZ_CHAINS; i++) {
+    const element = new Uint8Array(SOLANA_WINTERNITZ_ELEMENT_LEN);
+    crypto.getRandomValues(element);
+    secretElements.push(element);
+  }
+
+  return solanaWinternitzKeyPairFromSecretElements(secretElements);
+}
+
 export async function deriveWotsKeyPairFromMnemonic(
   mnemonic: string,
   position: PqcSigningPosition = { wallet: 0, parent: 0, child: 0 },
@@ -280,8 +381,44 @@ export async function deriveWotsKeyPairFromMnemonic(
   return deriveWotsKeyPairFromSeed(seed, position);
 }
 
+export async function deriveSolanaWinternitzKeyPairFromMnemonic(
+  mnemonic: string,
+  position: PqcSigningPosition = { wallet: 0, parent: 0, child: 0 },
+  passphrase = "",
+): Promise<WotsKeyPair> {
+  const seed = await mnemonicToPqcSeed(mnemonic, passphrase);
+  return deriveSolanaWinternitzKeyPairFromSeed(seed, position);
+}
+
 export async function merklizeWotsPublicKey(publicKey: WotsPublicKey): Promise<Uint8Array> {
   return computeMerkleRoot(publicKey.elements);
+}
+
+function solanaWinternitzMerkleRoot(elements: Uint8Array[]): Uint8Array {
+  if (elements.length !== SOLANA_WINTERNITZ_CHAINS) {
+    throw new Error(`Solana Winternitz public key must have ${SOLANA_WINTERNITZ_CHAINS} elements.`);
+  }
+
+  let level: Uint8Array[] = elements.map((element, index) => {
+    if (element.length !== SOLANA_WINTERNITZ_ELEMENT_LEN) {
+      throw new Error(
+        `Solana Winternitz public element ${index} must be ${SOLANA_WINTERNITZ_ELEMENT_LEN} bytes.`,
+      );
+    }
+    return new Uint8Array(element);
+  });
+
+  while (level.length > 1) {
+    const nextLevel: Uint8Array[] = [];
+    for (let index = 0; index < level.length; index += 2) {
+      const left = level[index];
+      const right = level[index + 1] ?? left;
+      nextLevel.push(keccak256(concatBytes(left, right)));
+    }
+    level = nextLevel;
+  }
+
+  return level[0];
 }
 
 // ── Message Digest ───────────────────────────────────────────────────
@@ -403,6 +540,79 @@ export async function wotsVerifyMessage(
   publicKey: WotsPublicKey,
 ): Promise<boolean> {
   return wotsVerify(await sha256(message), signature, publicKey);
+}
+
+export function isSolanaWinternitzKeyPair(keyPair: WotsKeyPair): boolean {
+  return (
+    keyPair.secretKey.elements.length === SOLANA_WINTERNITZ_CHAINS &&
+    keyPair.publicKey.elements.length === SOLANA_WINTERNITZ_CHAINS &&
+    keyPair.secretKey.elements.every((element) => element.length === SOLANA_WINTERNITZ_ELEMENT_LEN) &&
+    keyPair.publicKey.elements.every((element) => element.length === SOLANA_WINTERNITZ_ELEMENT_LEN) &&
+    keyPair.publicKeyHash.length === HASH_LEN
+  );
+}
+
+export async function solanaWinternitzSignMessage(
+  message: Uint8Array,
+  secretKey: WotsSecretKey,
+): Promise<WotsSignature> {
+  if (
+    secretKey.elements.length !== SOLANA_WINTERNITZ_CHAINS ||
+    !secretKey.elements.every((element) => element.length === SOLANA_WINTERNITZ_ELEMENT_LEN)
+  ) {
+    throw new Error(
+      "This PQC key uses an older incompatible WOTS format. Create a new PQC wallet with the current on-chain format.",
+    );
+  }
+
+  const digest = keccak256(message);
+  const sigElements: Uint8Array[] = [];
+  for (let index = 0; index < SOLANA_WINTERNITZ_CHAINS; index += 1) {
+    sigElements.push(
+      await solanaWinternitzChainHash(
+        secretKey.elements[index],
+        SOLANA_WINTERNITZ_CHAIN_STEPS - digest[index],
+      ),
+    );
+  }
+
+  return { elements: sigElements };
+}
+
+export async function solanaWinternitzVerifyMessage(
+  message: Uint8Array,
+  signature: WotsSignature,
+  publicKey: WotsPublicKey,
+): Promise<boolean> {
+  if (
+    signature.elements.length !== SOLANA_WINTERNITZ_CHAINS ||
+    publicKey.elements.length !== SOLANA_WINTERNITZ_CHAINS
+  ) {
+    return false;
+  }
+
+  const digest = keccak256(message);
+  for (let index = 0; index < SOLANA_WINTERNITZ_CHAINS; index += 1) {
+    const sigElement = signature.elements[index];
+    const publicElement = publicKey.elements[index];
+    if (
+      sigElement.length !== SOLANA_WINTERNITZ_ELEMENT_LEN ||
+      publicElement.length !== SOLANA_WINTERNITZ_ELEMENT_LEN
+    ) {
+      return false;
+    }
+
+    const recovered = await solanaWinternitzChainHash(sigElement, digest[index]);
+    let diff = 0;
+    for (let byteIndex = 0; byteIndex < SOLANA_WINTERNITZ_ELEMENT_LEN; byteIndex += 1) {
+      diff |= recovered[byteIndex] ^ publicElement[byteIndex];
+    }
+    if (diff !== 0) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 // ── XMSS Tree ────────────────────────────────────────────────────────
@@ -571,6 +781,23 @@ export function serializeWotsSignature(sig: WotsSignature): Uint8Array {
   const out = new Uint8Array(WOTS_SIG_LEN);
   for (let i = 0; i < CHAINS; i++) {
     out.set(sig.elements[i], i * HASH_LEN);
+  }
+  return out;
+}
+
+export function serializeSolanaWinternitzSignature(sig: WotsSignature): Uint8Array {
+  if (
+    sig.elements.length !== SOLANA_WINTERNITZ_CHAINS ||
+    !sig.elements.every((element) => element.length === SOLANA_WINTERNITZ_ELEMENT_LEN)
+  ) {
+    throw new Error(
+      `Solana Winternitz signature must contain ${SOLANA_WINTERNITZ_CHAINS} ${SOLANA_WINTERNITZ_ELEMENT_LEN}-byte elements.`,
+    );
+  }
+
+  const out = new Uint8Array(SOLANA_WINTERNITZ_SIGNATURE_LEN);
+  for (let i = 0; i < SOLANA_WINTERNITZ_CHAINS; i++) {
+    out.set(sig.elements[i], i * SOLANA_WINTERNITZ_ELEMENT_LEN);
   }
   return out;
 }

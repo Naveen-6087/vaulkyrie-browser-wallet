@@ -13,6 +13,7 @@ import { SwapView } from "@/components/wallet/SwapView";
 import { RecoveryView } from "@/components/wallet/RecoveryView";
 import { ActivityList } from "@/components/wallet/ActivityList";
 import { AddressBook } from "@/components/wallet/AddressBook";
+import { NotificationsView } from "@/components/wallet/NotificationsView";
 import { SettingsView } from "@/components/settings/SettingsView";
 import { ApprovalCenter } from "@/components/extension/ApprovalCenter";
 import { OnboardingWelcome } from "@/components/onboarding/OnboardingWelcome";
@@ -58,6 +59,7 @@ function App() {
   const [isLocked, setIsLocked] = useState(false);
   const [hasResolvedSession, setHasResolvedSession] = useState(false);
   const [vaultConfig, setVaultConfig] = useState<VaultConfig | null>(null);
+  const [pendingSigningInvite, setPendingSigningInvite] = useState("");
   const activeAccountKind = getWalletAccountKind(activeAccount);
 
   const requestedView =
@@ -174,6 +176,11 @@ function App() {
     view === "dkg-ceremony" ||
     view === "join-ceremony" ||
     view === "lock";
+
+  const openSigningInvite = (invite: string) => {
+    setPendingSigningInvite(invite);
+    setView("send");
+  };
 
   const handleDKGComplete = (groupPublicKey?: string) => {
     let solanaAddress = groupPublicKey ?? "No key generated";
@@ -325,7 +332,7 @@ function App() {
         return (
           <JoinCeremony
             onComplete={handleDKGComplete}
-            onBack={() => setView("onboarding")}
+            onBack={() => setView(isOnboarded ? "notifications" : "onboarding")}
           />
         );
 
@@ -333,7 +340,7 @@ function App() {
         return <Dashboard onNavigate={setView} />;
 
       case "send":
-        if (activeAccountKind === "privacy-vault") {
+        if (activeAccountKind === "privacy-vault" && !pendingSigningInvite) {
           return renderThresholdOnlyView(
             "Threshold sending only",
             "Public send orchestration still uses Vaulkyrie threshold custody. Use Privacy for Umbra transfers or switch to a Threshold Vault.",
@@ -343,6 +350,9 @@ function App() {
           <SendView
             balance={activeAccount?.balance ?? 0}
             onNavigate={setView}
+            initialMode={pendingSigningInvite ? "join" : undefined}
+            initialInvite={pendingSigningInvite}
+            onInitialInviteConsumed={() => setPendingSigningInvite("")}
           />
         );
 
@@ -393,6 +403,14 @@ function App() {
           >
             <ActivityList transactions={transactions} />
           </ScreenShell>
+        );
+
+      case "notifications":
+        return (
+          <NotificationsView
+            onNavigate={setView}
+            onJoinInvite={openSigningInvite}
+          />
         );
 
       case "settings":

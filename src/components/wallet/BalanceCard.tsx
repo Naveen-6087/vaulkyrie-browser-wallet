@@ -1,4 +1,4 @@
-import { ArrowUpRight, ArrowDownLeft, ArrowLeftRight, RadioTower, Shield } from "lucide-react";
+import { ArrowUpRight, ArrowDownLeft, ArrowLeftRight, Bell, RadioTower, Shield } from "lucide-react";
 import { getWalletAccountKind } from "@/lib/walletAccounts";
 import { formatUsd } from "@/lib/utils";
 import { Card } from "@/components/ui/card";
@@ -65,6 +65,15 @@ export function BalanceCard({
               Send
             </Button>
           )}
+          <Button
+            variant="secondary"
+            size="sm"
+            className="gap-1.5"
+            onClick={() => onNavigate("notifications")}
+          >
+            <Bell className="h-3.5 w-3.5" />
+            Sign
+          </Button>
           <Button
             variant="secondary"
             size="sm"
