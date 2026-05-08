@@ -1,4 +1,4 @@
-import { Bell, ChevronRight, Globe, Info, LifeBuoy, Lock, Shield, Trash2, Users, Wallet } from "lucide-react";
+import { Bell, Check, ChevronRight, Globe, Info, LifeBuoy, Lock, Palette, Shield, Trash2, Users, Wallet } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -10,7 +10,7 @@ import { NETWORKS } from "@/lib/constants";
 import { exportEncryptedWalletBackup } from "@/lib/walletBackup";
 import { cn, shortenAddress } from "@/lib/utils";
 import { useWalletStore } from "@/store/walletStore";
-import type { NetworkId, WalletView } from "@/types";
+import type { NetworkId, UiThemeId, WalletView } from "@/types";
 import {
   DEFAULT_RELAY_URL,
   getRelayDisplayLabel,
@@ -29,7 +29,7 @@ interface SettingsViewProps {
   onNavigate: (view: WalletView) => void;
 }
 
-type SettingsSection = "overview" | "security" | "connections" | "recovery";
+type SettingsSection = "overview" | "appearance" | "security" | "connections" | "recovery" | "about";
 
 interface SettingRowProps {
   icon: typeof Shield;
@@ -53,7 +53,7 @@ function SectionButton({ icon: Icon, label, detail, isActive, onClick }: Section
       type="button"
       onClick={onClick}
       className={cn(
-        "rounded-2xl border px-3 py-3 text-left transition-[border-color,background-color,color,transform] duration-200 cursor-pointer",
+        "rounded-2xl border px-3 py-3 text-left transition-[border-color,background-color,color,transform] duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background cursor-pointer",
         isActive
           ? "border-primary/35 bg-primary/10 text-foreground shadow-[inset_0_0_0_1px_rgba(78,205,196,0.12)]"
           : "border-border/80 bg-card/55 text-muted-foreground hover:border-primary/20 hover:bg-accent/45 hover:text-foreground",
@@ -82,7 +82,7 @@ function SettingRow({ icon: Icon, label, value, badge, onClick }: SettingRowProp
     <button
       type="button"
       onClick={onClick}
-      className="flex w-full items-center gap-3 rounded-2xl px-3 py-3 text-left transition-colors hover:bg-accent/45 cursor-pointer"
+      className="flex w-full items-center gap-3 rounded-2xl px-3 py-3 text-left transition-colors hover:bg-accent/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background cursor-pointer"
     >
       <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-muted/80 shrink-0">
         <Icon className="h-4 w-4 text-muted-foreground" />
@@ -111,6 +111,38 @@ function SummaryTile({ label, value, tone = "default" }: { label: string; value:
   );
 }
 
+const THEME_OPTIONS: Array<{
+  id: UiThemeId;
+  label: string;
+  detail: string;
+  swatches: string[];
+}> = [
+  {
+    id: "obsidian",
+    label: "Obsidian",
+    detail: "Current Vaulkyrie dark theme.",
+    swatches: ["oklch(0.14 0.01 240)", "oklch(0.18 0.012 240)", "oklch(0.78 0.12 175)"],
+  },
+  {
+    id: "aurora",
+    label: "Aurora",
+    detail: "Cool dark surfaces with a livelier teal accent.",
+    swatches: ["oklch(0.13 0.018 205)", "oklch(0.24 0.035 185)", "oklch(0.76 0.14 165)"],
+  },
+  {
+    id: "graphite",
+    label: "Graphite",
+    detail: "Quiet neutral contrast for long wallet sessions.",
+    swatches: ["oklch(0.145 0.003 255)", "oklch(0.25 0.005 255)", "oklch(0.76 0.095 210)"],
+  },
+  {
+    id: "daylight",
+    label: "Daylight",
+    detail: "Light interface for bright environments.",
+    swatches: ["oklch(0.98 0.006 235)", "oklch(1 0 0)", "oklch(0.56 0.13 180)"],
+  },
+];
+
 export function SettingsView({ network, onNavigate }: SettingsViewProps) {
   const [activeSection, setActiveSection] = useState<SettingsSection>("overview");
   const [relayDraft, setRelayDraft] = useState("");
@@ -134,9 +166,11 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
     removeAccount,
     setLocked,
     securityPreferences,
+    themeId,
     relayUrl,
     unlockBlockedUntil,
     setRelayUrl,
+    setThemeId,
     updateSecurityPreferences,
   } = useWalletStore();
 
@@ -287,6 +321,12 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
       detail: `${accounts.length} vault${accounts.length === 1 ? "" : "s"} · ${NETWORKS[network].name}`,
     },
     {
+      id: "appearance",
+      icon: Palette,
+      label: "Themes",
+      detail: `${THEME_OPTIONS.find((theme) => theme.id === themeId)?.label ?? "Obsidian"} selected`,
+    },
+    {
       id: "security",
       icon: Shield,
       label: "Security",
@@ -303,6 +343,12 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
       icon: LifeBuoy,
       label: "Recovery",
       detail: "Encrypted backups and restore workflow",
+    },
+    {
+      id: "about",
+      icon: Info,
+      label: "About",
+      detail: "Technical details, rules, and policies",
     },
   ];
 
@@ -391,24 +437,9 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
                 <SettingRow
                   icon={Info}
                   label="About Vaulkyrie"
-                  value="v0.1.0 · Policies and product details below"
+                  value="v0.1.0 · Technical details, rules, and policies"
+                  onClick={() => setActiveSection("about")}
                 />
-              </div>
-            </Card>
-
-            <Card className="overflow-hidden">
-              <div className="border-b border-border/70 px-4 py-3">
-                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                  About Vaulkyrie
-                </p>
-              </div>
-              <div className="space-y-3 p-4">
-                <p className="text-sm font-medium">Threshold, privacy, and PQC wallet for Solana.</p>
-                <div className="grid gap-2 text-xs text-muted-foreground">
-                  <p>Signatures are user approved. Vaulkyrie does not auto-sign transactions.</p>
-                  <p>Recovery phrases, local keys, and encrypted backups must stay offline and private.</p>
-                  <p>Multi-device signing uses relay invites. Verify the phrase before approving.</p>
-                </div>
               </div>
             </Card>
 
@@ -478,10 +509,65 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
                   <Button variant="outline" className="w-full" onClick={() => onNavigate("privacy-vault-setup")}>
                     Create privacy vault
                   </Button>
+                  <Button variant="outline" className="w-full" onClick={() => onNavigate("join-ceremony")}>
+                    Join ceremony
+                  </Button>
+                  <Button variant="outline" className="w-full" onClick={() => onNavigate("import-vault")}>
+                    Import vault
+                  </Button>
                 </div>
               </div>
             </Card>
           </>
+        )}
+
+        {activeSection === "appearance" && (
+          <Card className="overflow-hidden">
+            <div className="border-b border-border/70 px-4 py-3">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                Themes
+              </p>
+            </div>
+            <div className="space-y-3 p-4">
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                Choose the wallet color system. Obsidian keeps the current Vaulkyrie look as the default.
+              </p>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                {THEME_OPTIONS.map((theme) => {
+                  const isSelected = theme.id === themeId;
+                  return (
+                    <button
+                      key={theme.id}
+                      type="button"
+                      onClick={() => setThemeId(theme.id)}
+                      aria-pressed={isSelected}
+                      className={cn(
+                        "min-h-24 rounded-2xl border px-3 py-3 text-left transition-[border-color,background-color,color,transform] duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background cursor-pointer",
+                        isSelected
+                          ? "border-primary/45 bg-primary/10 text-foreground"
+                          : "border-border/80 bg-card/55 text-muted-foreground hover:border-primary/25 hover:bg-accent/45 hover:text-foreground",
+                      )}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="flex gap-1.5">
+                          {theme.swatches.map((swatch, index) => (
+                            <span
+                              key={`${theme.id}-${index}`}
+                              className="h-5 w-5 rounded-full border border-border/80"
+                              style={{ backgroundColor: swatch }}
+                            />
+                          ))}
+                        </div>
+                        {isSelected && <Check className="h-4 w-4 text-primary" />}
+                      </div>
+                      <p className="mt-3 text-sm font-semibold text-foreground">{theme.label}</p>
+                      <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{theme.detail}</p>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </Card>
         )}
 
         {activeSection === "security" && (
@@ -781,6 +867,62 @@ export function SettingsView({ network, onNavigate }: SettingsViewProps) {
               </div>
             </Card>
           </>
+        )}
+
+        {activeSection === "about" && (
+          <div className="space-y-4">
+            <Card className="overflow-hidden">
+              <div className="border-b border-border/70 px-4 py-3">
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                  About Vaulkyrie
+                </p>
+              </div>
+              <div className="space-y-3 p-4">
+                <div className="flex items-start gap-3 rounded-2xl border border-border/80 bg-card/55 px-3 py-3">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-primary/12 text-primary">
+                    <Shield className="h-4 w-4" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-semibold">Threshold, privacy, and PQC wallet for Solana.</p>
+                    <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                      Vaulkyrie runs in the browser extension, keeps user approval at the center of signing, and supports devnet workflows for vault creation, private wallet flows, recovery, and DApp approvals.
+                    </p>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <SummaryTile label="Version" value="v0.1.0" tone="primary" />
+                  <SummaryTile label="Network" value={NETWORKS[network].name} />
+                </div>
+              </div>
+            </Card>
+
+            <Card className="overflow-hidden">
+              <div className="border-b border-border/70 px-4 py-3">
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                  Technical rules
+                </p>
+              </div>
+              <div className="grid gap-2 p-4 text-xs leading-relaxed text-muted-foreground">
+                <p>Every transaction and signature requires explicit user approval.</p>
+                <p>Threshold Vault flows coordinate participant key material; verify ceremony phrases before joining.</p>
+                <p>Privacy Vaults use local signer material for Umbra private-wallet actions.</p>
+                <p>Recovery phrases, encrypted backups, passwords, and local keys must stay private and offline.</p>
+              </div>
+            </Card>
+
+            <Card className="overflow-hidden">
+              <div className="border-b border-border/70 px-4 py-3">
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                  Policies
+                </p>
+              </div>
+              <div className="grid gap-2 p-4 text-xs leading-relaxed text-muted-foreground">
+                <p>Vaulkyrie cannot recover passwords, seed phrases, local signer keys, or deleted browser storage.</p>
+                <p>Devnet assets have no real monetary value and may reset or disappear when upstream infrastructure changes.</p>
+                <p>Extension site approvals are scoped by origin. Revoke sites from Connections when access is no longer needed.</p>
+              </div>
+            </Card>
+          </div>
         )}
 
         <p className="pt-1 text-center text-[10px] text-muted-foreground">

@@ -42,6 +42,7 @@ function App() {
     hasHydrated,
     transactions,
     network,
+    themeId,
     passwordHash,
     isLocked: storeLocked,
     securityPreferences,
@@ -61,6 +62,10 @@ function App() {
   const [vaultConfig, setVaultConfig] = useState<VaultConfig | null>(null);
   const [pendingSigningInvite, setPendingSigningInvite] = useState("");
   const activeAccountKind = getWalletAccountKind(activeAccount);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = themeId;
+  }, [themeId]);
 
   const requestedView =
     typeof window !== "undefined" && new URLSearchParams(window.location.search).get("view") === "approval"
@@ -290,7 +295,7 @@ function App() {
       case "import-vault":
         return (
           <RestoreVaultStep
-            onBack={() => setView("onboarding")}
+            onBack={() => setView(isOnboarded ? "dashboard" : "onboarding")}
             onRestored={() => {
               setOnboarded(true);
               setIsLocked(true);
@@ -307,7 +312,7 @@ function App() {
               setVaultConfig(config);
               setView("dkg-ceremony");
             }}
-            onBack={() => setView("onboarding")}
+            onBack={() => setView(isOnboarded ? "dashboard" : "onboarding")}
           />
         );
 
@@ -445,6 +450,8 @@ function App() {
           onNetworkChange={setNetwork}
           onCreateVault={() => setView("vault-config")}
           onCreatePrivacyVault={() => setView("privacy-vault-setup")}
+          onJoinCeremony={() => setView("join-ceremony")}
+          onImportVault={() => setView("import-vault")}
         />
       )}
 

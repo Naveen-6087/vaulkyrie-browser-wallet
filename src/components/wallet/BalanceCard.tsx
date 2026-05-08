@@ -48,7 +48,7 @@ export function BalanceCard({
           <Button
             variant={isPrivacyVault ? "default" : "secondary"}
             size="sm"
-            className="gap-1.5"
+            className="min-h-10 gap-1.5 whitespace-normal"
             onClick={() => onNavigate("receive")}
           >
             <ArrowDownLeft className="h-3.5 w-3.5" />
@@ -58,7 +58,7 @@ export function BalanceCard({
             <Button
               variant="default"
               size="sm"
-              className="gap-1.5"
+              className="min-h-10 gap-1.5 whitespace-normal"
               onClick={() => onNavigate("send")}
             >
               <ArrowUpRight className="h-3.5 w-3.5" />
@@ -68,7 +68,7 @@ export function BalanceCard({
           <Button
             variant="secondary"
             size="sm"
-            className="gap-1.5"
+            className="min-h-10 gap-1.5 whitespace-normal"
             onClick={() => onNavigate("notifications")}
           >
             <Bell className="h-3.5 w-3.5" />
@@ -77,7 +77,7 @@ export function BalanceCard({
           <Button
             variant="secondary"
             size="sm"
-            className="gap-1.5"
+            className="min-h-10 gap-1.5 whitespace-normal"
             onClick={() => onNavigate("swap")}
           >
             <ArrowLeftRight className="h-3.5 w-3.5" />
@@ -86,7 +86,7 @@ export function BalanceCard({
           <Button
             variant="secondary"
             size="sm"
-            className="gap-1.5"
+            className="min-h-10 gap-1.5 whitespace-normal"
             onClick={() => onNavigate("privacy")}
           >
             <Shield className="h-3.5 w-3.5" />
@@ -95,7 +95,7 @@ export function BalanceCard({
           <Button
             variant="secondary"
             size="sm"
-            className="gap-1.5"
+            className={`min-h-10 gap-1.5 whitespace-normal ${isPrivacyVault ? "col-span-2" : ""}`}
             onClick={() => onNavigate("activity")}
           >
             <RadioTower className="h-3.5 w-3.5" />

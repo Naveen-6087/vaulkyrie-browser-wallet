@@ -4,6 +4,8 @@ export type { NetworkId } from "@/lib/constants";
 
 export type WalletAccountKind = "threshold-vault" | "privacy-vault";
 
+export type UiThemeId = "obsidian" | "aurora" | "graphite" | "daylight";
+
 export interface WalletAccount {
   name: string;
   publicKey: string;

@@ -659,9 +659,9 @@ export function PrivacyView({ onNavigate }: PrivacyViewProps) {
       case "overview":
         return (
           <div className="space-y-3">
-            <Card className="p-3">
+            <Card className="p-4">
               <div className="flex items-start gap-3">
-                <div className="rounded-lg bg-primary/10 p-2 text-primary">
+                <div className="rounded-xl bg-primary/10 p-2 text-primary">
                   <Shield className="h-5 w-5" />
                 </div>
                 <div className="min-w-0 flex-1">
@@ -689,22 +689,28 @@ export function PrivacyView({ onNavigate }: PrivacyViewProps) {
                 />
               </div>
               {needsRegistrationFunding && (
-                <div className="mt-4 rounded-2xl border border-warning/35 bg-warning/10 px-3 py-3 text-xs text-warning">
+                <div className="mt-4 rounded-2xl border border-warning/35 bg-warning/10 px-3 py-3 text-xs text-muted-foreground">
                   <div className="flex items-start gap-2">
-                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
                     <div className="space-y-2">
                       <p className="font-medium text-foreground">Fund this Privacy Vault before registering.</p>
-                      <p>Fund at least {REGISTER_MIN_SOL.toFixed(2)} SOL first.</p>
+                      <p className="leading-relaxed">Fund at least {REGISTER_MIN_SOL.toFixed(2)} SOL first.</p>
                     </div>
                   </div>
                   <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
                     {network === "devnet" ? (
-                      <Button variant="secondary" onClick={handleDevnetAirdrop} disabled={isBusy || !owner}>
+                      <Button
+                        variant="secondary"
+                        className="min-h-10 w-full whitespace-normal px-3 text-center"
+                        onClick={handleDevnetAirdrop}
+                        disabled={isBusy || !owner}
+                      >
                         Request {DEVNET_AIRDROP_SOL} devnet SOL
                       </Button>
                     ) : (
                       <Button
                         variant={isCopied("umbra-fund-address") ? "secondary" : "outline"}
+                        className="min-h-10 w-full whitespace-normal px-3 text-center"
                         onClick={() => copy(owner, "umbra-fund-address")}
                         disabled={!owner}
                       >
@@ -714,6 +720,7 @@ export function PrivacyView({ onNavigate }: PrivacyViewProps) {
                     )}
                     <Button
                       variant={isCopied("umbra-fund-address") ? "secondary" : "outline"}
+                      className="min-h-10 w-full whitespace-normal px-3 text-center"
                       onClick={() => copy(owner, "umbra-fund-address")}
                       disabled={!owner}
                     >
@@ -724,7 +731,7 @@ export function PrivacyView({ onNavigate }: PrivacyViewProps) {
                 </div>
               )}
               <Button
-                className="mt-4 w-full"
+                className="mt-4 min-h-11 w-full whitespace-normal px-3 text-center"
                 onClick={handleRegister}
                 disabled={isBusy || isUnsupportedNetwork || !owner || needsRegistrationFunding}
               >

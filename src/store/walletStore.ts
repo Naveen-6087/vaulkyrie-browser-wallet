@@ -15,6 +15,7 @@ import type {
   SpendOrchestrationActivity,
   RecoverySessionRecord,
   SigningNotification,
+  UiThemeId,
   UmbraAccountRecord,
   UmbraActivityRecord,
   UmbraNetworkId,
@@ -157,6 +158,7 @@ export interface PersistedWalletState {
   activeAccount: WalletAccount | null;
   network: NetworkId;
   relayUrl: string;
+  themeId: UiThemeId;
   dkgResults: Record<string, StoredDkgResult>;
   vaultConfigs: Record<string, VaultConfigPersist>;
   passwordHash: string | null;
@@ -195,6 +197,7 @@ interface WalletState extends PersistedWalletState {
   // Network
   network: NetworkId;
   relayUrl: string;
+  themeId: UiThemeId;
 
   // UI
   currentView: WalletView;
@@ -217,6 +220,7 @@ interface WalletState extends PersistedWalletState {
   setVaultState: (state: VaultState | null) => void;
   setNetwork: (network: NetworkId) => void;
   setRelayUrl: (relayUrl: string) => void;
+  setThemeId: (themeId: UiThemeId) => void;
   setCurrentView: (view: WalletView) => void;
   clearError: () => void;
 
@@ -285,6 +289,7 @@ export function pickPersistedWalletState(state: WalletState): PersistedWalletSta
     activeAccount: state.activeAccount,
     network: state.network,
     relayUrl: state.relayUrl,
+    themeId: state.themeId,
     dkgResults: state.dkgResults,
     vaultConfigs: state.vaultConfigs,
     passwordHash: state.passwordHash,
@@ -343,6 +348,7 @@ export const useWalletStore = create<WalletState>()(
       vaultState: null,
       network: DEFAULT_NETWORK,
       relayUrl: DEFAULT_RELAY_URL,
+      themeId: "obsidian",
       currentView: "dashboard",
       isLoading: false,
       error: null,
@@ -448,6 +454,7 @@ export const useWalletStore = create<WalletState>()(
         lastFetchedAt: null,
       }),
       setRelayUrl: (relayUrl) => set({ relayUrl }),
+      setThemeId: (themeId) => set({ themeId }),
       setCurrentView: (currentView) => set({ currentView }),
       clearError: () => set({ error: null }),
 

@@ -1416,8 +1416,8 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
                 <p className="text-xs text-muted-foreground mb-2">
                   Group Public Key
                 </p>
-                <div className="flex items-center gap-2">
-                  <code className="flex-1 text-xs font-mono text-foreground bg-muted rounded-md px-2.5 py-2 truncate">
+                <div className="flex min-w-0 items-center gap-2">
+                  <code className="min-w-0 flex-1 text-xs font-mono text-foreground bg-muted rounded-md px-2.5 py-2 truncate">
                     {groupPublicKey}
                   </code>
                     <button
@@ -1445,8 +1445,8 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
                     </span>
                   )}
                 </div>
-                <div className="flex items-center gap-2">
-                  <code className="flex-1 text-xs font-mono text-foreground bg-muted rounded-md px-2.5 py-2 truncate">
+                <div className="flex min-w-0 items-center gap-2">
+                  <code className="min-w-0 flex-1 text-xs font-mono text-foreground bg-muted rounded-md px-2.5 py-2 truncate">
                     {bootstrapWalletAddress || "Deriving vault address..."}
                   </code>
                     <button
@@ -1464,18 +1464,18 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
                       )}
                     </button>
                 </div>
-                <div className="grid grid-cols-2 gap-3 mt-3">
-                  <div className="rounded-lg bg-muted/60 px-3 py-2">
+                <div className="grid grid-cols-1 gap-2 mt-3 sm:grid-cols-2">
+                  <div className="min-w-0 rounded-lg bg-muted/60 px-3 py-2">
                     <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Current balance</p>
-                    <p className="text-sm font-medium text-foreground mt-1">
+                    <p className="truncate text-sm font-medium text-foreground mt-1">
                       {bootstrapBalanceLamports === null ? "—" : formatSolAmount(bootstrapBalanceLamports)}
                     </p>
                   </div>
-                  <div className="rounded-lg bg-muted/60 px-3 py-2">
+                  <div className="min-w-0 rounded-lg bg-muted/60 px-3 py-2">
                     <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
                       {bootstrapAlreadyInitialized ? "Bootstrap state" : "Required to bootstrap"}
                     </p>
-                    <p className="text-sm font-medium text-foreground mt-1">
+                    <p className="truncate text-sm font-medium text-foreground mt-1">
                       {bootstrapAlreadyInitialized
                         ? "Already initialized"
                         : bootstrapRequiredLamports === null
@@ -1485,18 +1485,18 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
                   </div>
                 </div>
                 {!bootstrapAlreadyInitialized && bootstrapPendingActions.length > 0 && (
-                  <p className="text-xs text-muted-foreground mt-3">
+                  <p className="text-xs text-muted-foreground mt-3 break-words [overflow-wrap:anywhere]">
                     Bootstrap will create: {bootstrapPendingActions.join(", ")}.
                   </p>
                 )}
-                <p className="text-xs text-muted-foreground mt-3 leading-relaxed">
+                <p className="text-xs text-muted-foreground mt-3 leading-relaxed break-words">
                   You can open the wallet immediately after key generation. On-chain policy and quantum controls create Vaulkyrie PDAs and still need rent or a sponsor when enabled.
                 </p>
-                <div className="flex gap-2 mt-3">
+                <div className="grid grid-cols-1 gap-2 mt-3 sm:grid-cols-2">
                   <button
                     onClick={() => { void refreshBootstrapFunding(); }}
                     disabled={isCheckingBootstrapFunding || isFundingVault || !bootstrapWalletAddress}
-                    className="flex-1 py-2.5 rounded-lg border border-border bg-background text-sm font-medium text-foreground hover:bg-accent transition-colors disabled:opacity-50"
+                    className="min-h-10 py-2.5 rounded-lg border border-border bg-background px-3 text-xs font-medium text-foreground hover:bg-accent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:opacity-50"
                   >
                     Refresh balance
                   </button>
@@ -1509,7 +1509,7 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
                         !bootstrapWalletAddress ||
                         bootstrapFundingReady
                       }
-                      className="flex-1 py-2.5 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
+                      className="min-h-10 py-2.5 rounded-lg bg-primary px-3 text-xs font-medium text-primary-foreground hover:bg-primary/90 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:opacity-50"
                     >
                       {isFundingVault ? "Requesting faucet..." : "Request devnet faucet"}
                     </button>
@@ -1530,7 +1530,7 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
                       className="flex items-center gap-2 py-1.5"
                     >
                       <DeviceIcon type={device.type} />
-                      <span className="text-sm flex-1">{device.name}</span>
+                      <span className="min-w-0 flex-1 truncate text-sm">{device.name}</span>
                       <Check className="h-3.5 w-3.5 text-success" />
                     </div>
                   ))}
@@ -1540,11 +1540,11 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
                 <p className="text-xs text-muted-foreground mb-2">
                   On-chain bootstrap
                 </p>
-                <p className="text-sm text-foreground">
+                <p className="text-sm leading-relaxed text-foreground break-words [overflow-wrap:anywhere]">
                   {bootstrapMessage || "Fund the derived vault address, then finalize the on-chain vault, authority, and policy PDAs before opening the wallet."}
                 </p>
                 {bootstrapError && (
-                  <p className="text-xs text-destructive mt-2">
+                  <p className="text-xs text-destructive mt-2 break-words [overflow-wrap:anywhere]">
                     {bootstrapError}
                   </p>
                 )}
@@ -1586,7 +1586,7 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
                          bg-primary text-primary-foreground
                          disabled:opacity-60 disabled:cursor-not-allowed
                          shadow-lg shadow-primary/20 hover:shadow-primary/35 transition-all
-                         flex items-center justify-center gap-2"
+                         flex min-h-12 items-center justify-center gap-2 px-3 text-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
             >
               {isBootstrapping
                 ? "Finalizing Vault..."
@@ -1606,7 +1606,7 @@ export function DKGCeremony({ config, onComplete, onBack }: DKGCeremonyProps) {
               <button
                 onClick={() => { void handleOpenWithoutBootstrap(); }}
                 disabled={isBootstrapping || isCheckingBootstrapFunding}
-                className="w-full py-3 rounded-xl border border-border bg-background text-sm font-medium text-foreground hover:bg-accent transition-colors disabled:opacity-50"
+                className="w-full min-h-11 px-3 py-3 rounded-xl border border-border bg-background text-sm font-medium text-foreground hover:bg-accent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:opacity-50"
               >
                 Open Wallet Now
               </button>

@@ -84,6 +84,7 @@ function validatePersistedWalletState(value: unknown): PersistedWalletState {
     activeAccount: candidate.activeAccount ?? candidate.accounts[0] ?? null,
     network: candidate.network,
     relayUrl: candidate.relayUrl,
+    themeId: candidate.themeId ?? "obsidian",
     dkgResults: candidate.dkgResults ?? {},
     vaultConfigs: candidate.vaultConfigs ?? {},
     passwordHash: candidate.passwordHash ?? null,

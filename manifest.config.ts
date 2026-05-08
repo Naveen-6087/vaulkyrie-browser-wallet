@@ -6,15 +6,15 @@ export default defineManifest({
   description: "Solana threshold wallet with post-quantum security",
   version: "0.1.0",
   icons: {
-    "16": "favicon.svg",
-    "48": "favicon.svg",
-    "128": "favicon.svg",
+    "16": "logo.png",
+    "48": "logo.png",
+    "128": "logo.png",
   },
   action: {
     default_popup: "index.html",
     default_icon: {
-      "16": "favicon.svg",
-      "48": "favicon.svg",
+      "16": "logo.png",
+      "48": "logo.png",
     },
     default_title: "Vaulkyrie Wallet",
   },
