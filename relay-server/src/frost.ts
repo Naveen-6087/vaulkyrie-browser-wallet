@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 interface FrostWasmModule {
   __wbg_set_wasm: (exports: WebAssembly.Exports) => void;
@@ -19,6 +19,8 @@ let wasmPromise: Promise<FrostWasmModule> | null = null;
 function resolveWasmDir(): string {
   const candidates = [
     process.env.FROST_WASM_DIR,
+    path.resolve(process.cwd(), "vendor/vaulkyrie-frost-wasm"),
+    path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../vendor/vaulkyrie-frost-wasm"),
     path.resolve(process.cwd(), "../src/wasm/vaulkyrie-frost-wasm"),
     path.resolve(process.cwd(), "src/wasm/vaulkyrie-frost-wasm"),
   ].filter((candidate): candidate is string => Boolean(candidate));

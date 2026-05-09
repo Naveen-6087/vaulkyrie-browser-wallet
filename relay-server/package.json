@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "tsc",
+    "build": "node ./scripts/copy-frost-wasm.mjs && tsc",
     "start": "node dist/server.js"
   },
   "dependencies": {

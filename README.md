@@ -83,7 +83,69 @@ You can override the relay at build time:
 VITE_RELAY_URL=wss://relay.vaulkyrie.xyz npm run build
 ```
 
-Chrome extensions cannot start or bundle a persistent Node relay server. Production cross-browser and cross-device ceremonies require a deployed WebSocket relay with TLS, stable DNS, logging, rate limits, and operational monitoring. The extension manifest allows the hosted Vaulkyrie relay and keeps localhost support for development.
+Chrome extensions cannot start or bundle a persistent Node relay server. Production cross-browser and cross-device ceremonies require a deployed WebSocket relay with TLS, stable DNS, logging, rate limits, and operational monitoring.
+
+### Railway deployment
+
+This repository is now configured as a Railway monorepo. Railway should detect `relay-server` as a deployable service because the repo root includes:
+
+```json
+{
+  "services": ["relay-server"]
+}
+```
+
+If Railway does not auto-select it on an existing project, create a new Railway project from this repo after pushing the latest commit.
+
+Use these service settings:
+
+```bash
+Root Directory: relay-server
+Build Command: npm run build
+Start Command: npm run start
+```
+
+Add a Railway volume and mount it to:
+
+```bash
+/data
+```
+
+Then set these environment variables on the Railway service:
+
+```bash
+COSIGNER_ADMIN_TOKEN=<long-random-secret>
+PQC_SPONSOR_ADMIN_TOKEN=<long-random-secret>
+VAULKYRIE_RELAY_SECRET_PASSPHRASE=<long-random-secret>
+VAULKYRIE_RELAY_STATE_DIR=/data/relay-state
+PQC_SPONSOR_FREE_LIMIT=25
+```
+
+Optional variables:
+
+```bash
+PQC_SPONSOR_RPC_URL=https://api.devnet.solana.com
+PQC_SPONSOR_SECRET_KEY=[1,2,3]
+PQC_SPONSOR_ALLOW_MAINNET=false
+VAULKYRIE_CORE_PROGRAM_ID=HUf5TWL4H18qJigd9m7h6MihX1xnzr2BVbbyGYFLEGPx
+FROST_WASM_DIR=/app/relay-server/vendor/vaulkyrie-frost-wasm
+```
+
+The build now copies the FROST WASM package into `relay-server/vendor`, so the relay can run as a standalone Railway service without depending on the extension workspace layout.
+
+You do need environment variables for a real Railway deployment:
+
+- `COSIGNER_ADMIN_TOKEN` and `PQC_SPONSOR_ADMIN_TOKEN` protect the admin HTTP endpoints.
+- `VAULKYRIE_RELAY_SECRET_PASSPHRASE` keeps encrypted relay state readable across restarts and redeploys.
+- `VAULKYRIE_RELAY_STATE_DIR` should point at the mounted volume so cosigner state and sponsor state survive deploys.
+
+After Railway gives you a public domain, rebuild the extension against that relay:
+
+```bash
+VITE_RELAY_URL=wss://your-service.up.railway.app npm run build
+```
+
+The extension manifest now derives CSP and host permissions from `VITE_RELAY_URL`, so the packaged extension can talk to your own Railway relay instead of only `relay.vaulkyrie.xyz`.
 
 ## TypeScript SDK
 
@@ -132,7 +194,7 @@ Before publishing to npm:
 
 ```bash
 npm install
-VITE_RELAY_URL=wss://relay.vaulkyrie.xyz npm run build
+VITE_RELAY_URL=wss://your-service.up.railway.app npm run build
 ```
 
 Upload the generated extension output to the Chrome Web Store after manual QA. Before submission, confirm:
